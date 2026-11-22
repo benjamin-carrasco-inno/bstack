@@ -59,7 +59,7 @@ export function parseCommit(rest) {
   return opts;
 }
 
-export function commentRatchet({ repo, rest, prior }, deps) {
+export function commentRatchet({ repo, rest, prior, tool }, deps) {
   const opts = parseCommit(rest);
   if (opts.dryRun) return null;
   let root, realIndex;
@@ -69,16 +69,16 @@ export function commentRatchet({ repo, rest, prior }, deps) {
   realIndex = path.resolve(repo, realIndex);
   if (!deps.exists(path.join(root, BASELINE)) && !inIndex(root, {}, deps)) return null;
 
-  const adds = prior.filter(p => p.cmd === 'git' && /^(add|stage)$/.test(parseGit(p.args).sub));
-  const rebuild = adds.length || opts.all || opts.paths.length;
+  const replays = prior.filter(p => p.cmd === 'git' && Object.hasOwn(INDEX_REPLAYS, parseGit(p.args).sub));
+  const rebuild = replays.length || opts.all || opts.paths.length;
   const temp = rebuild ? path.join(os.tmpdir(), `bstack-ratchet-${process.pid}-${Date.now()}.index`) : null;
   const env = temp ? { GIT_INDEX_FILE: temp } : {};
   try {
     if (temp) {
       if (deps.exists(realIndex)) fs.copyFileSync(realIndex, temp);
-      for (const add of adds) replayAdd(add, repo, root, env, deps);
-      if (opts.all) tryGit(repo, ['add', '-u'], env, deps);
-      else if (opts.paths.length) tryGit(repo, ['add', '-u', '--', ...opts.paths], env, deps);
+      for (const command of replays) replay(command, { repo, root, tool }, env, deps);
+      if (opts.all) onTempIndex(repo, ['add', '-u'], env, deps);
+      else if (opts.paths.length) onTempIndex(repo, ['add', '-u', '--', ...opts.paths], env, deps);
     }
     return check(root, repo, opts, env, deps);
   } finally {
@@ -86,19 +86,113 @@ export function commentRatchet({ repo, rest, prior }, deps) {
   }
 }
 
-function replayAdd(add, repo, root, env, deps) {
-  const { dir, rest } = parseGit(add.args);
-  const where = dir ? path.resolve(add.cwd, dir) : add.cwd;
+const INDEX_REPLAYS = { add: addArgs, stage: addArgs, restore: restoreArgs, rm: rmArgs, reset: resetArgs };
+const MOVES_HEAD_OR_TREE = /^--(soft|hard|merge|keep)$/;
+const NOT_EMULATED = /^(-p|--patch|--pathspec-from-file(=.*)?)$/;
+
+function replay(command, { repo, root, tool }, env, deps) {
+  const { dir, sub, rest } = parseGit(command.args);
+  const where = dir ? path.resolve(command.cwd, dir) : command.cwd;
   if (where !== repo) {
     let top;
     try { top = deps.git(where, ['rev-parse', '--show-toplevel']).trim(); } catch { return; }
     if (path.resolve(top) !== path.resolve(root)) return;
   }
-  tryGit(where, ['add', ...withoutRedirections(rest)], env, deps);
+  const words = withoutRedirections(rest);
+  for (const args of INDEX_REPLAYS[sub](words, { where, shellCwd: command.cwd, tool }, deps)) onTempIndex(where, args, env, deps);
 }
 
-function tryGit(cwd, args, env, deps) {
+function onTempIndex(cwd, args, env, deps) {
+  if (!env.GIT_INDEX_FILE) return;
   try { deps.git(cwd, args, { env, timeout: 45000 }); } catch {}
+}
+
+function addArgs(words, { shellCwd, tool }) {
+  return [['add', ...(tool === 'Bash' ? words.flatMap(w => bashGlob(w, shellCwd)) : words)]];
+}
+
+function restoreArgs(words) {
+  const options = beforeDashes(words);
+  const staged = hasFlag(options, '--staged', 'S');
+  const worktree = hasFlag(options, '--worktree', 'W');
+  return staged && !worktree ? [['restore', ...words]] : [];
+}
+
+function rmArgs(words) {
+  return beforeDashes(words).includes('--cached') ? [['rm', ...words]] : [];
+}
+
+function resetArgs(words, { where }, deps) {
+  const dashes = words.indexOf('--');
+  const options = beforeDashes(words);
+  if (options.some(w => MOVES_HEAD_OR_TREE.test(w) || NOT_EMULATED.test(w))) return [];
+  const positional = options.filter(w => !w.startsWith('-'));
+  const isCommit = arg => {
+    try { deps.git(where, ['rev-parse', '--verify', '-q', `${arg}^{commit}`]); return true; } catch { return false; }
+  };
+  let source, paths;
+  if (dashes >= 0) [source, paths] = [positional[0], words.slice(dashes + 1)];
+  else if (positional.length && isCommit(positional[0])) [source, paths] = [positional[0], positional.slice(1)];
+  else paths = positional;
+  if (!paths.length) return source === undefined ? [['read-tree', 'HEAD']] : [];
+  return [['restore', '--staged', ...(source === undefined ? [] : [`--source=${source}`]), '--', ...paths]];
+}
+
+function beforeDashes(words) {
+  const dashes = words.indexOf('--');
+  return dashes < 0 ? words : words.slice(0, dashes);
+}
+
+function hasFlag(options, long, short) {
+  return options.some(w => w === long || (/^-[a-zA-Z]+$/.test(w) && w.includes(short)));
+}
+
+const GLOB_CHAR = /[*?[]/;
+
+function bashGlob(word, base) {
+  if (!GLOB_CHAR.test(word)) return [word];
+  let found = [{ shown: null, real: base }];
+  for (const segment of word.split('/')) {
+    found = found.flatMap(at => segmentMatches(segment, at.real).map(name => ({
+      shown: at.shown === null ? name : `${at.shown}/${name}`,
+      real: at.shown === null ? path.resolve(base, `${name}/`) : path.join(at.real, name),
+    })));
+  }
+  return found.length ? found.map(f => f.shown).sort() : [word];
+}
+
+function segmentMatches(segment, dir) {
+  if (segment === '') return isDirectory(dir) ? [''] : [];
+  if (!GLOB_CHAR.test(segment)) return fs.existsSync(path.join(dir, segment)) ? [segment] : [];
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  const pattern = segmentPattern(segment);
+  return names.filter(name => pattern.test(name) && (segment.startsWith('.') || !name.startsWith('.')));
+}
+
+function isDirectory(dir) {
+  try { return fs.statSync(dir).isDirectory(); } catch { return false; }
+}
+
+function segmentPattern(segment) {
+  let source = '';
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    if (ch === '*') { source += '.*'; continue; }
+    if (ch === '?') { source += '.'; continue; }
+    if (ch === '[') {
+      const negate = segment[i + 1] === '!' || segment[i + 1] === '^';
+      const from = i + 1 + (negate ? 1 : 0);
+      const close = segment.indexOf(']', from + 1);
+      if (close >= 0) {
+        source += `[${negate ? '^' : ''}${segment.slice(from, close).replace(/[\\\]^[]/g, '\\$&')}]`;
+        i = close;
+        continue;
+      }
+    }
+    source += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${source}$`, 's');
 }
 
 function inIndex(root, env, deps) {

@@ -28,26 +28,45 @@ export function decide(input, deps) {
   const line = String(input.tool_input?.command ?? '');
   const commands = located(commandsIn(line), cwd);
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, c.cwd, deps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, c.cwd, deps, commands.slice(0, k)) : null) ?? (c.cmd === 'gh' ? ghRule(c, c.cwd, deps) : null);
+    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
     if (reason) return reason;
   }
   return null;
 }
 
-const CHANGE_DIR = new Set(['cd', 'chdir', 'pushd', 'set-location', 'sl']);
+const DIR_MOVES = {
+  cd: 'go', chdir: 'go', 'set-location': 'go', sl: 'go',
+  pushd: 'push', 'push-location': 'push',
+  popd: 'pop', 'pop-location': 'pop',
+};
 const HOME = /^~(?=$|[\\/])/;
 
 function located(commands, start) {
   let here = start;
+  let previous = null;
+  const stack = [];
   return commands.map(c => {
     const at = { ...c, cwd: here };
-    if (CHANGE_DIR.has(c.cmd)) here = changedDir(c.args, here);
+    const move = DIR_MOVES[c.cmd];
+    const target = dirTarget(c.args);
+    if (move === 'pop') {
+      if (stack.length) [previous, here] = [here, stack.pop()];
+    } else if (move && target === '-') {
+      if (previous) [previous, here] = [here, previous];
+    } else if (move) {
+      if (move === 'push') stack.push(here);
+      previous = here;
+      here = resolvedDir(target, here);
+    }
     return at;
   });
 }
 
-function changedDir(args, here) {
-  const target = args.find(a => !a.startsWith('-') && !/^\/d$/i.test(a));
+function dirTarget(args) {
+  return args.find(a => a === '-' || (!a.startsWith('-') && !/^\/d$/i.test(a)));
+}
+
+function resolvedDir(target, here) {
   if (target === undefined || target.includes('$')) return here;
   return path.resolve(here, target.replace(HOME, os.homedir()));
 }
@@ -90,13 +109,13 @@ function agentRule(c, agent) {
 }
 
 // --- git ------------------------------------------------------------------------------------------
-function gitRule(c, cwd, deps, prior) {
+function gitRule(c, cwd, deps, line) {
   const { dir, sub, rest } = parseGit(c.args);
   const repo = dir ? path.resolve(cwd, dir) : cwd;
   if (rest.includes('--no-verify') || (sub === 'commit' && rest.some(a => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--')))) {
     return 'Do not skip git hooks (--no-verify / -n). Fix what the hook reports; it is part of the safety net.';
   }
-  if (sub === 'commit') return commentRatchet({ repo, rest, prior }, deps);
+  if (sub === 'commit') return commentRatchet({ repo: dir ? path.resolve(c.cwd, dir) : c.cwd, rest, ...line }, deps);
   if (sub === 'push') return pushRule(rest, repo, deps);
   if (sub === 'rebase' && !rest.some(a => /^--(abort|continue|skip|quit|edit-todo|show-current-patch)$/.test(a))) return rebaseRule(repo, deps);
   if (sub === 'pull' && rest.some(a => a === '--rebase' || a === '-r' || a.startsWith('--rebase='))) return rebaseRule(repo, deps);
