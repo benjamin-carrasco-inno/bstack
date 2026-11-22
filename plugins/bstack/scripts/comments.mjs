@@ -108,6 +108,7 @@ const LICENCE = new RegExp(`copyright\\s*(\\(c\\)|©)?\\s*\\d{4}|(\\(c\\)|©)\\s
 const YEARS = String.raw`\d{4}(\s*[-–,]\s*(\d{4}|present))*,?`;
 const HOLDER_WORD = String.raw`((inc|ltd|corp|co|llc|\p{L})\.|<[^\s<>]+>|([^\s.,;:!?]|\.(?=[^\s.,;:!?]))+)`;
 const HOLDER_WORDS = 10;
+const SENTENCE_AFTER_ABBREVIATION = /\b([Ii]nc|INC|[Ll]td|LTD|[Cc]orp|CORP|[Cc]o|CO|LLC|[Ll]lc)\.\s+(?![Aa]ll [Rr]ights [Rr]eserved|ALL RIGHTS RESERVED)\p{Lu}/u;
 const LICENCE_ID = String.raw`[\w.+()-]+`;
 const LICENCE_LINES = [
   new RegExp(String.raw`^(copyright\s*(\(c\)|©)(\s*${YEARS})?|copyright\s+${YEARS}|(\(c\)|©)(\s*${YEARS})?),?\s+${HOLDER_WORD}(,?\s+${HOLDER_WORD}){0,${HOLDER_WORDS - 1}}\.?(\s+all rights reserved\.?)?$`, 'u'),
@@ -162,8 +163,8 @@ const LICENCE_RUN_WORDS = 6;
 const inLicence = run => PARAGRAPHS.some(p => p.includes(` ${run} `));
 
 function licenceLines(group) {
-  const entries = group.flatMap(f => f.body.split('\n').map((raw, k) => ({ line: f.from + k, text: words(raw) })));
-  const exempt = new Set(entries.filter(e => LICENCE_LINES.some(re => re.test(e.text))).map(e => e.line));
+  const entries = group.flatMap(f => f.body.split('\n').map((raw, k) => ({ line: f.from + k, text: words(raw), raw })));
+  const exempt = new Set(entries.filter(e => LICENCE_LINES.some(re => re.test(e.text)) && !SENTENCE_AFTER_ABBREVIATION.test(e.raw)).map(e => e.line));
   let whole = false;
   for (let k = 0; k < entries.length;) {
     let m = k, run = '';
