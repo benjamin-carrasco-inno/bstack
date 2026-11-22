@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://example.com/schema.json
+name: demo # trailing
+description: don't stop at the apostrophe # counts
+url: "https://example.com/#anchor"
+tag: 'v1 # not a comment'
+plain: a#b
+long: value  # yamllint disable-line rule:line-length
+steps:
+  - run: |
+      # a shell comment inside a block scalar counts
+      echo "done"
