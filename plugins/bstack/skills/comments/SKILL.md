@@ -22,7 +22,7 @@ Spawn `bstack:comment-critic` with only the checkout path and the scope. Not you
 
 The report is accepted only when every check holds:
 - `git status --porcelain` and `git diff --stat` are unchanged: the critic edited nothing.
-- Every line has five fields, a known class (tautology, stale, excuse, decision, constraint, external) and an action that class allows. The count matches `bstack-comments: items=<n>`.
+- Every line has five fields and a class with an action it allows: tautology and stale `delete`; excuse `fix` or `issue`; decision `adr` or `delete`; constraint `encode` or `issue`; external `keep`. The count matches `bstack-comments: items=<n>`.
 - Every line has proof, and the file and line are in scope and hold that comment.
 - No comment in scope is missing: compare against a search for the comment markers on the scope's lines.
 - Every `keep` is external, and its proof holds when you check it again: run the command, or open the link and find the pinned version in the repo.

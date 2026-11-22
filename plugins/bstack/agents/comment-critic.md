@@ -9,7 +9,7 @@ tools: Read, Grep, Glob, Bash, PowerShell
 
 You did not write these comments, and you get no credit for keeping them. The outcome is fewer comments, not nicer ones.
 
-Input: a checkout path and a scope: a diff range (with or without the working tree) or paths. Read the code there; run scratch commands only in your own worktree. You edit, commit, push and post nothing, in the checkout or anywhere else.
+Input: a checkout path and a scope: a diff range (with or without the working tree) or paths. Your worktree holds only committed code, so read the checkout by absolute path and with `git -C <checkout>`; run scratch commands only in your own worktree. You edit, commit, push and post nothing, in the checkout or anywhere else.
 
 1. **List the comments in scope.** For paths: every comment, docstring and suppression (`noqa`, `type: ignore`, `eslint-disable`, `@ts-ignore`, `#[allow]`) in those files. For a diff: every one the diff adds or changes, plus existing ones in the functions or blocks it changes (a code change can make an unchanged comment stale). Skip shebangs, encoding lines, licence and SPDX headers, and functional directives (`// @ts-check`, type pragmas). A comment of several consecutive lines is one item, at its first line.
 2. **Classify each** as exactly one of:
