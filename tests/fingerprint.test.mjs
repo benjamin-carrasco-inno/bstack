@@ -24,8 +24,8 @@ function fixtureRepo() {
   return execFileSync(process.execPath, [MAKE_REPO, path.join(root, 'repo')], { encoding: 'utf8' }).trim();
 }
 
-function fingerprintLine(cwd) {
-  const res = runScript(cwd);
+function fingerprintLine(cwd, env) {
+  const res = runScript(cwd, env);
   assert.equal(res.status, 0, res.stderr);
   const last = res.stdout.trimEnd().split('\n').pop();
   assert.match(last, /^fingerprint: [0-9a-f]{64}$/);
@@ -79,10 +79,83 @@ test('a new untracked file changes it, an ignored one does not', () => {
   assert.notEqual(fingerprintLine(work).line, before);
 });
 
-test('a nested repository shows up as a directory entry', () => {
+const git = (work, ...args) => execFileSync('git', ['-C', work, ...args], { stdio: 'pipe' });
+
+function assertChangedBy(act, env) {
   const work = fixtureRepo();
-  execFileSync('git', ['init', '-q', path.join(work, 'vendor', 'nested')]);
-  assert.match(fingerprintLine(work).out, /^dir vendor\/nested\/$/m);
+  const before = fingerprintLine(work, env).line;
+  act(work);
+  assert.notEqual(fingerprintLine(work, env).line, before);
+}
+
+test('staging every change changes it', () => {
+  assertChangedBy(work => git(work, 'add', '-A'));
+});
+
+test('a mode change in the index alone changes it', () => {
+  assertChangedBy(work => git(work, 'update-index', '--chmod=+x', 'src/cart.mjs'));
+});
+
+test('switching to a new branch on the same commit changes it', () => {
+  assertChangedBy(work => git(work, 'switch', '-q', '-c', 'other'));
+});
+
+test('detaching HEAD on the same commit changes it', () => {
+  assertChangedBy(work => git(work, 'switch', '-q', '--detach'));
+});
+
+test('marking a file skip-worktree changes it', () => {
+  assertChangedBy(work => git(work, 'update-index', '--skip-worktree', 'src/cart.mjs'));
+});
+
+test('an info/exclude pattern that hides a new file changes it', () => {
+  assertChangedBy(work => {
+    fs.appendFileSync(path.join(work, '.git', 'info', 'exclude'), '\nsrc/evil.mjs\n');
+    fs.writeFileSync(path.join(work, 'src', 'evil.mjs'), 'export default 1;\n');
+  });
+});
+
+test('a core.excludesFile pattern that hides a new file changes it', () => {
+  const excludes = path.join(scratch(), 'ignore');
+  fs.writeFileSync(excludes, '*.log\n');
+  assertChangedBy(work => {
+    git(work, 'config', 'core.excludesFile', excludes);
+    fs.appendFileSync(excludes, 'src/evil.mjs\n');
+    fs.writeFileSync(path.join(work, 'src', 'evil.mjs'), 'export default 1;\n');
+  });
+});
+
+test('a pattern in the default global ignore file that hides a new file changes it', () => {
+  const xdg = scratch();
+  fs.mkdirSync(path.join(xdg, 'git'));
+  const env = { ...process.env, XDG_CONFIG_HOME: xdg };
+  assertChangedBy(work => {
+    fs.writeFileSync(path.join(xdg, 'git', 'ignore'), 'src/evil.mjs\n');
+    fs.writeFileSync(path.join(work, 'src', 'evil.mjs'), 'export default 1;\n');
+  }, env);
+});
+
+test('an edit inside a nested repository changes it, and the nested repository is listed by its path', () => {
+  const work = fixtureRepo();
+  const nested = path.join(work, 'vendor', 'nested');
+  execFileSync('git', ['init', '-q', nested]);
+  fs.writeFileSync(path.join(nested, 'a.js'), '// original comment\n');
+  const before = fingerprintLine(work).line;
+  fs.writeFileSync(path.join(nested, 'a.js'), '// edited by critic\n');
+  const edited = fingerprintLine(work);
+  assert.notEqual(edited.line, before);
+  assert.match(edited.out, /^repo vendor\/nested\/$/m);
+});
+
+test('a worktree created inside the checkout and removed again leaves it equal', () => {
+  const work = fixtureRepo();
+  const before = fingerprintLine(work).line;
+  const agent = path.join(work, '.claude', 'worktrees', 'agent-x');
+  git(work, 'worktree', 'add', '-q', '-b', 'worktree-agent-x', agent);
+  fs.writeFileSync(path.join(agent, 'scratch.txt'), 'critic notes\n');
+  git(work, 'worktree', 'remove', '--force', agent);
+  git(work, 'branch', '-D', 'worktree-agent-x');
+  assert.equal(fingerprintLine(work).line, before);
 });
 
 test('it fails without output outside a git repository', () => {
