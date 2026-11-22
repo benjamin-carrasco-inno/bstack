@@ -1,6 +1,6 @@
 ---
 name: audit
-description: Review and clean up an existing repository end to end. Finds real bugs, data and security risks, broken contracts, missing checks and slop, proves each finding, and lands the fixes as small gated PRs. Use for "review this repo", "find fejl", "ryd op", "gennemgå repoet", or before building on code you did not write.
+description: Review and clean up a whole repository. Finds real bugs, data and security risks, broken contracts, missing checks and slop, proves each finding, and lands the fixes as small gated PRs. Use for "review this repo", "find fejl", "ryd op", "gennemgå repoet", or before building on code you did not write.
 ---
 
 # Audit

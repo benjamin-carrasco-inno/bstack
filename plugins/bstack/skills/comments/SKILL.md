@@ -12,7 +12,7 @@ description: Clean up comments without letting the author judge them. Spawns the
 - No argument: the diff against the base branch, including the working tree (`git diff $(git merge-base origin/<base> HEAD)`) and untracked files (`git ls-files --others --exclude-standard`).
 - Paths, or "the whole repo": those files.
 
-For a diff, the comments in scope are those it adds or changes, plus existing ones in the changed files that name code the diff changes or removes (a code change can make an unchanged comment stale).
+For a diff, the comments in scope are those it adds or changes, plus existing ones in the changed files that name code the diff changes or removes.
 
 Record now: `git status --porcelain`, and the result of the repo's tests and linters.
 

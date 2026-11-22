@@ -1,6 +1,6 @@
 ---
 name: triage
-description: Sort incoming GitHub issues (bug reports and requests from the user or colleagues) into work an agent can take. Checks the claim, finds duplicates and work already done, and writes the acceptance criteria. Use for "triage", "hvad ligger der", "gennemgå issues", "hvad er klar", or an issue without acceptance criteria.
+description: Sort incoming GitHub issues (bug reports and requests) into work an agent can take. Checks the claim, finds duplicates and work already done, and writes the acceptance criteria. Use for "triage", "hvad ligger der", "gennemgå issues", "hvad er klar", or an issue without acceptance criteria.
 ---
 
 # Triage
