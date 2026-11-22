@@ -4,6 +4,18 @@
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'pwsh', 'powershell', 'cmd']);
 const PREFIXES = new Set(['&', 'env', 'command', 'exec', 'time', 'nohup', 'sudo', 'call']);
 
+const HERE_STRING_OPEN = /^@(['"])\r?\n/;
+
+function hereString(text, i) {
+  if (text[i] !== '@') return null;
+  const open = HERE_STRING_OPEN.exec(text.slice(i, i + 4));
+  if (!open) return null;
+  const bodyStart = i + open[0].length;
+  const close = text.indexOf(`\n${open[1]}@`, bodyStart - 1);
+  if (close < 0) return null;
+  return { body: text.slice(bodyStart, close).replace(/\r$/, ''), end: close + 3 };
+}
+
 // Cut a line into segments at ; && || | & and newlines, outside quotes.
 export function splitSegments(line) {
   const segments = [];
@@ -17,6 +29,8 @@ export function splitSegments(line) {
       else if (ch === '\\' && quote === '"' && i + 1 < line.length) cur += line[++i];
       continue;
     }
+    const here = hereString(line, i);
+    if (here) { cur += line.slice(i, here.end); i = here.end - 1; continue; }
     if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
     if (ch === '\n' || ch === '\r' || ch === ';') { segments.push(cur); cur = ''; continue; }
     if (ch === '|') { if (line[i + 1] === '|') i++; segments.push(cur); cur = ''; continue; }
@@ -47,6 +61,8 @@ export function tokenize(segment) {
       cur += ch;
       continue;
     }
+    const here = hereString(segment, i);
+    if (here) { cur += here.body; started = true; i = here.end - 1; continue; }
     if (ch === '"' || ch === "'") { quote = ch; started = true; continue; }
     if (/\s/.test(ch)) { if (started) { words.push(cur); cur = ''; started = false; } continue; }
     cur += ch;

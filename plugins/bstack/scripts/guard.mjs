@@ -2,13 +2,16 @@
 // PreToolUse guard for Bash, PowerShell, file writes and MCP tools. It blocks what a rule in prose
 // cannot hold: pushes to the default branch, skipped hooks, force-pushes, rebasing pushed branches,
 // merges without green CI and a reviewer verdict for the head SHA, merges through side doors
-// (gh api, MCP), and forged verdicts. Exit 2 with a message that names the right alternative.
+// (gh api, MCP), forged verdicts, and commits that add comment lines over a repo's comment baseline.
+// Exit 2 with a message that names the right alternative.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commandsIn, parseGit } from './lib/shell.mjs';
 import { MARKER, latestFor } from './lib/verdicts.mjs';
+import { commentRatchet } from './lib/ratchet.mjs';
 import { riskTier, readRiskPaths } from './risk-tier.mjs';
 
 const DEFAULT_BRANCH = /^(main|master)$/;
@@ -23,11 +26,49 @@ export function decide(input, deps) {
   if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(tool)) return writeRule(input.tool_input ?? {}, deps);
   if (tool !== 'Bash' && tool !== 'PowerShell') return null;
   const line = String(input.tool_input?.command ?? '');
-  for (const c of commandsIn(line)) {
-    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
+  const commands = located(commandsIn(line), cwd);
+  for (const [k, c] of commands.entries()) {
+    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
     if (reason) return reason;
   }
   return null;
+}
+
+const DIR_MOVES = {
+  cd: 'go', chdir: 'go', 'set-location': 'go', sl: 'go',
+  pushd: 'push', 'push-location': 'push',
+  popd: 'pop', 'pop-location': 'pop',
+};
+const HOME = /^~(?=$|[\\/])/;
+
+function located(commands, start) {
+  let here = start;
+  let previous = null;
+  const stack = [];
+  return commands.map(c => {
+    const at = { ...c, cwd: here };
+    const move = DIR_MOVES[c.cmd];
+    const target = dirTarget(c.args);
+    if (move === 'pop') {
+      if (stack.length) [previous, here] = [here, stack.pop()];
+    } else if (move && target === '-') {
+      if (previous) [previous, here] = [here, previous];
+    } else if (move) {
+      if (move === 'push') stack.push(here);
+      previous = here;
+      here = resolvedDir(target, here);
+    }
+    return at;
+  });
+}
+
+function dirTarget(args) {
+  return args.find(a => a === '-' || (!a.startsWith('-') && !/^\/d$/i.test(a)));
+}
+
+function resolvedDir(target, here) {
+  if (target === undefined || target.includes('$')) return here;
+  return path.resolve(here, target.replace(HOME, os.homedir()));
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
@@ -68,12 +109,13 @@ function agentRule(c, agent) {
 }
 
 // --- git ------------------------------------------------------------------------------------------
-function gitRule(c, cwd, deps) {
+function gitRule(c, cwd, deps, line) {
   const { dir, sub, rest } = parseGit(c.args);
   const repo = dir ? path.resolve(cwd, dir) : cwd;
   if (rest.includes('--no-verify') || (sub === 'commit' && rest.some(a => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--')))) {
     return 'Do not skip git hooks (--no-verify / -n). Fix what the hook reports; it is part of the safety net.';
   }
+  if (sub === 'commit') return commentRatchet({ repo: dir ? path.resolve(c.cwd, dir) : c.cwd, rest, ...line }, deps);
   if (sub === 'push') return pushRule(rest, repo, deps);
   if (sub === 'rebase' && !rest.some(a => /^--(abort|continue|skip|quit|edit-todo|show-current-patch)$/.test(a))) return rebaseRule(repo, deps);
   if (sub === 'pull' && rest.some(a => a === '--rebase' || a === '-r' || a.startsWith('--rebase='))) return rebaseRule(repo, deps);
@@ -255,8 +297,12 @@ function writeRule(input, deps) {
 
 // --- wiring -----------------------------------------------------------------------------------------
 export const realDeps = {
-  git: (cwd, args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15000 }),
+  git: (cwd, args, { env, input, buffer, timeout = 15000 } = {}) => execFileSync('git', ['-C', cwd, ...args], {
+    encoding: buffer ? undefined : 'utf8', input, env: env ? { ...process.env, ...env } : undefined, timeout, maxBuffer: 256 << 20,
+    stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+  }),
   gh: (cwd, args) => execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 45000, maxBuffer: 64 << 20 }),
+  exists: file => fs.existsSync(file),
   readFile: file => { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } },
   insideBstackSource: file => {
     let dir = path.dirname(path.resolve(file));
