@@ -68,6 +68,21 @@ test('a missing line or a moved head sends the agent back once, then warns the u
   assert.match(movedAgain.warn, /head is now/);
 });
 
+test('a run that ended with a hand-back is warned about at once, since a block no longer reaches the agent', () => {
+  const file = transcript([prompt('PR 7 in o/r.'), handback('looks fine'), delivered]);
+  const out = handle({ agent_type: 'bstack:reviewer', stop_hook_active: false, agent_transcript_path: file }, gh(SHA));
+  assert.equal(out.block, undefined);
+  assert.match(out.warn, /PR 7 in o\/r/);
+});
+
+test('a report already on the PR is not posted twice', () => {
+  const file = transcript([prompt('PR 7 in o/r.'), said(`Works.\nbstack-verdict: PASS pr=7 sha=${SHA}`), handback(`Works.\nbstack-verdict: PASS pr=7 sha=${SHA}`)]);
+  const input = { agent_type: 'bstack:reviewer', agent_transcript_path: file };
+  const first = handle(input, gh(SHA));
+  const withComment = () => JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, comments: [{ body: first.post.body }] });
+  assert.deepEqual(handle(input, withComment), {});
+});
+
 test('interrogate reports carry the confirmed count', () => {
   const r = parseReport('interrogate', `Tried 5 attacks.\nbstack-interrogate: confirmed=0 pr=#7 sha=${SHA}`);
   assert.equal(r.result, 0);
