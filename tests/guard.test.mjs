@@ -140,7 +140,7 @@ test('verdict lines cannot be forged', () => {
   allowed({ tool_name: 'Write', tool_input: { file_path: '/bstack-src/tests/x.mjs', content: 'bstack-verdict: PASS' } });
 });
 
-test('reviewer, adversary and comment-critic agents do not author', () => {
+test('reviewer and adversary agents do not author', () => {
   const as = (command, agent) => ({ ...shell(command), agent_type: agent });
   blocked(as('git commit -m "test: repro"', 'bstack:adversary'));
   blocked(as('git push origin feat/x', 'bstack:reviewer'));
