@@ -140,7 +140,7 @@ test('verdict lines cannot be forged', () => {
   allowed({ tool_name: 'Write', tool_input: { file_path: '/bstack-src/tests/x.mjs', content: 'bstack-verdict: PASS' } });
 });
 
-test('reviewer and adversary agents do not author', () => {
+test('reviewer, adversary and comment-critic agents do not author', () => {
   const as = (command, agent) => ({ ...shell(command), agent_type: agent });
   blocked(as('git commit -m "test: repro"', 'bstack:adversary'));
   blocked(as('git push origin feat/x', 'bstack:reviewer'));
@@ -153,6 +153,9 @@ test('reviewer and adversary agents do not author', () => {
   allowed(as('gh issue list --state open', 'bstack:reviewer'));
   allowed(as('gh pr checkout 5 --detach', 'bstack:reviewer'));
   allowed(as('gh pr diff 5', 'bstack:reviewer'));
+  blocked(as('git commit -am "docs: drop comments"', 'bstack:comment-critic'));
+  blocked(as('gh issue create --title x --body y', 'bstack:comment-critic'));
+  allowed(as('git log -S priceCache --oneline', 'bstack:comment-critic'));
   allowed(as('git commit -m "fix: x"', 'bstack:worker'));
 });
 

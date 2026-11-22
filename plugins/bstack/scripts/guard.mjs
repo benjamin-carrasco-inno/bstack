@@ -13,7 +13,7 @@ import { riskTier, readRiskPaths } from './risk-tier.mjs';
 
 const DEFAULT_BRANCH = /^(main|master)$/;
 const READ_ONLY = new Set(['grep', 'rg', 'findstr', 'select-string', 'sls', 'cat', 'type', 'get-content', 'gc', 'jq', 'less', 'head', 'tail', 'wc']);
-const NO_AUTHORING_AGENTS = /(^|:)(reviewer|adversary)$/;
+const NO_AUTHORING_AGENTS = /(^|:)(reviewer|adversary|comment-critic)$/;
 
 export function decide(input, deps) {
   const tool = String(input.tool_name ?? '');
@@ -56,7 +56,7 @@ function bodyFiles(args) {
   return files.filter(f => f && f !== '-' && !f.includes('=@'));
 }
 
-// --- reviewer and adversary judge; they never author ---------------------------------------------
+// --- reviewer, adversary and comment-critic judge; they never author ---------------------------------------------
 function agentRule(c, agent) {
   if (!NO_AUTHORING_AGENTS.test(agent)) return null;
   const git = c.cmd === 'git' ? parseGit(c.args).sub : '';
