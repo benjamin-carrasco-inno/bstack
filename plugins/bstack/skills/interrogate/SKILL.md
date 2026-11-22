@@ -13,4 +13,4 @@ description: Adversarial review for tier 2 changes (data writes, schema, migrati
 4. **Each confirmed finding** goes through the bug-fix playbook: its reproduction becomes the failing test. Push, then run `bstack:reviewer` again. Run interrogate again only if the fix touched tier 2 code.
 5. `confirmed=0`, with the list of what was tried, is a valid and useful result.
 
-**Cost:** one Fable run per tier 2 head. Add a second adversary on another model only if a missed bug later shows the need, and record that through `bstack:correct`.
+**Cost:** one Opus run per tier 2 head. For a large architecture change, or other work this big where getting it right the first time matters most, spawn it with `model: fable` instead. Add a second adversary on another model only if a missed bug later shows the need, and record that through `bstack:correct`.

@@ -1,7 +1,7 @@
 ---
 name: adversary
 description: Tries to break a tier 2 pull request (data writes, schema, migrations, side effects, auth, concurrency, importers). Writes reproductions and fixes nothing; a hook posts the confirmed count on the PR. Started by the bstack:interrogate skill.
-model: fable
+model: opus
 effort: medium
 isolation: worktree
 tools: Read, Grep, Glob, Bash, PowerShell, Write, Edit

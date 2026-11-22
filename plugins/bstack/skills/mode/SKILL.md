@@ -46,7 +46,7 @@ A repo can raise paths to tier 2 with globs in `.github/risk-paths.txt`. Add one
 
 Weekly quota is real. Spend where risk is.
 - Main session: the user's choice (default Opus, medium). Raise to high for tier 2 work, not by default. Never xhigh or max by default.
-- `bstack:reviewer` runs Sonnet and `bstack:adversary` runs Fable; their frontmatter sets it.
+- `bstack:reviewer` runs Sonnet and `bstack:adversary` runs Opus; their frontmatter sets it. Spawn the adversary with `model: fable` only for a large architecture change or work this big, where getting it right the first time matters most.
 - Mechanical work (polling CI, bulk renames, reformatting): a Haiku subagent.
 - Fable for implementation only when the user names it, or after Opus failed twice on the same task.
 
