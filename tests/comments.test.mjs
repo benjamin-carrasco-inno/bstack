@@ -102,6 +102,7 @@ test('a long single line with many strings counts in linear time', () => {
   assert.deepEqual(countSource('a.py', 'a="x";b="""y""";'.repeat(90000)), { comments: 0, suppressions: 0 });
   assert.deepEqual(countSource('a.js', `${'x=[/['.repeat(90000)}\n`), { comments: 0, suppressions: 0 });
   assert.deepEqual(countSource('a.py', 'f"{'.repeat(90000)), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.js', '`${'.repeat(90000)), { comments: 0, suppressions: 0 });
   assert.deepEqual(countSource('a.sh', 'a=$((b << c))\n'.repeat(75000)), { comments: 0, suppressions: 0 });
   assert.deepEqual(countSource('a.sh', 'cat <<NOPE\n'.repeat(90000)), { comments: 0, suppressions: 0 });
   assert.ok(performance.now() - started < 2000, `took ${Math.round(performance.now() - started)} ms`);
@@ -198,6 +199,86 @@ test('the encoding-line exemption applies only to Python', () => {
   assert.deepEqual(countSource('a.js', '// Output encoding: utf-8 is assumed\nx = 1\n'), { comments: 1, suppressions: 0 });
   assert.deepEqual(countSource('a.sh', '#!/bin/sh\n# coding: utf-8\ntrue\n'), { comments: 1, suppressions: 0 });
   assert.deepEqual(countSource('a.py', '#!/usr/bin/env python3\n# vim: set fileencoding=utf-8 :\nx = 1\n'), { comments: 0, suppressions: 0 });
+});
+
+test('a replacement field in a JS template literal or a Python f- or t-string follows code rules', () => {
+  const at = (file, text, comments) => assert.deepEqual(countSource(file, text), { comments, suppressions: 0 }, text);
+  at('a.js', "const s = `${a ? `// ${a}` : ''}`;\nconst t = 1;\n// real comment\nconst u = `x`;\n", 1);
+  at('a.js', "const s = `${a ? `// ${a}` : ''}`;\nconst t = 1;\n", 0);
+  at('a.js', "const s = `${a ? `/* x */` : ''}`;\nconst t = 1;\n", 0);
+  at('a.js', "const s = `${`'`}`; // c\nconst x = 'y';\n", 1);
+  at('a.js', "const s = `${`${`${'`'}`}`}`; // c\n", 1);
+  at('a.js', "const s = `${ {a: '`'}.a } // not`; // c\n", 1);
+  at('a.js', "const s = `a ${x.replace(/[`}]/g, '')} // not`; // c\n", 1);
+  at('a.js', "const s = `${'}'} // not`; // c\n", 1);
+  at('a.js', 'const s = `\\${a // not}`; // c\n', 1);
+  at('a.js', 'const s = `${a /* c */}`;\n', 1);
+  at('a.js', 'const s = `${a // c\n}`;\n', 1);
+  at('a.py', 't"{"#"}"\n', 0);
+  at('a.py', 'a = f"{x:#x} {y!r:>{w}}"  # c\n', 1);
+  at('a.py', 'a = f"{x:\'>10}"  # c\nb = 1  # d\n', 2);
+  at('a.py', 'a = f"""{x  # c\n}"""\n', 1);
+});
+
+test('only a real licence statement exempts, and only its own run of line comments or its own block', () => {
+  const at = (file, text, comments) => assert.deepEqual(countSource(file, text), { comments, suppressions: 0 }, text);
+  at('a.py', '# Copyright 2024 X\n"""Parse the config.\n\nLong explanation.\n"""\nx = 1\n', 4);
+  at('a.js', '// Copyright 2024 X\n/**\n * Explains the module.\n */\nexport const x = 1;\n', 3);
+  at('a.py', '# Bump the copyright year in every file.\n# Walks the tree and rewrites headers.\nimport os\n', 2);
+  at('a.py', '# Copyright 2024 X\n# Licensed under the Apache License, Version 2.0\n# you may not use this file except in compliance.\n', 0);
+  at('a.py', '# Copyright 2024 X\n"""Doc."""\n# More notes.\nx = 1\n', 2);
+  at('a.py', '# Copyright holders may reuse this.\nx = 1\n', 1);
+  at('a.py', '"""Copyright 2024 X. All rights reserved."""\nx = 1\n', 0);
+  at('a.js', '/* Copyright (c) 2024 X */\n// Explains the module.\nexport const x = 1;\n', 1);
+  at('a.js', '/*\n * © 2019-2024 X\n * Released as is.\n */\n/** Module doc. */\nexport const x = 1;\n', 1);
+  at('a.js', '/* Bump the copyright year. */\nx = 1;\n', 1);
+  at('a.js', '// Permission is hereby granted, free of charge.\n/** @module x */\n', 1);
+  at('a.css', '/* Copyright © 2024 X */\n/* Layout for the header. */\n.a {}\n', 1);
+  at('a.html', '<!-- All rights reserved. -->\n<!-- Page layout. -->\n<p></p>\n', 1);
+});
+
+const SUPPRESSION_FAMILIES = {
+  'py nosec': [['a.py', 'run(x, shell=True)  # nosec\n'], ['a.py', 'assert x  # nosec B101\n']],
+  'py coverage pragma': [['a.py', 'def f():  # pragma: no cover\n    pass\n'], ['a.py', 'if x:  # pragma: no branch\n    pass\n'], ['a.py', 'def g():  # pragma nocover\n    pass\n']],
+  'py formatter and pylint file skips': [['a.py', 'x = [1,2]  # fmt: skip\n'], ['a.py', '# fmt: off\nx = 1\n'], ['a.py', '# isort: skip_file\n'], ['a.py', '# yapf: disable\n'], ['a.py', '# pylint: skip-file\n']],
+  'css stylelint-disable': [['a.css', '/* stylelint-disable */\na { color: red; }\n'], ['a.css', '/* stylelint-disable-next-line color-named */\na { color: red; }\n'], ['a.css', 'a { color: red; } /* stylelint-disable-line */\n']],
+  'js eslint inline rule off': [['a.js', '/* eslint no-console: off */\n'], ['a.js', '/* eslint no-console: "off" */\n'], ['a.js', '/* eslint no-console: 0 */\n'], ['a.js', "/* eslint quotes: ['off'] */\n"], ['a.js', '/* eslint semi: 2, no-console: off */\n']],
+  'js biome-ignore': [['a.js', '// biome-ignore lint: x\ndebugger;\n'], ['a.js', '// biome-ignore lint/suspicious/noDebugger: x\ndebugger;\n'], ['a.js', '// biome-ignore-all lint: generated\n'], ['a.js', '// biome-ignore format: aligned\n']],
+  'js coverage ignore': [['a.js', '/* istanbul ignore next */\n'], ['a.js', '/* istanbul ignore else */\n'], ['a.js', '/* c8 ignore next */\n'], ['a.js', '/* c8 ignore start */\n'], ['a.js', '/* v8 ignore next */\n'], ['a.js', '/* node:coverage ignore next */\n'], ['a.js', '/* node:coverage disable */\n']],
+  'prettier-ignore': [['a.js', '// prettier-ignore\nconst m = [1,0,\n  0,1];\n'], ['a.css', '/* prettier-ignore */\n.a {}\n'], ['a.html', '<!-- prettier-ignore -->\n<p></p>\n'], ['a.yml', '# prettier-ignore\na: 1\n']],
+  'other js linter ignores': [['a.js', '// oxlint-disable-next-line no-debugger\n'], ['a.ts', '// deno-lint-ignore no-explicit-any\n'], ['a.ts', '// deno-lint-ignore-file\n']],
+  'rs expect, cfg_attr allow and rustfmt skip': [['a.rs', '#[expect(dead_code)]\nfn f() {}\n'], ['a.rs', '#![expect(unused)]\n'], ['a.rs', '#[cfg_attr(test, allow(dead_code))]\nfn f() {}\n'], ['a.rs', '#[cfg_attr(feature = "x", expect(unused))]\n'], ['a.rs', '#[rustfmt::skip]\nfn f() {}\n']],
+};
+
+for (const [family, cases] of Object.entries(SUPPRESSION_FAMILIES)) {
+  test(`${family} is a suppression`, () => {
+    for (const [file, text] of cases) assert.deepEqual(countSource(file, text), { comments: 0, suppressions: 1 }, text);
+  });
+}
+
+const FUNCTIONAL_DIRECTIVES = {
+  'js sourceMappingURL': [['a.js', 'x();\n//# sourceMappingURL=a.js.map\n'], ['a.js', 'x();\n//@ sourceMappingURL=a.js.map\n'], ['a.js', 'x();\n//# sourceURL=a.js\n']],
+  'css sourceMappingURL': [['a.css', 'a {}\n/*# sourceMappingURL=a.css.map */\n']],
+  'js global and exported block comments': [['a.js', '/* global foo */\n'], ['a.js', '/* globals foo, bar: writable */\n'], ['a.js', '/*global foo*/\n'], ['a.js', '/* exported foo */\n']],
+  'js eslint rule config that is not off': [['a.js', '/* eslint quotes: ["error", "double"] */\n'], ['a.js', '/* eslint no-console: 2 */\n']],
+  'js jsx pragmas': [['a.jsx', '/** @jsx h */\n'], ['a.jsx', '/** @jsxImportSource preact */\n'], ['a.jsx', '// @jsxRuntime classic\n']],
+  'js bundler annotations': [['a.js', 'const a = /*#__PURE__*/ f();\n'], ['a.js', 'const a = /* @__PURE__ */ f();\n'], ['a.js', "import(/* webpackChunkName: \"a\" */ './a');\n"]],
+  'sh shellcheck settings': [['a.sh', '# shellcheck enable=require-variable-braces\n'], ['a.sh', '# shellcheck source-path=SCRIPTDIR\n']],
+  'the end of a suppressed region': [['a.js', '/* eslint-enable */\n'], ['a.css', '/* stylelint-enable */\n'], ['a.js', '/* c8 ignore stop */\n'], ['a.js', '/* node:coverage enable */\n'], ['a.py', '# fmt: on\n'], ['a.py', '# pylint: enable=invalid-name\n'], ['a.yml', '# yamllint enable\n']],
+};
+
+for (const [family, cases] of Object.entries(FUNCTIONAL_DIRECTIVES)) {
+  test(`${family} is an exempt directive`, () => {
+    for (const [file, text] of cases) assert.deepEqual(countSource(file, text), { comments: 0, suppressions: 0 }, text);
+  });
+}
+
+test('directive words in prose or in a line comment still count as comments', () => {
+  const cases = [
+    ['a.js', '// global state is shared\n'], ['a.js', '// exported for tests\n'], ['a.js', '/* globalThis is used */\n'],
+    ['a.py', '# nosecurity review yet\n'], ['a.js', '// prettier ignores this file elsewhere\n'], ['a.js', '/* eslint is configured in the root */\n'],
+  ];
+  for (const [file, text] of cases) assert.deepEqual(countSource(file, text), { comments: 1, suppressions: 0 }, text);
 });
 
 test('a UTF-16 file is decoded by its byte order mark', () => {

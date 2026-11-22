@@ -15,7 +15,8 @@ export const SYNTAX = {
   py: {
     line: ['#'],
     strings: [doc('"""'), doc("'''"), str('"'), str("'")],
-    prefixes: /^[rbuf]{1,2}$/i,
+    prefixes: /^[rbuft]{1,2}$/i,
+    field: { prefix: /[ft]/i, open: '{', literal: '{{', spec: ':' },
     docstrings: true,
     directives: [/^type:/, /^(pyright|mypy):/, /^-\*-.*-\*-$/],
     encoding: /coding[:=]\s*[-\w.]+/,
@@ -23,12 +24,16 @@ export const SYNTAX = {
   js: {
     line: ['//'],
     block: [['/*', '*/']],
-    strings: [str('`', '\\', true), str('"'), str("'")],
+    strings: [{ ...str('`', '\\', true), field: { open: '${' } }, str('"'), str("'")],
     regex: true,
     lineNotAfter: /[a-z]:$/i,
-    directives: [/^@ts-check\b/, /^@flow\b/, /^\/\s*<reference\b/, /^eslint-env\b/],
+    directives: [
+      /^@ts-check\b/, /^@flow\b/, /^\/\s*<reference\b/, /^eslint-env\b/, /^[#@]\s*source(Mapping)?URL=/,
+      /^@jsx(Frag|ImportSource|Runtime)?\s/, /^[#@]__(PURE|NO_SIDE_EFFECTS)__$/, /^webpack[A-Z]\w*\s*:/,
+    ],
+    blockDirectives: [/^(globals?|exported)\s/, /^eslint\s+[\w@/-]+\s*:/],
   },
-  css: { block: [['/*', '*/']], strings: [str('"'), str("'")] },
+  css: { block: [['/*', '*/']], strings: [str('"'), str("'")], directives: [/^#\s*sourceMappingURL=/] },
   html: { block: [['<!--', '-->']], strings: [] },
   sh: {
     line: ['#'],
@@ -39,7 +44,7 @@ export const SYNTAX = {
       str('"', '\\', true),
       str("'", null, true),
     ],
-    directives: [/^shellcheck\s+(shell|source)=/],
+    directives: [/^shellcheck\s+(shell|source|source-path|enable|external-sources)=/],
   },
   ps1: {
     line: ['#'],
@@ -70,7 +75,7 @@ export const SYNTAX = {
       pattern(/'(?:[^'\\\n]|\\(?:x[0-9a-f]{2}|u\{[0-9a-f]{1,6}\}|.))'/iuy, () => ''),
     ],
     prefixes: /^b$/,
-    codeSuppression: /^\s*#!?\[allow\(/,
+    codeSuppression: /^\s*#!?\[((allow|expect)\(|rustfmt::skip\b|cfg_attr\(.*\b(allow|expect)\()/,
   },
 };
 
@@ -82,15 +87,24 @@ export const EXTENSIONS = {
 };
 
 export const SUPPRESSIONS = [
-  /^((ruff|flake8):\s*)?noqa\b/i, /^type:\s*ignore\b/, /^pyright:\s*ignore\b/, /^pylint:\s*disable/, /^eslint-disable/,
+  /^((ruff|flake8):\s*)?noqa\b/i, /^type:\s*ignore\b/, /^pyright:\s*ignore\b/, /^pylint:\s*(disable|skip-file)/, /^(eslint|oxlint)-disable/,
   /^@ts-(ignore|expect-error|nocheck)\b/, /^shellcheck\s+disable=/, /^yamllint\s+disable/,
   /^mypy:\s*(ignore-errors|disable-error-code)\b/, /^pyright:.*\breport\w+\s*=\s*(false|none)\b/i,
+  /^nosec\b/, /^pragma[:\s]?\s*no\s*(cover|branch)\b/i, /^(fmt|yapf|isort):\s*(off|skip|disable|skip_file)\b/,
+  /^stylelint-disable/, /^eslint\s+(.*[\s,])?[\w@/-]+\s*:\s*\[?\s*(["']?)(off|0)\2(?![\w.])/,
+  /^biome-ignore(-all|-start)?\s+(lint|format|assist|syntax)\b/, /^prettier-ignore\b/, /^deno-lint-ignore(-file)?\b/,
+  /^(istanbul\s+ignore\s+(next|if|else|file)|(c8|v8)\s+ignore\s+(next|start|file)|node:coverage\s+(ignore\s+next|disable))\b/,
 ];
-const LICENCE = /copyright\b|\(c\)\s*\d{4}|SPDX-License-Identifier|licensed under|all rights reserved|permission is hereby granted/i;
+const RESUMES = [
+  /^(eslint|oxlint|stylelint)-enable\b/, /^(c8|v8)\s+ignore\s+stop\b/, /^node:coverage\s+enable\b/, /^biome-ignore-end\b/,
+  /^(fmt|yapf|isort):\s*(on|enable)\b/, /^pylint:\s*enable\b/, /^yamllint\s+enable\b/,
+];
+const LICENCE = /copyright\s*(\(c\)|©)?\s*\d{4}|(\(c\)|©)\s*\d{4}|SPDX-License-Identifier|licensed under|all rights reserved|permission is hereby granted/i;
 const REGEX_AFTER = new Set('(,=:[!&|?{};+-*%>~^');
 const REGEX_AFTER_WORD = new Set(['return', 'typeof', 'case', 'do', 'else', 'in', 'of', 'new', 'delete', 'void', 'throw', 'yield', 'await']);
 const DOC_TAIL = /[ \t]*(#|\n|$)/y;
-const FSTRING_LEVELS = 150;
+const FIELD_LEVELS = 150;
+const SPEC = { escape: null, multiline: true };
 
 export function decodeSource(buf) {
   if (buf[0] === 0xff && buf[1] === 0xfe) return buf.subarray(2).toString('utf16le');
@@ -158,8 +172,8 @@ function findComments(src, syn) {
   };
 
   const found = [];
-  let code = false, prev = '', word = '', lastEnd = -1, regexFailsBefore = -1, depth = 0;
-  const push = (from, stop, body) => found.push({ from: lineOf(from), to: lineOf(Math.max(from, stop - 1)), body, header: !code });
+  let code = false, prev = '', word = '', lastEnd = -1, regexFailsBefore = -1, depth = 0, fieldLevel = 0;
+  const push = (from, stop, body, kind) => found.push({ from: lineOf(from), to: lineOf(Math.max(from, stop - 1)), body, kind, header: !code });
   const operand = () => prev === 's' || prev === ')' || prev === ']' || (prev === 'w' && !REGEX_AFTER_WORD.has(word));
   const isDocstring = (token, stop) => {
     DOC_TAIL.lastIndex = stop;
@@ -172,38 +186,38 @@ function findComments(src, syn) {
     return close.test(src) ? close.lastIndex : -1;
   };
 
-  const skipString = (k, s, close, fmt, level = 0) => {
+  const skipString = (k, s, close, field) => {
     while (k < n) {
       const end = closesAt(close, k);
       if (end >= 0) return end;
       if (src[k] === '\n' && !s.multiline) return k;
-      if (fmt && src[k] === '{' && level < FSTRING_LEVELS) k = src[k + 1] === '{' ? k + 2 : skipField(k + 1, level + 1);
+      if (field?.literal && src.startsWith(field.literal, k)) k += field.literal.length;
+      else if (field && src.startsWith(field.open, k) && fieldLevel < FIELD_LEVELS) k = skipField(k + field.open.length, field);
       else k += src[k] === s.escape ? 2 : 1;
     }
     return n;
   };
 
-  const skipField = (k, level) => {
-    let open = 1;
-    while (k < n && open) {
-      let j = k;
-      while (j < n && /[\w$]/.test(src[j])) j++;
-      const w = src.slice(k, j);
-      const nested = (j === k || syn.prefixes?.test(w)) && stringAt(j);
-      if (nested) k = skipString(nested.body, nested.s, nested.close, /f/i.test(w), level);
-      else if (j > k) k = j;
-      else {
-        open += src[k] === '{' ? 1 : src[k] === '}' ? -1 : 0;
-        k++;
-      }
+  const skipField = (k, field) => {
+    const saved = { code, prev, word, depth };
+    fieldLevel++;
+    code = true;
+    prev = '{';
+    while (k < n) {
+      if (/\s/.test(src[k])) k++;
+      else if (depth === saved.depth && src[k] === '}') { k++; break; }
+      else if (depth === saved.depth && src[k] === field.spec) { k = skipString(k + 1, SPEC, '}', field); break; }
+      else k = step(k);
     }
+    fieldLevel--;
+    ({ code, prev, word, depth } = saved);
     return k;
   };
 
-  const readString = (token, { s, body, close }, fmt = false) => {
-    const stop = skipString(body, s, close, fmt);
+  const readString = (token, { s, body, close }, prefix = '') => {
+    const stop = skipString(body, s, close, s.field ?? (syn.field?.prefix.test(prefix) ? syn.field : null));
     if (syn.docstrings && s.doc && isDocstring(token, stop)) {
-      push(token, stop, src.slice(body, Math.max(body, stop - close.length)));
+      push(token, stop, src.slice(body, Math.max(body, stop - close.length)), 'block');
     } else {
       code = true;
       prev = 's';
@@ -251,13 +265,13 @@ function findComments(src, syn) {
     if (block) {
       const close = syn.nestedBlock ? nestedClose(block, i + block[0].length) : src.indexOf(block[1], i + block[0].length);
       const stop = close < 0 ? n : close + block[1].length;
-      push(i, stop, src.slice(i + block[0].length, close < 0 ? n : close));
+      push(i, stop, src.slice(i + block[0].length, close < 0 ? n : close), 'block');
       return stop;
     }
     const line = opener(syn.line, i);
     if (line && !syn.lineNotAfter?.test(src.slice(Math.max(0, i - 2), i))) {
       const stop = lineEnd(i);
-      push(i, stop, src.slice(i + line.length, stop));
+      push(i, stop, src.slice(i + line.length, stop), 'line');
       return stop;
     }
     const quoted = stringAt(i);
@@ -267,7 +281,7 @@ function findComments(src, syn) {
       while (j < n && /[\w$]/.test(src[j])) j++;
       const w = src.slice(i, j);
       const prefixed = syn.prefixes?.test(w) && stringAt(j);
-      if (prefixed) return readString(i, prefixed, /f/i.test(w));
+      if (prefixed) return readString(i, prefixed, w);
       code = true;
       prev = 'w';
       word = w;
@@ -307,7 +321,7 @@ function classify(found, syn) {
   };
   for (const f of found) {
     if (!f.header) break;
-    if (group.length && f.from > group.at(-1).to + 1) flush();
+    if (group.length && (f.kind !== 'line' || group[0].kind !== 'line' || f.from > group.at(-1).to + 1)) flush();
     group.push(f);
   }
   flush();
@@ -315,11 +329,12 @@ function classify(found, syn) {
   const segments = line => (syn.line ?? []).reduce((parts, m) => parts.flatMap(p => p.split(m)), [line]);
   const suppresses = body => segments(firstLine(body)).some(seg => SUPPRESSIONS.some(re => re.test(seg.trimStart())));
   return found.map(f => {
-    const text = f.body.trim();
+    const text = f.body.trim().replace(/^\*+\s*/, '');
     if (suppresses(f.body)) return 'suppression';
     if (licensed.has(f) || /SPDX-License-Identifier/.test(text)) return 'exempt';
     if (f.from < 2 && syn.encoding?.test(text)) return 'exempt';
-    if (syn.directives?.some(re => re.test(text))) return 'exempt';
+    if (syn.directives?.some(re => re.test(text)) || RESUMES.some(re => re.test(text))) return 'exempt';
+    if (f.kind === 'block' && syn.blockDirectives?.some(re => re.test(text))) return 'exempt';
     return 'comment';
   });
 }
