@@ -1,0 +1,11 @@
+# Autonomous run
+
+For "keep going until X", background sessions and runs nobody watches.
+
+1. **Write the stop condition as a checkable predicate**, not a duration: "all tests green and `ruff check` reports 0 errors", "p95 under 200 ms on the fixture", "every finding in the audit list has a merged PR or a stated reason". State it in the first reply.
+2. **One change and one check per round.** Measure before and after. A change that did not move the predicate is reverted, not kept "just in case".
+3. **On a plateau, change approach**: a different hypothesis, a smaller step, a fresh subagent. Never relax the predicate to reach it.
+4. **Side findings go in their own PR**, never folded into the current one.
+5. **Stops still apply**: anything on the stop list in the session rules waits for the user. Collect those questions and keep working on everything else.
+6. **Leave a trail without a log file.** When quota runs out or the session is stopped, post a short status as a PR comment (how far, the next step, open questions), so a new session can pick up from the PR alone.
+7. Every change lands through [ship](ship.md), gates included. A run is done when the predicate holds on main.

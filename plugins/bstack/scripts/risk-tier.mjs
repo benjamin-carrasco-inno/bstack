@@ -1,0 +1,121 @@
+#!/usr/bin/env node
+// Derives the risk tier of a change from its unified diff, so the tier is computed, not chosen.
+//   0  docs only                      -> CI
+//   1  code, config, CI, instructions -> CI + reviewer verdict
+//   2  data, schema, side effects, auth, concurrency, importers, weakened checks -> + interrogate
+// Usage: node risk-tier.mjs [--pr <n>] [--base <ref>]   (prints JSON: { tier, reasons })
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const DOCS = /(^|\/)(LICENSE|NOTICE|CHANGELOG|README)(\.[a-z]+)?$|\.(md|rst|txt|adoc)$/i;
+const NOT_DOCS = /(^|\/)(AGENTS|CLAUDE)\.md$|(^|\/)requirements[^/]*\.txt$|(^|\/)\.github\/[^/]+\.txt$|(^|\/)(skills|agents|rules)\//i;
+const CONFIG = /(^|\/)(\.github\/workflows\/|\.claude\/)|(^|\/)(pyproject\.toml|setup\.cfg|ruff\.toml|\.ruff\.toml|pyrightconfig\.json|eslint\.config\.[cm]?js|\.eslintrc[^/]*|Cargo\.toml|clippy\.toml|rustfmt\.toml|package\.json|tsconfig[^/]*\.json|Dockerfile|docker-compose[^/]*\.ya?ml|\.pre-commit-config\.yaml)$/i;
+const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)test_[^/]+\.py$|_test\.(py|go|rs)$|\.(test|spec)\.[cm]?[jt]sx?$/i;
+const CODE = /\.(py|pyi|js|mjs|cjs|ts|tsx|jsx|rs|go|sql|sh|ps1|html|css|vue|svelte)$/i;
+
+const PATH_RULES = [
+  [/(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i, 'schema or migration file'],
+  [/(^|\/)n8n\//i, 'n8n flow code (external consumer)'],
+  [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code'],
+  [/(import|sync|upsert|ingest|backfill)[^/]*\.(py|rs|js|mjs|ts)$/i, 'importer or sync code'],
+];
+
+const ADDED_OR_REMOVED = [
+  [/\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i, 'SQL schema statement'],
+  [/\bDELETE\s+FROM\b|\bTRUNCATE\b|\bUPDATE\s+[\w."]+\s+SET\b|\bINSERT\s+(OR\s+\w+\s+)?INTO\b|\bON\s+CONFLICT\b/i, 'SQL that writes data'],
+  [/\b(os\.remove|os\.unlink|shutil\.rmtree|\.unlink\(|\.rmdir\(|fs\.(rm|rmSync|unlink|unlinkSync|rmdir)\(|remove_file|remove_dir_all)\b/, 'deletes files'],
+  [/\b(requests|httpx|session|client|reqwest|axios)\s*\.\s*(post|put|patch|delete)\s*\(|method\s*[:=]\s*['"](POST|PUT|PATCH|DELETE)['"]|Method::(POST|PUT|PATCH|DELETE)/i, 'outbound call with side effects'],
+  [/\b(smtplib|sendmail|send_mail|lettre|nodemailer|webhook)\b/i, 'mail or webhook'],
+  [/\b(threading|multiprocessing|asyncio\.(Lock|gather|create_task)|tokio::spawn|Mutex|RwLock|BEGIN\s+(IMMEDIATE|EXCLUSIVE))\b/, 'concurrency'],
+];
+
+const WEAKENING_ADDED = [
+  [/pytest\.mark\.(skip|xfail)|@unittest\.skip|#\[ignore\]|\b(it|test|describe)\.skip\(|\bx(it|describe)\(/, 'test skipped'],
+  [/#\s*noqa|type:\s*ignore|pyright:\s*ignore|eslint-disable|@ts-(ignore|expect-error|nocheck)|#!?\[allow\(/, 'new lint or type suppression'],
+  [/continue-on-error:\s*true|\|\|\s*true\b/, 'CI step allowed to fail'],
+];
+const TEST_REMOVED = /^\s*(async\s+)?def\s+test_|^\s*#\[(tokio::)?test\]|^\s*(it|test)\s*\(/;
+const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
+
+export function parseDiff(diff) {
+  const files = [];
+  let f = null;
+  for (const line of String(diff ?? '').split(/\r?\n/)) {
+    const head = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+    if (head) { f = { path: head[2], added: [], removed: [], created: false, deleted: false }; files.push(f); continue; }
+    if (!f) continue;
+    if (line.startsWith('new file mode')) f.created = true;
+    else if (line.startsWith('deleted file mode')) f.deleted = true;
+    else if (line.startsWith('+++') || line.startsWith('---')) continue;
+    else if (line.startsWith('+')) f.added.push(line.slice(1));
+    else if (line.startsWith('-')) f.removed.push(line.slice(1));
+  }
+  return files;
+}
+
+function globToRegex(glob) {
+  const esc = glob.trim().replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '.*').replace(/\?/g, '.');
+  return new RegExp(`^${esc}$`);
+}
+
+export function riskTier(diff, { extraPaths = [] } = {}) {
+  const files = parseDiff(diff);
+  const reasons = new Set();
+  let tier = 0;
+  const raise = (t, why) => { if (t > tier) tier = t; if (t >= 1 && why) reasons.add(why); };
+  const extra = extraPaths.map(globToRegex);
+
+  for (const f of files) {
+    const p = f.path.replace(/\\/g, '/');
+    const docs = DOCS.test(p) && !NOT_DOCS.test(p);
+    if (!docs) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
+    if (extra.some(re => re.test(p))) raise(2, `listed in .github/risk-paths.txt: ${p}`);
+    for (const [re, why] of PATH_RULES) if (re.test(p)) raise(2, `${why}: ${p}`);
+
+    const isTest = TEST_PATH.test(p);
+    if (isTest && f.deleted) raise(2, `test file deleted: ${p}`);
+    if (isTest && f.removed.some(l => TEST_REMOVED.test(l))) raise(2, `test removed: ${p}`);
+    if (isTest) {
+      const lost = f.removed.filter(l => ASSERT.test(l)).length - f.added.filter(l => ASSERT.test(l)).length;
+      if (lost > 0) raise(2, `fewer assertions: ${p}`);
+    }
+    for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
+    if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
+
+    if (CODE.test(p) && !isTest) {
+      for (const l of [...f.added, ...f.removed]) {
+        if (/^\s*(#|\/\/|\*)/.test(l) || /^\s*@/.test(l)) continue; // comments and decorators
+        for (const [re, why] of ADDED_OR_REMOVED) if (re.test(l)) raise(2, `${why}: ${p}`);
+      }
+    }
+  }
+  if (!files.length) reasons.add('empty diff');
+  return { tier, reasons: [...reasons].slice(0, 12) };
+}
+
+export function readRiskPaths(cwd) {
+  try {
+    return fs.readFileSync(path.join(cwd, '.github', 'risk-paths.txt'), 'utf8')
+      .split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  } catch { return []; }
+}
+
+function main() {
+  const args = process.argv.slice(2);
+  const opt = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
+  const run = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', maxBuffer: 64 << 20 });
+  let diff;
+  if (opt('--pr')) diff = run('gh', ['pr', 'diff', opt('--pr')]);
+  else {
+    let base = opt('--base');
+    if (!base) {
+      try { base = run('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).trim(); } catch { base = 'origin/main'; }
+    }
+    diff = run('git', ['diff', '--no-color', `${base}...HEAD`]) + run('git', ['diff', '--no-color', 'HEAD']);
+  }
+  console.log(JSON.stringify(riskTier(diff, { extraPaths: readRiskPaths(process.cwd()) }), null, 2));
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

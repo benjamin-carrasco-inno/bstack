@@ -1,0 +1,12 @@
+{
+  "name": "bstack",
+  "owner": { "name": "SolidDigitalDK", "url": "https://github.com/SolidDigitalDK" },
+  "description": "bstack: a gated engineering method for Claude Code.",
+  "plugins": [
+    {
+      "name": "bstack",
+      "source": "./plugins/bstack",
+      "description": "A gated engineering method for Claude Code: playbooks with evidence gates, SHA-bound reviewer verdicts, adversarial review, repo audits and enforcing hooks."
+    }
+  ]
+}
