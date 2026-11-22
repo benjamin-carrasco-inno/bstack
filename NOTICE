@@ -16,4 +16,17 @@ principles adapted in skills/mode/principles.md follow pstack's principle set
 encode-lessons-in-structure, boundary-discipline, subtract-before-you-add,
 minimize-reader-load, type-system-discipline, never-block-on-the-human).
 
-The guard, risk-tier, verdict hook and audit skill are original to bstack.
+The planning layer (skills/plan, skills/triage, the ticket playbook) is a distillation,
+in its own words, of ideas from mattpocock/skills (https://github.com/mattpocock/skills),
+which carries this notice:
+
+    MIT License
+    Copyright (c) 2026 Matt Pocock
+
+Ideas taken from mattpocock/skills: grilling in rounds with a recommended answer per
+question; a glossary and sparing ADRs as the project's shared language; a map of decision
+tickets of four types worked one per session through a frontier of unblocked tickets
+(wayfinder); specs and vertical-slice tickets as temporary issues with native sub-issues
+and blocking (to-spec, to-tickets); and triage states with agent-ready acceptance criteria.
+
+The guard, risk-tier, verdict hook, tracker script and audit skill are original to bstack.

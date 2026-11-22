@@ -10,7 +10,8 @@
 Title: `type(scope): subject`, a Conventional Commit, imperative, at most 72 characters. It becomes the squash commit.
 
 Body under 40 lines, empty sections dropped:
-- **Request**: the user's ask, verbatim. The reviewer judges against this.
+- **Request**: the user's ask, verbatim, or for a ticket its link and acceptance criteria. The reviewer judges against this.
+- `Closes #<n>` for each ticket the PR builds, so the merge closes it.
 - **Why**: the problem in the user's terms.
 - **What changed**: behaviour, not a file list.
 - **Scope**: what is deliberately not done.

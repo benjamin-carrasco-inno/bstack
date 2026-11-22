@@ -2,7 +2,9 @@
 
 A gated engineering method for [Claude Code](https://code.claude.com), built for working without reading every diff yourself. The agent routes each task to a playbook with evidence gates, proves behaviour on the running app, gets an independent verdict bound to the exact head SHA, and can only merge when CI is green and that verdict exists. Hooks enforce what prose cannot hold.
 
-It is a distillation of [pstack](https://github.com/cursor/plugins/tree/main/pstack) in its own words, rewritten for Claude Code without the Cursor-only machinery. See [NOTICE](NOTICE).
+Before the build, a planning layer turns ideas and bug reports into GitHub issues with acceptance criteria, so work survives between sessions and machines and an agent can take the next ticket without asking.
+
+It is a distillation of [pstack](https://github.com/cursor/plugins/tree/main/pstack) and of the planning skills in [mattpocock/skills](https://github.com/mattpocock/skills), in its own words, rewritten for Claude Code without the Cursor-only machinery. See [NOTICE](NOTICE).
 
 ## Install
 
@@ -22,7 +24,9 @@ Requirements: Node 18+ on `PATH` (the hooks are Node scripts), git, and the GitH
 | Part | What it does |
 |-|-|
 | Session rules (`rules/`) | Injected at every session and subagent start by a hook, so they hold without anyone loading a skill. |
-| `bstack:mode` | Router: goal, smallest change, playbook and risk tier. Playbooks: investigate, bug-fix, feature, refactor, migration, ship, autonomous-run. |
+| `bstack:mode` | Router: goal, smallest change, playbook and risk tier. Playbooks: investigate, bug-fix, feature, refactor, migration, ticket, ship, autonomous-run. |
+| `bstack:plan` | Sizes the work, grills you where intent is unclear, and writes a spec with ticket sub-issues, or a map of decision tickets for foggy work. Keeps `GLOSSARY.md` and ADRs. |
+| `bstack:triage` | Sorts incoming issues: checks the claim, finds duplicates and work already done, writes acceptance criteria, labels the state. |
 | `bstack:audit` | Review and clean up a whole repo: map, find, prove, present once, fix through small gated PRs. |
 | `bstack:verify` | Run the app safely on test data and prove behaviour on the real surface. |
 | `bstack:interrogate` | Adversarial review for risky changes; findings count only when reproduced. |
@@ -30,6 +34,19 @@ Requirements: Node 18+ on `PATH` (the hooks are Node scripts), git, and the GitH
 | `bstack:reviewer` agent | Fresh Sonnet agent in its own worktree. Runs the change, reads the diff, returns PASS, PASS+NOTES or FAIL for the head SHA. |
 | `bstack:adversary` agent | Fable agent that tries to break tier 2 changes and reproduces what it finds. |
 | `bstack:worker` agent | Fresh context for one scoped implementation round. |
+
+## From idea to merge
+
+```
+idea or bug report -> bstack:triage or bstack:plan -> tickets (issues) -> ticket playbook -> PR -> CI + reviewer verdict -> merge -> deploy (your OK)
+```
+
+- **One PR, clear**: no plan, straight to a playbook.
+- **Several PRs, clear goal**: a grilling session, then a spec issue (`plan:spec`) with one sub-issue per PR, ordered with GitHub's native blocking.
+- **Foggy**: a map issue (`plan:map`) with decision tickets (`plan:research`, `plan:prototype`, `plan:grill`, `plan:task`), one decision per session, until the way is clear and a spec can be written.
+- **Build**: "take the next ticket" picks the first open, unblocked, unclaimed ticket (`scripts/tracker.mjs next`), builds it as one PR with `Closes #<n>`, and the reviewer judges it against the ticket's acceptance criteria.
+- Issues are kept by the agent, never by hand. Specs are temporary: once merged, the code and tests are the truth.
+- `scripts/tracker.mjs labels` creates the labels a repo lacks and changes nothing else. It needs `gh` 2.94 or newer.
 
 ## What the hooks enforce
 
