@@ -26,5 +26,4 @@ Report one line per item and nothing between them, file paths relative to the ch
 
 `<file> | <line> | <class> | <action> | <proof>`
 
-Then the items you were unsure of and why, if any. The last line must be exactly:
-`bstack-comments: items=<number of report lines>`
+Then the items you were unsure of and why, if any.

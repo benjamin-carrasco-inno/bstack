@@ -24,7 +24,7 @@ Spawn `bstack:comment-critic` with only the checkout path and the scope. Not you
 
 The report is accepted only when every check holds:
 - The fingerprint is unchanged: the script exits 0 both times and the `fingerprint:` lines are equal, so the critic edited nothing. A non-zero exit rejects the report.
-- Every line has five fields and a class with an action it allows: tautology and stale `delete`; excuse `fix` or `issue`; a suppression of any class also `fix`; decision `adr` or `delete`; constraint `encode` or `issue`; external `keep`. The count matches `bstack-comments: items=<n>`.
+- Every line has five fields and a class with an action it allows: tautology and stale `delete`; excuse `fix` or `issue`; a suppression of any class also `fix`; decision `adr` or `delete`; constraint `encode` or `issue`; external `keep`.
 - Every line has proof, and the file and line hold a comment in scope as step 1 defines it.
 - No comment in scope is missing: compare against a search for the comment markers in the scope's files.
 - Every `keep` is external, and its proof holds when you check it again: run the command, or open the link and find the pinned version in the repo.
