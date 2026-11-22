@@ -297,7 +297,7 @@ function refusal(files) {
     `This commit adds comment lines over ${BASELINE}:`,
     ...lines,
     'Remove them instead: rename or extract so the code says it, or encode the constraint as a test, type or runtime check.',
-    `A comment about something outside this code (a third-party API, a browser or library bug) may stay, prefixed external: with proof; then run node "${COMMENTS_SCRIPT}" baseline and commit the new baseline with it.`,
-    `After a cleanup, run the same command to lower the baseline.`,
+    `A comment about something outside this code (a third-party API, a browser or library bug) may stay, prefixed external: with proof. Then run node "${COMMENTS_SCRIPT}" baseline first, as its own command, then stage and commit the new baseline with it: this check runs before the whole command line, so a baseline written by the same line is not seen.`,
+    `After a cleanup, run the same baseline command, again on its own, to lower the baseline.`,
   ].join('\n');
 }
