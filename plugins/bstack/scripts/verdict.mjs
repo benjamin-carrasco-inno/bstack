@@ -20,35 +20,86 @@ const LAST_LINE = {
   interrogate: 'bstack-interrogate: confirmed=<number> pr=<number> sha=<40-char head sha>',
 };
 
-// Returns { post: { pr, body } } or { block: reason } or {}.
+function readTranscript(file) {
+  if (!file) return [];
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  return raw.split('\n').flatMap(line => {
+    try {
+      return [JSON.parse(line)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+const blocks = entry => (Array.isArray(entry?.message?.content) ? entry.message.content : []);
+const isHandback = block => block.type === 'tool_use' && block.name === 'SubagentHandback';
+
+// Everything the agent wrote or handed back, newest first. A run that ends with the SubagentHandback
+// call arrives with no last_assistant_message, so the report is only in the transcript.
+function reportTexts(input, entries) {
+  const written = entries.filter(e => e.type === 'assistant').flatMap(blocks)
+    .map(b => (b.type === 'text' ? b.text : isHandback(b) ? b.input?.message : null));
+  return [input.last_assistant_message, ...written.reverse()].filter(Boolean);
+}
+
+function promptedPr(entries) {
+  const first = entries.find(e => e.type === 'user');
+  const content = first?.message?.content;
+  const text = typeof content === 'string' ? content : blocks(first).filter(b => b.type === 'text').map(b => b.text).join('\n');
+  return /\bPR\s*#?\d+(?:\s+in\s+[\w.-]+\/[\w.-]*\w)?/i.exec(text)?.[0] ?? 'its PR';
+}
+
+// Returns { post: { pr, body } }, { block: reason } for the agent, { warn: message } for the user, or {}.
 export function handle(input, gh) {
   const kind = kindOf(String(input.agent_type ?? ''));
   if (!kind) return {};
-  const again = Boolean(input.stop_hook_active);
-  const report = parseReport(kind, input.last_assistant_message);
+  const entries = readTranscript(input.agent_transcript_path);
+  // After a hand-back the run is over: a block reaches the agent only if someone resumes it.
+  const lastBlock = blocks(entries.findLast(e => e.type === 'assistant')).at(-1);
+  const heard = !input.stop_hook_active && !(lastBlock && isHandback(lastBlock));
+  const fail = (where, problem, ask) => (heard
+    ? { block: `${problem} ${ask}` }
+    : { warn: `bstack: nothing was posted for ${where}. ${problem} Run a fresh ${input.agent_type} agent for it.` });
+
+  const report = reportTexts(input, entries).map(text => parseReport(kind, text)).find(Boolean);
   if (!report) {
-    return again ? {} : { block: `End your report with exactly one line:\n${LAST_LINE[kind]}\nThe bstack hook posts it; do not post it yourself.` };
+    return fail(promptedPr(entries), `The ${input.agent_type} report has no result line.`,
+      `End your report with exactly one line:\n${LAST_LINE[kind]}\nThe bstack hook posts it; do not post it yourself.`);
   }
   let pr;
   try {
-    pr = JSON.parse(gh(input.cwd, ['pr', 'view', report.pr, '--json', 'number,url,headRefOid']));
+    pr = JSON.parse(gh(input.cwd, ['pr', 'view', report.pr, '--json', 'number,url,headRefOid,comments']));
   } catch (e) {
-    return again ? {} : { block: `bstack could not read PR ${report.pr} (${String(e.message ?? e).split('\n')[0]}). Check the PR number and end with the line again.` };
+    return fail(`PR ${report.pr}`, `bstack could not read PR ${report.pr} (${String(e.message ?? e).split('\n')[0]}).`,
+      'Check the PR number and end with the line again.');
   }
   if (pr.headRefOid !== report.sha) {
-    return again ? {} : { block: `PR ${pr.number} head is now ${pr.headRefOid}, not ${report.sha}. Check out the new head, re-check what changed, and end with the line for the new SHA.` };
+    return fail(pr.url, `PR ${pr.number} head is now ${pr.headRefOid}, not ${report.sha}.`,
+      'Check out the new head, re-check what changed, and end with the line for the new SHA.');
   }
-  return { post: { pr: pr.url, body: commentBody(kind, report.result, report.sha, report.body) } };
+  const body = commentBody(kind, report.result, report.sha, report.body);
+  if ((pr.comments ?? []).some(c => String(c.body ?? '').trim() === body.trim())) return {};
+  return { post: { pr: pr.url, body } };
 }
 
 async function main() {
   let raw = '';
   for await (const chunk of process.stdin) raw += chunk;
   const input = JSON.parse(raw || '{}');
-  const gh = (cwd, args) => execFileSync('gh', args, { cwd: cwd || process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 45000 });
+  const gh = (cwd, args) => execFileSync('gh', args, { cwd: cwd || process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 45000, maxBuffer: 64 << 20 });
   const out = handle(input, gh);
   if (out.block) {
     process.stdout.write(JSON.stringify({ decision: 'block', reason: out.block }));
+    return;
+  }
+  if (out.warn) {
+    process.stdout.write(JSON.stringify({ systemMessage: out.warn }));
     return;
   }
   if (out.post) {
