@@ -6,6 +6,7 @@
 // Exit 2 with a message that names the right alternative.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commandsIn, parseGit } from './lib/shell.mjs';
@@ -25,12 +26,30 @@ export function decide(input, deps) {
   if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(tool)) return writeRule(input.tool_input ?? {}, deps);
   if (tool !== 'Bash' && tool !== 'PowerShell') return null;
   const line = String(input.tool_input?.command ?? '');
-  const commands = commandsIn(line);
+  const commands = located(commandsIn(line), cwd);
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, commands.slice(0, k)) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
+    const reason = markerRule(c, c.cwd, deps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, c.cwd, deps, commands.slice(0, k)) : null) ?? (c.cmd === 'gh' ? ghRule(c, c.cwd, deps) : null);
     if (reason) return reason;
   }
   return null;
+}
+
+const CHANGE_DIR = new Set(['cd', 'chdir', 'pushd', 'set-location', 'sl']);
+const HOME = /^~(?=$|[\\/])/;
+
+function located(commands, start) {
+  let here = start;
+  return commands.map(c => {
+    const at = { ...c, cwd: here };
+    if (CHANGE_DIR.has(c.cmd)) here = changedDir(c.args, here);
+    return at;
+  });
+}
+
+function changedDir(args, here) {
+  const target = args.find(a => !a.startsWith('-') && !/^\/d$/i.test(a));
+  if (target === undefined || target.includes('$')) return here;
+  return path.resolve(here, target.replace(HOME, os.homedir()));
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
@@ -77,7 +96,7 @@ function gitRule(c, cwd, deps, prior) {
   if (rest.includes('--no-verify') || (sub === 'commit' && rest.some(a => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--')))) {
     return 'Do not skip git hooks (--no-verify / -n). Fix what the hook reports; it is part of the safety net.';
   }
-  if (sub === 'commit') return commentRatchet({ cwd, repo, rest, prior }, deps);
+  if (sub === 'commit') return commentRatchet({ repo, rest, prior }, deps);
   if (sub === 'push') return pushRule(rest, repo, deps);
   if (sub === 'rebase' && !rest.some(a => /^--(abort|continue|skip|quit|edit-todo|show-current-patch)$/.test(a))) return rebaseRule(repo, deps);
   if (sub === 'pull' && rest.some(a => a === '--rebase' || a === '-r' || a.startsWith('--rebase='))) return rebaseRule(repo, deps);

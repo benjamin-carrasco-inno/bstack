@@ -12,12 +12,31 @@ const VALUE_SHORTS = 'mFCct';
 const ATTACHED_SHORTS = 'Su';
 const ZERO = /^0+$/;
 const REGULAR = /^100(644|755)$/;
+const REDIRECTION = /^[0-9&*]?(?:>>?|<<-?|<>|<)&?(.*)$/s;
+
+function redirectionLength(words, i) {
+  const redirect = REDIRECTION.exec(words[i]);
+  if (!redirect) return 0;
+  return redirect[1] ? 1 : 2;
+}
+
+function withoutRedirections(words) {
+  const out = [];
+  for (let i = 0; i < words.length; i++) {
+    const skip = redirectionLength(words, i);
+    if (skip) i += skip - 1;
+    else out.push(words[i]);
+  }
+  return out;
+}
 
 export function parseCommit(rest) {
   const opts = { all: false, include: false, dryRun: false, paths: [] };
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
-    if (a === '--') { opts.paths.push(...rest.slice(i + 1)); break; }
+    const skip = redirectionLength(rest, i);
+    if (skip) { i += skip - 1; continue; }
+    if (a === '--') { opts.paths.push(...withoutRedirections(rest.slice(i + 1))); break; }
     if (VALUE_OPTS.has(a)) { i++; continue; }
     if (a.startsWith('--')) {
       if (a === '--all') opts.all = true;
@@ -40,7 +59,7 @@ export function parseCommit(rest) {
   return opts;
 }
 
-export function commentRatchet({ cwd, repo, rest, prior }, deps) {
+export function commentRatchet({ repo, rest, prior }, deps) {
   const opts = parseCommit(rest);
   if (opts.dryRun) return null;
   let root, realIndex;
@@ -57,7 +76,7 @@ export function commentRatchet({ cwd, repo, rest, prior }, deps) {
   try {
     if (temp) {
       if (deps.exists(realIndex)) fs.copyFileSync(realIndex, temp);
-      for (const add of adds) replayAdd(add, cwd, repo, root, env, deps);
+      for (const add of adds) replayAdd(add, repo, root, env, deps);
       if (opts.all) tryGit(repo, ['add', '-u'], env, deps);
       else if (opts.paths.length) tryGit(repo, ['add', '-u', '--', ...opts.paths], env, deps);
     }
@@ -67,15 +86,15 @@ export function commentRatchet({ cwd, repo, rest, prior }, deps) {
   }
 }
 
-function replayAdd(add, cwd, repo, root, env, deps) {
+function replayAdd(add, repo, root, env, deps) {
   const { dir, rest } = parseGit(add.args);
-  const where = dir ? path.resolve(cwd, dir) : cwd;
+  const where = dir ? path.resolve(add.cwd, dir) : add.cwd;
   if (where !== repo) {
     let top;
     try { top = deps.git(where, ['rev-parse', '--show-toplevel']).trim(); } catch { return; }
     if (path.resolve(top) !== path.resolve(root)) return;
   }
-  tryGit(where, ['add', ...rest], env, deps);
+  tryGit(where, ['add', ...withoutRedirections(rest)], env, deps);
 }
 
 function tryGit(cwd, args, env, deps) {
