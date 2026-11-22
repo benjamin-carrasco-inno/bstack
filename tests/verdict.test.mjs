@@ -72,7 +72,7 @@ test('a run that ended with a hand-back is warned about at once, since a block n
   const file = transcript([prompt('PR 7 in o/r.'), handback('looks fine'), delivered]);
   const out = handle({ agent_type: 'bstack:reviewer', stop_hook_active: false, agent_transcript_path: file }, gh(SHA));
   assert.equal(out.block, undefined);
-  assert.match(out.warn, /PR 7 in o\/r/);
+  assert.match(out.warn, /for PR 7 in o\/r\. The/);
 });
 
 test('a report already on the PR is not posted twice', () => {
