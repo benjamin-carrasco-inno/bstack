@@ -82,6 +82,7 @@ test('next without a parent takes the oldest unblocked ready-for-agent issue', (
   assert.equal(out.next.number, 22);
   assert.deepEqual(out.claimed.map(i => i.number), [26]);
   assert.ok(![...out.ready, ...out.blocked, ...out.claimed].some(i => i.number === 24 || i.number === 25), 'specs and maps are parents, not work');
+  assert.deepEqual(out.skipped.map(i => i.number).sort(), [24, 25], 'and they are reported, not dropped silently');
   assert.equal(calls.length, 1, 'one list call, no call per issue');
   assert.ok(calls[0].includes('sort:created-asc'), 'the limit cuts the newest, not the oldest');
   assert.deepEqual(out.ready.map(i => i.number), [22, 20]);
@@ -100,4 +101,5 @@ test('arguments accept #n and a repo flag in either form, and refuse what they d
   assert.throws(() => parseArgs(['next', '-R', '--json']), /needs owner\/repo/);
   assert.throws(() => parseArgs(['next', '--all']), /unknown flag/);
   assert.throws(() => parseArgs(['next', '1', '2']), /one parent/);
+  assert.throws(() => parseArgs(['labels', '12']), /takes no issue/);
 });

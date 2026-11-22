@@ -8,5 +8,5 @@ For "keep going until X", background sessions and runs nobody watches.
 4. **Side findings go in their own PR**, never folded into the current one.
 5. **Working a queue of tickets**: one at a time through [ticket](ticket.md). Tickets that need the user (`ready-for-human`, `plan:grill`, `plan:prototype`) are collected for them, not done.
 6. **Stops still apply**: anything on the stop list in the session rules waits for the user. Collect those questions and keep working on everything else.
-7. **Leave a trail without a log file.** When quota runs out or the session is stopped, post a short status as a comment on the PR, or on the ticket when there is no PR yet (how far, the next step, open questions), so a new session can pick up from GitHub alone.
+7. **Leave a trail without a log file.** When quota runs out or the session is stopped, post a short status as a comment on the PR, or on the ticket when there is no PR yet (how far, the branch, the next step, open questions), then remove your claim on the ticket, so a new session can pick up from GitHub alone.
 8. Every change lands through [ship](ship.md), gates included. A run is done when the predicate holds on main.

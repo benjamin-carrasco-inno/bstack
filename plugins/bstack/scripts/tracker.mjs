@@ -63,7 +63,8 @@ export function frontier(gh, { parent, repo } = {}) {
   // The queue: build tickets only. Specs and maps (plan:* labels, or issues with sub-issues) are parents, not work.
   const listed = JSON.parse(gh(['issue', 'list', '--state', 'open', '--label', 'ready-for-agent', '--search', 'sort:created-asc', '--limit', '200', '--json', `${FIELDS},createdAt`, ...repoArgs(repo)]));
   listed.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)) || a.number - b.number);
-  return { parent: null, progress: null, ...sort(listed.filter(i => !isPlan(i))) };
+  const skipped = listed.filter(isPlan).map(brief);
+  return { parent: null, progress: null, ...sort(listed.filter(i => !isPlan(i))), skipped };
 }
 
 function sort(issues) {
@@ -92,6 +93,7 @@ export function parseArgs(argv) {
     else positional.push(a);
   }
   if (positional.length > 1) throw new Error(`one parent at most, got ${positional.join(' ')}`);
+  if (cmd === 'labels' && positional.length) throw new Error('labels takes no issue');
   const ref = positional[0] ? String(positional[0]).replace(/^#/, '') : null;
   return { cmd, repo, parent: ref };
 }
