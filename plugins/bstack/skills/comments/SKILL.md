@@ -12,7 +12,7 @@ description: Clean up comments without letting the author judge them. Spawns the
 - No argument: the diff against the base branch, including the working tree (`git diff $(git merge-base origin/<base> HEAD)`) and untracked files (`git ls-files --others --exclude-standard`).
 - Paths, or "the whole repo": those files.
 
-Record now, at the repo root: the checkout's fingerprint (`git rev-parse HEAD`, `git ls-files -co --exclude-standard`, and that list piped to `git hash-object --stdin-paths`, which hashes the content of every tracked and untracked file), and the result of the repo's tests and linters.
+Record now, in the checkout: the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/fingerprint.mjs"` (HEAD and a content hash of every tracked and untracked file, ending in a `fingerprint:` line), and the result of the repo's tests and linters.
 
 ## 2. Spawn the critic
 
@@ -21,8 +21,8 @@ Spawn `bstack:comment-critic` with only the checkout path and the scope. Not you
 ## 3. Check the report
 
 The report is accepted only when every check holds:
-- The fingerprint is unchanged: the critic edited nothing.
-- Every line has five fields and a class with an action it allows: tautology and stale `delete`; excuse `fix` or `issue`; decision `adr` or `delete`; constraint `encode` or `issue`; external `keep`. The count matches `bstack-comments: items=<n>`.
+- The fingerprint is unchanged: the script exits 0 both times and the `fingerprint:` lines are equal, so the critic edited nothing. A non-zero exit rejects the report.
+- Every line has five fields and a class with an action it allows: tautology and stale `delete`; excuse `fix` or `issue`; a suppression of any class also `fix`; decision `adr` or `delete`; constraint `encode` or `issue`; external `keep`. The count matches `bstack-comments: items=<n>`.
 - Every line has proof, and the file and line are in scope and hold that comment.
 - No comment in scope is missing: compare against a search for the comment markers on the scope's lines.
 - Every `keep` is external, and its proof holds when you check it again: run the command, or open the link and find the pinned version in the repo.
