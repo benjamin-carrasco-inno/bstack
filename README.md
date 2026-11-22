@@ -9,7 +9,7 @@ It is a distillation of [pstack](https://github.com/cursor/plugins/tree/main/pst
 In a shell, on each machine:
 
 ```sh
-claude plugin marketplace add SolidDigitalDK/bstack
+claude plugin marketplace add benjamin-carrasco-inno/bstack
 claude plugin install bstack@bstack
 ```
 

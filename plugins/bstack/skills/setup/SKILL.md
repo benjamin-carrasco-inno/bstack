@@ -11,7 +11,7 @@ Bring `~/.claude/settings.json` (user scope) to this state, editing only these k
 {
   "attribution": { "commit": "", "pr": "", "sessionUrl": false },
   "extraKnownMarketplaces": {
-    "bstack": { "source": { "source": "github", "repo": "SolidDigitalDK/bstack" }, "autoUpdate": true }
+    "bstack": { "source": { "source": "github", "repo": "benjamin-carrasco-inno/bstack" }, "autoUpdate": true }
   },
   "enabledPlugins": { "bstack@bstack": true }
 }

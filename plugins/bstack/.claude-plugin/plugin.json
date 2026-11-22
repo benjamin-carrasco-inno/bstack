@@ -2,9 +2,9 @@
   "name": "bstack",
   "displayName": "bstack",
   "description": "A gated engineering method for Claude Code: playbooks with evidence gates, an independent reviewer verdict bound to the head SHA, adversarial review for risky changes, repo audits, and hooks that enforce what prose cannot.",
-  "author": { "name": "SolidDigitalDK", "url": "https://github.com/SolidDigitalDK" },
-  "homepage": "https://github.com/SolidDigitalDK/bstack",
-  "repository": "https://github.com/SolidDigitalDK/bstack",
+  "author": { "name": "benjamin-carrasco-inno", "url": "https://github.com/benjamin-carrasco-inno" },
+  "homepage": "https://github.com/benjamin-carrasco-inno/bstack",
+  "repository": "https://github.com/benjamin-carrasco-inno/bstack",
   "license": "MIT",
   "keywords": ["engineering", "review", "verification", "hooks", "workflow"]
 }

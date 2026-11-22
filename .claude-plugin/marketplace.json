@@ -1,6 +1,6 @@
 {
   "name": "bstack",
-  "owner": { "name": "SolidDigitalDK", "url": "https://github.com/SolidDigitalDK" },
+  "owner": { "name": "benjamin-carrasco-inno", "url": "https://github.com/benjamin-carrasco-inno" },
   "description": "bstack: a gated engineering method for Claude Code.",
   "plugins": [
     {
