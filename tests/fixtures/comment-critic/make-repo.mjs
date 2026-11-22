@@ -67,28 +67,56 @@ export function countItems(items) {
   let count = 0;
   // a for loop instead of reduce because it is easier to step through in a debugger
   for (const item of items) {
-    count += item.qty;
+    // TODO: temporary, parseItem in src/form.mjs leaves qty a string, so coerce it here
+    count += Number(item.qty);
   }
   return count;
+}
+
+export function applyDiscount(totalCents, percent) {
+  // eslint-disable-next-line no-unused-vars
+  const discount = Math.round((totalCents * percent) / 100);
+  return totalCents;
 }
 
 export function exportRow(order) {
   // do not rename: the nightly export reads the field total_cents
   return { id: order.id, total_cents: cartTotal(order.items) };
 }
+
+export function toCsvLine(order) {
+  // do not reorder these columns: the bank import reads them by position, not by header
+  return [order.id, cartTotal(order.items), order.currency].join(',');
+}
+
+export function roundVat(cents) {
+  // keep this rounding identical to the ledger service (finance-ledger repo, src/vat.py): it recomputes VAT from our totals and flags every mismatch
+  return Math.round(cents * 0.25);
+}
+
+export function newOrderId() {
+  // order ids are random UUIDs, not a sequence: sequential ids exposed our order volume to anyone placing two orders, and stored orders and the bank import both depend on this format, so going back means a data migration
+  return crypto.randomUUID();
+}
+`);
+write('src/form.mjs', `
+export function parseItem(fields) {
+  return { sku: fields.sku, priceCents: Number(fields.price_cents), qty: fields.qty };
+}
 `);
 fs.appendFileSync(path.join(work, 'test/cart.test.mjs'), `
 import { countItems, exportRow } from '../src/cart.mjs';
+import { parseItem } from '../src/form.mjs';
 
-test('countItems sums quantities', () => assert.equal(countItems([{ qty: 2 }, { qty: 3 }]), 5));
+test('countItems sums quantities', () => assert.equal(countItems([parseItem({ sku: 'a', price_cents: '100', qty: '2' }), { qty: 3 }]), 5));
 test('exportRow carries total_cents', () => assert.deepEqual(exportRow({ id: 7, items: [{ priceCents: 100, qty: 3 }] }), { id: 7, total_cents: 300 }));
 `);
 git('add', '-A');
 git('commit', '-q', '-m', 'feat: order export row');
 
 write('src/cart.mjs', fs.readFileSync(path.join(work, 'src/cart.mjs'), 'utf8').replace(
-  '    count += item.qty;',
-  '    // add the quantity to the count\n    count += item.qty;',
+  '  let count = 0;',
+  '  // start the count at zero\n  let count = 0;',
 ));
 write('src/api.mjs', `
 export async function searchOrders(baseUrl, filter, attempt = 0) {
@@ -98,6 +126,13 @@ export async function searchOrders(baseUrl, filter, attempt = 0) {
   const res = await fetch(url);
   // HACK: retry twice because the staging API drops the first request after a deploy
   if (!res.ok && attempt < 2) return searchOrders(baseUrl, filter, attempt + 1);
+  return res.json();
+}
+
+export async function getOrder(baseUrl, id, attempt = 0) {
+  const res = await fetch(new URL(\`/orders/\${id}\`, baseUrl));
+  // HACK: retry twice because the staging API drops the first request after a deploy
+  if (!res.ok && attempt < 2) return getOrder(baseUrl, id, attempt + 1);
   return res.json();
 }
 `);
