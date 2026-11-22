@@ -104,12 +104,16 @@ const RESUMES = [
   /^(fmt|yapf|isort):\s*(on|enable)\b/, /^pylint:\s*enable\b/, /^yamllint\s+enable\b/,
 ];
 const SPDX = /SPDX-(License-Identifier|FileCopyrightText)/i;
-const LICENCE = new RegExp(`copyright\\s*(\\(c\\)|©)?\\s*\\d{4}|(\\(c\\)|©)\\s*\\d{4}|${SPDX.source}|licensed under\\b.*\\blicen[cs]e|all rights reserved|permission is hereby granted`, 'i');
-const HOLDER_WORD = String.raw`([^\s.,;:!?]|\.(?=[^\s.,;:!?]))+`;
+const LICENCE = new RegExp(`copyright\\s*(\\(c\\)|©)?\\s*\\d{4}|(\\(c\\)|©)\\s*\\d{4}|${SPDX.source}|licensed under\\b.*\\blicen[cs]e|all rights reserved|permission is hereby granted|@license\\b`, 'i');
+const YEARS = String.raw`\d{4}(\s*[-–,]\s*(\d{4}|present))*,?`;
+const HOLDER_WORD = String.raw`((inc|ltd|corp|co|llc|\p{L})\.|<[^\s<>]+>|([^\s.,;:!?]|\.(?=[^\s.,;:!?]))+)`;
+const HOLDER_WORDS = 10;
+const LICENCE_ID = String.raw`[\w.+()-]+`;
 const LICENCE_LINES = [
-  new RegExp(String.raw`^(copyright\b\s*(\(c\)|©)?|\(c\)|©)\s*\d{4}(\s*[-–,]\s*\d{4})*,?\s+${HOLDER_WORD}(,?\s+${HOLDER_WORD}){0,5}\.?(\s+all rights reserved\.?)?$`, 'u'),
+  new RegExp(String.raw`^(copyright\s*(\(c\)|©)(\s*${YEARS})?|copyright\s+${YEARS}|(\(c\)|©)(\s*${YEARS})?),?\s+${HOLDER_WORD}(,?\s+${HOLDER_WORD}){0,${HOLDER_WORDS - 1}}\.?(\s+all rights reserved\.?)?$`, 'u'),
   /^all rights reserved\.?$/,
   /^spdx-(license-identifier|filecopyrighttext):\s*\S/,
+  new RegExp(String.raw`^@license(\s+${LICENCE_ID}(\s+(and|or|with)\s+${LICENCE_ID})*)?$`),
   /^[^\p{L}\p{N}]*$/u,
 ];
 const BSD_CLAUSES = [
@@ -144,6 +148,12 @@ const LICENCE_TEXTS = {
   'GPL-3.0': gnuHeader('General Public'),
   'LGPL-3.0': gnuHeader('Lesser General Public'),
   'AGPL-3.0': gnuHeader('Affero General Public'),
+  'MIT pointer': [
+    'This source code is licensed under the MIT license found in the LICENSE file in the root directory of this source tree.',
+    'Licensed under the MIT License. See License.txt in the project root for license information.',
+    'Licensed under the MIT License. See LICENSE in the project root for license information.',
+  ],
+  'BSD pointer': ['This source code is licensed under the BSD-style license found in the LICENSE file in the root directory of this source tree.'],
   'MPL-2.0': ['This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.'],
 };
 const words = line => line.replace(/^[\s*#/!]+/, '').trim().replace(/\s+/g, ' ').toLowerCase();
