@@ -13,7 +13,7 @@ const script = path.join(here, '..', 'plugins', 'bstack', 'scripts', 'comments.m
 
 const HAND_COUNTED = {
   'sample.py': { comments: 6, suppressions: 2 },
-  'sample.js': { comments: 5, suppressions: 1 },
+  'sample.js': { comments: 6, suppressions: 1 },
   'sample.ts': { comments: 1, suppressions: 2 },
   'sample.css': { comments: 5, suppressions: 0 },
   'sample.html': { comments: 5, suppressions: 0 },
@@ -225,14 +225,15 @@ test('only a real licence statement exempts, and only its own run of line commen
   at('a.py', '# Copyright 2024 X\n"""Parse the config.\n\nLong explanation.\n"""\nx = 1\n', 4);
   at('a.js', '// Copyright 2024 X\n/**\n * Explains the module.\n */\nexport const x = 1;\n', 3);
   at('a.py', '# Bump the copyright year in every file.\n# Walks the tree and rewrites headers.\nimport os\n', 2);
-  at('a.py', '# Copyright 2024 X\n# Licensed under the Apache License, Version 2.0\n# you may not use this file except in compliance.\n', 0);
+  at('a.py', '# Copyright 2024 X\n# Licensed under the Apache License, Version 2.0\n# you may not use this file except in compliance.\n', 1);
+  at('a.py', '# Copyright 2024 X\n# Licensed under the Apache License, Version 2.0\n# (the "License"); you may not use this file except in compliance with the License.\n', 0);
   at('a.py', '# Copyright 2024 X\n"""Doc."""\n# More notes.\nx = 1\n', 2);
   at('a.py', '# Copyright holders may reuse this.\nx = 1\n', 1);
   at('a.py', '"""Copyright 2024 X. All rights reserved."""\nx = 1\n', 0);
   at('a.js', '/* Copyright (c) 2024 X */\n// Explains the module.\nexport const x = 1;\n', 1);
   at('a.js', '/*\n * © 2019-2024 X\n * Released as is.\n */\n/** Module doc. */\nexport const x = 1;\n', 2);
   at('a.js', '/* Bump the copyright year. */\nx = 1;\n', 1);
-  at('a.js', '// Permission is hereby granted, free of charge.\n/** @module x */\n', 1);
+  at('a.js', '// Permission is hereby granted, free of charge.\n/** @module x */\n', 2);
   at('a.css', '/* Copyright © 2024 X */\n/* Layout for the header. */\n.a {}\n', 1);
   at('a.html', '<!-- All rights reserved. -->\n<!-- Page layout. -->\n<p></p>\n', 1);
 });
@@ -267,6 +268,11 @@ const MIT_LICENCE = [
   'OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE',
   'SOFTWARE.',
 ];
+const MPL_HEADER = [
+  'This Source Code Form is subject to the terms of the Mozilla Public',
+  'License, v. 2.0. If a copy of the MPL was not distributed with this',
+  'file, You can obtain one at https://mozilla.org/MPL/2.0/.',
+];
 const hashed = lines => lines.map(l => (l ? `# ${l}` : '#')).join('\n');
 const starred = lines => `/*\n${lines.map(l => (l ? ` * ${l}` : ' *')).join('\n')}\n */`;
 
@@ -281,12 +287,127 @@ test('a licence header exempts only its licence lines; any other line in the sam
   at('a.js', `${APACHE_HEADER.map(l => `// ${l}`.trimEnd()).join('\n')}\n// Parses the config and caches it.\nexport const x = 1;\n`, 1);
   at('a.js', '/*\n * Copyright 2024 Acme\n * HACK: works around a parser bug\n */\nx();\n', 1);
   at('a.py', '"""Copyright 2024 Acme.\n\nThis module parses the config.\n"""\n', 1);
-  at('a.py', '# Licensed under the MIT license\n# Do not remove this branch\nx = 1\n', 1);
+  at('a.py', '# Licensed under the MIT license\n# Do not remove this branch\nx = 1\n', 2);
   at('a.py', '# licensed under CC-BY\n# more narration\nx = 1\n', 2);
   at('a.py', '# Copyright 2024 Acme\n# keep this as is, it is a hack\nx = 1\n', 1);
   at('a.py', '# Copyright 2024 Acme\n# See the issue tracker: this works around a bug\nx = 1\n', 1);
   at('a.js', 'x();\n/* SPDX-License-Identifier: MIT\n * narration hidden behind the tag\n */\n', 1);
   at('a.js', '// Copyright 2024 Acme\n// -----\n//\nx();\n', 0);
+});
+
+test('a licence header exempts only copyright, SPDX, verbatim licence text and marker-only lines', () => {
+  const at = (file, text, comments) => assert.deepEqual(countSource(file, text), { comments, suppressions: 0 }, text);
+  at('a.js', "// Copyright 2024 Acme Inc. All rights reserved.\n// Checks the user's permission before an upload is accepted.\n// Retries are distributed over three workers; see https://wiki.example/upload.\n// Returns the upload id.\nexport const x = 1;\n", 3);
+  at('a.py', '# Copyright 2024 Acme\n# See https://example.com/design for the algorithm.\nx=1\n', 1);
+  at('a.py', '# Copyright 2024 Acme. Retries uploads twice.\nx = 1\n', 1);
+  at('a.py', '# Copyright 2024 Acme retries every upload three times because the API is flaky\nx = 1\n', 1);
+  at('a.py', '# Copyright 2024 Acme\n# All rights reserved.\n# Warranty: none, the config is distributed as is.\nx = 1\n', 1);
+  at('a.py', '# Copyright (C) 2019-2024 Free Software Foundation, Inc.\n# Copyright 2024, Acme <dev@acme.example>\nx = 1\n', 0);
+  at('a.py', '# SPDX-License-Identifier: MIT\n# SPDX-FileCopyrightText: 2024 Acme\nx = 1\n', 0);
+  at('a.py', '# SPDX-FileCopyrightText: 2024 Acme\n# Explains the module.\nx = 1\n', 1);
+  at('a.js', '// Copyright 2024 Acme\n// the\n// software\nx();\n', 2);
+  at('a.js', '// Copyright 2024 Acme\n// Permission is hereby granted, free of charge, to any person who reviews this.\nx();\n', 1);
+  at('a.py', `${hashed(['Copyright 2024 Acme', '', ...MPL_HEADER.slice(0, 2), 'Retries are handled by the worker pool.', MPL_HEADER[2]])}\nx = 1\n`, 1);
+});
+
+const slashed = lines => lines.map(l => (l ? `// ${l}` : '//')).join('\n');
+const BSD_CLAUSES = [
+  'Redistribution and use in source and binary forms, with or without',
+  'modification, are permitted provided that the following conditions are met:', '',
+  '1. Redistributions of source code must retain the above copyright notice, this',
+  '   list of conditions and the following disclaimer.', '',
+  '2. Redistributions in binary form must reproduce the above copyright notice,',
+  '   this list of conditions and the following disclaimer in the documentation',
+  '   and/or other materials provided with the distribution.', '',
+];
+const BSD_NO_ENDORSEMENT = [
+  '3. Neither the name of the copyright holder nor the names of its',
+  '   contributors may be used to endorse or promote products derived from',
+  '   this software without specific prior written permission.', '',
+];
+const BSD_DISCLAIMER = [
+  'THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"',
+  'AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE',
+  'IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE',
+  'DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE',
+  'FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL',
+  'DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR',
+  'SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER',
+  'CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,',
+  'OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE',
+  'OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.',
+];
+const gnuHeader = name => [
+  'Copyright (C) 2024  Acme Corp', '',
+  'This program is free software: you can redistribute it and/or modify',
+  `it under the terms of the GNU ${name} License as published by`,
+  'the Free Software Foundation, either version 3 of the License, or',
+  '(at your option) any later version.', '',
+  'This program is distributed in the hope that it will be useful,',
+  'but WITHOUT ANY WARRANTY; without even the implied warranty of',
+  'MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the',
+  `GNU ${name} License for more details.`, '',
+  `You should have received a copy of the GNU ${name} License`,
+  'along with this program.  If not, see <https://www.gnu.org/licenses/>.',
+];
+const LICENCE_HEADERS = {
+  MIT: MIT_LICENCE,
+  'Apache-2.0': APACHE_HEADER,
+  'Apache-2.0 with an https link': APACHE_HEADER.map(l => l.replace('http:', 'https:')),
+  'BSD-2-Clause': ['BSD 2-Clause License', '', 'Copyright (c) 2024, Acme Corp', '', ...BSD_CLAUSES, ...BSD_DISCLAIMER],
+  'BSD-3-Clause': ['BSD 3-Clause License', '', 'Copyright (c) 2024, Acme Corp', '', ...BSD_CLAUSES, ...BSD_NO_ENDORSEMENT, ...BSD_DISCLAIMER],
+  'GPL-3.0': gnuHeader('General Public'),
+  'LGPL-3.0': gnuHeader('Lesser General Public'),
+  'AGPL-3.0': gnuHeader('Affero General Public'),
+  'MPL-2.0': MPL_HEADER,
+};
+
+for (const [name, lines] of Object.entries(LICENCE_HEADERS)) {
+  test(`the full ${name} text is exempt as a #, // or /* */ header`, () => {
+    for (const [file, text] of [['a.py', hashed(lines)], ['a.js', slashed(lines)], ['a.js', starred(lines)]]) {
+      assert.deepEqual(countSource(file, `${text}\nx = 1;\n`), { comments: 0, suppressions: 0 }, text);
+    }
+  });
+}
+
+test('a TypeScript non-null assertion before a slash is division; a prefix ! still starts a regex', () => {
+  const at = (file, text, comments) => assert.deepEqual(countSource(file, text), { comments, suppressions: 0 }, text);
+  at('a.ts', 'const r = total! / count; // ratio\n', 1);
+  at('a.ts', "const q = a! / b; const s = 'x'; // c\n", 1);
+  at('a.ts', 'const r = f()! / 2; // c\n', 1);
+  at('a.ts', 'const r = m[k]! / 2; // c\n', 1);
+  at('a.ts', 'const r = a.b!.c! / 2; // c\n', 1);
+  at('a.ts', 'const r = x!! / 2; // c\n', 1);
+  at('a.ts', 'const r = a !== b ? x! / 2 : 1; // c\n', 1);
+  at('a.ts', 'if (!/[//]/.test(x)) y(); // c\n', 1);
+  at('a.ts', 'const t = !/[//]/.test(x); // c\n', 1);
+  at('a.ts', 'const t = a && !/[//]/.test(x); // c\n', 1);
+  at('a.ts', 'function f() { return !/[//]/.test(x); } // c\n', 1);
+});
+
+test('a sh heredoc delimiter is any word, quoted or not', () => {
+  const at = (file, text, comments) => assert.deepEqual(countSource(file, text), { comments, suppressions: 0 }, text);
+  at('a.sh', "cat <<'END-X'\n# no\nEND-X\n", 0);
+  at('a.sh', 'cat <<"A.B"\n# no\nA.B\n# one\n', 1);
+  at('a.sh', 'cat <<"A.B"\n# no\nAxB\n# still no\nA.B\n# one\n', 1);
+  at('a.sh', 'cat <<END-X\n# no\nEND-X\n# one\n', 1);
+  at('a.sh', 'cat <<END-X >out.txt\n# no\nEND-X\n# one\n', 1);
+  at('a.sh', "\tcat <<-'a.b-c'\n\t# no\n\ta.b-c\n# one\n", 1);
+  at('a.sh', 'cat <<\\END.X\n# no\nEND.X\n# one\n', 1);
+  at('a.sh', 'cat <<END-X\necho hi\n# one\n', 1);
+  at('a.sh', 'echo $((x << y))\n# one\n', 1);
+});
+
+test('a Rust suppression attribute counts only in code, not inside a string or a comment', () => {
+  const at = (text, comments, suppressions) => assert.deepEqual(countSource('a.rs', text), { comments, suppressions }, text);
+  at('let s = "\n#[allow(dead_code)]\n";\n', 0, 0);
+  at('let s = r#"\n#[allow(dead_code)]\n"#;\n', 0, 0);
+  at('let s = r##"\n#[expect(unused)]\n#[rustfmt::skip]\n"##;\n', 0, 0);
+  at('let s = b"\n#[cfg_attr(test, allow(dead_code))]\n";\n', 0, 0);
+  at('/*\n#[allow(dead_code)]\n*/\nfn f() {}\n', 3, 0);
+  at('fn f() {}\n#[allow(dead_code)]\nfn g() {}\n', 0, 1);
+  at('fn f(#[allow(unused)] x: i32) {}\n', 0, 1);
+  at("let c = '#'; #[rustfmt::skip] let x = 1;\n", 0, 1);
 });
 
 test('a line comment right after a colon counts; only a // glued to the next character after a colon is a URL', () => {
