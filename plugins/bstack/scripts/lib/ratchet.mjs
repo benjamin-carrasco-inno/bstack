@@ -216,14 +216,26 @@ function check(root, repo, opts, env, deps) {
   }
   const changed = parseRaw(raw).filter(r => r.status !== 'D' && REGULAR.test(r.dstMode) && syntaxFor(r.path));
   if (!changed.length) return null;
-  const counts = countBlobs(root, changed.map(r => ({ sha: r.dstSha, path: r.path })), deps);
+  const counts = countBlobs(root, changed.map(r => ({ object: r.dstSha, path: r.path })), deps);
   const over = changed.map((r, k) => ({ ...r, now: counts[k], base: Math.max(limits[r.path] ?? 0, r.from ? limits[r.from] ?? 0 : 0) }))
     .filter(r => r.now > r.base);
   const known = over.filter(r => !ZERO.test(r.srcSha) && REGULAR.test(r.srcMode));
-  const before = countBlobs(root, known.map(r => ({ sha: r.srcSha, path: r.from ?? r.path })), deps);
+  const before = countBlobs(root, known.map(r => ({ object: r.srcSha, path: r.from ?? r.path })), deps);
   known.forEach((r, k) => { r.head = before[k]; });
-  const refused = over.filter(r => r.now > (r.head ?? 0));
+  let refused = over.filter(r => r.now > (r.head ?? 0));
+  for (const side of refused.length ? inProgressSides(root, deps) : []) {
+    const theirs = countBlobs(root, refused.map(r => ({ object: `${side}:${r.path}`, path: r.path })), deps);
+    refused = refused.filter((r, k) => r.now > theirs[k]);
+  }
   return refused.length ? refusal(refused) : null;
+}
+
+const IN_PROGRESS_SIDES = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD^'];
+
+function inProgressSides(root, deps) {
+  return IN_PROGRESS_SIDES.flatMap(ref => {
+    try { return [deps.git(root, ['rev-parse', '-q', '--verify', ref]).trim()]; } catch { return []; }
+  });
 }
 
 function readBaseline(text) {
@@ -253,12 +265,13 @@ function parseRaw(raw) {
 
 function countBlobs(root, blobs, deps) {
   if (!blobs.length) return [];
-  const buf = deps.git(root, ['cat-file', '--batch'], { input: `${blobs.map(b => b.sha).join('\n')}\n`, buffer: true });
+  const buf = deps.git(root, ['cat-file', '--batch'], { input: `${blobs.map(b => b.object).join('\n')}\n`, buffer: true });
   const counts = [];
   let at = 0;
   for (const blob of blobs) {
     const eol = buf.indexOf(0x0a, at);
     const [, type, size] = buf.subarray(at, eol).toString('utf8').split(' ');
+    if (type === 'missing') { counts.push(0); at = eol + 1; continue; }
     if (type !== 'blob') throw new Error(`git cat-file could not read ${blob.path}`);
     const body = buf.subarray(eol + 1, eol + 1 + Number(size));
     at = eol + 1 + Number(size) + 1;
