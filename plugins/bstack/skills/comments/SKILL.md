@@ -46,7 +46,7 @@ A rejected report gets **one** rerun: a fresh critic with the same input and the
 
 Only `fix` and `encode` change code; every other edit changes only comment text. A fix that needs files outside the scope is an `issue`. Then run the repo's tests and linters again: all that passed in step 1 must pass, plus each new check. If not, undo the item that broke it and report it open.
 
-**Issues.** One per root cause, so items with the same root cause share one. The title names the hack and its `file:line`; the body quotes the hack's code and the deleted comment and says why it is out of scope; label `ready-for-agent` (or none, saying so, when the repo lacks it). First search open issues (`gh issue list --state open --search "<file> <key words>"`); when one names the same hack, link it instead. When `gh repo view` fails (no GitHub remote) or the user asks for a dry run, print each issue's title, label and body and open none.
+**Issues.** One per root cause, so items with the same root cause share one. The title names the hack and its `file:line` after all your edits; the body quotes the hack's code and the deleted comment and says why it is out of scope; label `ready-for-agent` (or none, saying so, when the repo lacks it). First search open issues (`gh issue list --state open --search "<file> <key words>"`); when one names the same hack, link it instead. When `gh repo view` fails (no GitHub remote) or the user asks for a dry run, print each issue's title, label and body and open none.
 
 ## 5. Report
 
