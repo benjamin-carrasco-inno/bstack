@@ -105,6 +105,8 @@ test('a long single line with many strings counts in linear time', () => {
   assert.deepEqual(countSource('a.js', '`${'.repeat(90000)), { comments: 0, suppressions: 0 });
   assert.deepEqual(countSource('a.sh', 'a=$((b << c))\n'.repeat(75000)), { comments: 0, suppressions: 0 });
   assert.deepEqual(countSource('a.sh', 'cat <<NOPE\n'.repeat(90000)), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.rs', '#[cfg_attr(a, b('.repeat(90000)), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', `# Copyright 2024 Acme\n${'# the software is provided as is\n'.repeat(5000)}`), { comments: 5000, suppressions: 0 });
   assert.ok(performance.now() - started < 2000, `took ${Math.round(performance.now() - started)} ms`);
 });
 

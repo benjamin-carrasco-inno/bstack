@@ -13,6 +13,7 @@ const pattern = (open, close) => ({ open, close, escape: null, multiline: true }
 const REGEX_AFTER_WORD = new Set(['return', 'typeof', 'case', 'do', 'else', 'in', 'of', 'new', 'delete', 'void', 'throw', 'yield', 'await']);
 const QUOTE_AFTER_WORD = new Set([...REGEX_AFTER_WORD, 'from', 'import']);
 const unglued = open => ({ ...str(open), afterWord: QUOTE_AFTER_WORD });
+const literal = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export const SYNTAX = {
   py: {
@@ -42,7 +43,7 @@ export const SYNTAX = {
     line: ['#'],
     wordStart: true,
     strings: [
-      pattern(/(?<!<)<<(?<!\(\((?:(?!\)\))[^\n])*<<)(-?)[ \t]*(['"]?)([A-Za-z_]\w*)\2/y, m => new RegExp(`\\n${m[1] ? '\\t*' : ''}${m[3]}(?=\\n|$)`, 'y')),
+      pattern(/(?<!<)<<(?<!\(\((?:(?!\)\))[^\n])*<<)(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([A-Za-z_][^\s;&|<>()'"\\]*))/y, m => new RegExp(`\\n${m[1] ? '\\t*' : ''}${literal(m[2] ?? m[3] ?? m[4])}(?=\\n|$)`, 'y')),
       str("$'", '\\', true, "'"),
       str('"', '\\', true),
       str("'", null, true),
@@ -78,7 +79,7 @@ export const SYNTAX = {
       pattern(/'(?:[^'\\\n]|\\(?:x[0-9a-f]{2}|u\{[0-9a-f]{1,6}\}|.))'/iuy, () => ''),
     ],
     prefixes: /^b$/,
-    codeSuppression: /^\s*#!?\[((allow|expect)\(|rustfmt::skip\b|cfg_attr\(.*\b(allow|expect)\()/,
+    codeSuppression: /#!?\[\s*((allow|expect)\s*\(|rustfmt::skip\b|cfg_attr\s*\([^\]\n#]*?\b(allow|expect)\s*\()/y,
   },
 };
 
@@ -102,20 +103,73 @@ const RESUMES = [
   /^(eslint|oxlint|stylelint)-enable\b/, /^(c8|v8)\s+ignore\s+stop\b/, /^node:coverage\s+enable\b/, /^biome-ignore-end\b/,
   /^(fmt|yapf|isort):\s*(on|enable)\b/, /^pylint:\s*enable\b/, /^yamllint\s+enable\b/,
 ];
-const LICENCE = /copyright\s*(\(c\)|©)?\s*\d{4}|(\(c\)|©)\s*\d{4}|SPDX-License-Identifier|licensed under\b.*\blicen[cs]e|all rights reserved|permission is hereby granted/i;
-const LICENCE_LINE = [
-  /copyright|\(c\)|©|SPDX|licen[cs]e|rights reserved|permission|warrant(y|ies)|distributed|liability|merchantability|fitness for a particular purpose|you may not use|unless required by applicable law|obtain a copy|https?:\/\//i,
-  /\bAS IS\b/,
+const SPDX = /SPDX-(License-Identifier|FileCopyrightText)/i;
+const LICENCE = new RegExp(`copyright\\s*(\\(c\\)|©)?\\s*\\d{4}|(\\(c\\)|©)\\s*\\d{4}|${SPDX.source}|licensed under\\b.*\\blicen[cs]e|all rights reserved|permission is hereby granted`, 'i');
+const HOLDER_WORD = String.raw`([^\s.,;:!?]|\.(?=[^\s.,;:!?]))+`;
+const LICENCE_LINES = [
+  new RegExp(String.raw`^(copyright\b\s*(\(c\)|©)?|\(c\)|©)\s*\d{4}(\s*[-–,]\s*\d{4})*,?\s+${HOLDER_WORD}(,?\s+${HOLDER_WORD}){0,5}\.?(\s+all rights reserved\.?)?$`, 'u'),
+  /^all rights reserved\.?$/,
+  /^spdx-(license-identifier|filecopyrighttext):\s*\S/,
   /^[^\p{L}\p{N}]*$/u,
 ];
-const words = line => line.replace(/^[\s*]+/, '').trim().replace(/\s+/g, ' ').toLowerCase();
-const LICENCE_TEXTS = [
-  'Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:',
-  'The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.',
-  'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.',
-].map(t => ` ${words(t)} `);
-const licenceLine = line => LICENCE_LINE.some(re => re.test(line)) || LICENCE_TEXTS.some(t => t.includes(` ${words(line)} `));
+const BSD_CLAUSES = [
+  'Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:',
+  '1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.',
+  '2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.',
+];
+const BSD_DISCLAIMER = 'THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.';
+const gnuHeader = name => [
+  `This program is free software: you can redistribute it and/or modify it under the terms of the GNU ${name} License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.`,
+  `This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU ${name} License for more details.`,
+  `You should have received a copy of the GNU ${name} License along with this program. If not, see <https://www.gnu.org/licenses/>.`,
+];
+const LICENCE_TEXTS = {
+  MIT: [
+    'MIT License',
+    'Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:',
+    'The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.',
+    'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.',
+  ],
+  'Apache-2.0': [
+    'Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at',
+    'https://www.apache.org/licenses/LICENSE-2.0',
+    'Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.',
+  ],
+  'BSD-2-Clause': ['BSD 2-Clause License', ...BSD_CLAUSES, BSD_DISCLAIMER],
+  'BSD-3-Clause': [
+    'BSD 3-Clause License', ...BSD_CLAUSES,
+    '3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.',
+    BSD_DISCLAIMER,
+  ],
+  'GPL-3.0': gnuHeader('General Public'),
+  'LGPL-3.0': gnuHeader('Lesser General Public'),
+  'AGPL-3.0': gnuHeader('Affero General Public'),
+  'MPL-2.0': ['This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.'],
+};
+const words = line => line.replace(/^[\s*#/!]+/, '').trim().replace(/\s+/g, ' ').toLowerCase();
+const PARAGRAPHS = Object.values(LICENCE_TEXTS).flat().flatMap(p => [p, p.replaceAll('https://', 'http://')]).map(p => ` ${words(p)} `);
+const LICENCE_RUN_WORDS = 6;
+const inLicence = run => PARAGRAPHS.some(p => p.includes(` ${run} `));
+
+function licenceLines(group) {
+  const entries = group.flatMap(f => f.body.split('\n').map((raw, k) => ({ line: f.from + k, text: words(raw) })));
+  const exempt = new Set(entries.filter(e => LICENCE_LINES.some(re => re.test(e.text))).map(e => e.line));
+  let whole = false;
+  for (let k = 0; k < entries.length;) {
+    let m = k, run = '';
+    while (m < entries.length && /[\p{L}\p{N}]/u.test(entries[m].text) && inLicence(run ? `${run} ${entries[m].text}` : entries[m].text)) {
+      run = run ? `${run} ${entries[m].text}` : entries[m].text;
+      m++;
+    }
+    const complete = run !== '' && PARAGRAPHS.includes(` ${run} `);
+    if (complete || run.split(' ').length >= LICENCE_RUN_WORDS) entries.slice(k, m).forEach(e => exempt.add(e.line));
+    whole ||= complete;
+    k = Math.max(m, k + 1);
+  }
+  return whole || group.some(f => LICENCE.test(f.body)) ? exempt : null;
+}
 const REGEX_AFTER = new Set('(,=:[!&|?{};+-*%>~^');
+const POSTFIX = [/\+\+/y, /--/y, /(?<=[\w$)\]!])!/y];
 const DOC_TAIL = /[ \t]*(#|\n|$)/y;
 const FIELD_LEVELS = 150;
 const SPEC = { escape: null, multiline: true };
@@ -137,15 +191,13 @@ export function countText(text, syntax) {
   const src = text.replace(/^﻿/, '').replace(/\r\n?/g, '\n');
   const found = findComments(src, syntax);
   const lines = { comment: new Set(), suppression: new Set() };
-  classify(found, syntax).forEach((kind, k) => {
-    const { from, to, body } = found[k];
-    const bodyLines = kind === 'licence' ? body.split('\n') : [];
-    for (let l = from; l <= to; l++) {
+  const { kinds, exempt } = classify(found, syntax);
+  kinds.forEach((kind, k) => {
+    for (let l = found[k].from; l <= found[k].to; l++) {
       if (kind !== 'licence') lines[kind]?.add(l);
-      else if (!licenceLine(bodyLines[l - from] ?? '')) lines.comment.add(l);
+      else if (!exempt.has(l)) lines.comment.add(l);
     }
   });
-  if (syntax.codeSuppression) src.split('\n').forEach((l, k) => syntax.codeSuppression.test(l) && lines.suppression.add(k));
   return { comments: lines.comment.size, suppressions: lines.suppression.size };
 }
 
@@ -280,6 +332,10 @@ function findComments(src, syn) {
 
   const step = i => {
     const c = src[i];
+    if (syn.codeSuppression && closesAt(syn.codeSuppression, i) >= 0) {
+      code = true;
+      push(i, i + 1, '', 'suppression');
+    }
     const block = opener(syn.block, i);
     if (block) {
       const close = syn.nestedBlock ? nestedClose(block, i + block[0].length) : src.indexOf(block[1], i + block[0].length);
@@ -316,9 +372,10 @@ function findComments(src, syn) {
       prev = stop > i + 1 ? 's' : '/';
       return stop;
     }
-    if (syn.regex && (c === '+' || c === '-') && src[i + 1] === c && operand()) {
+    const postfix = syn.regex && operand() ? POSTFIX.map(re => closesAt(re, i)).find(end => end >= 0) : undefined;
+    if (postfix !== undefined) {
       prev = ')';
-      return i + 2;
+      return postfix;
     }
     prev = c;
     return i + 1;
@@ -335,9 +392,15 @@ function findComments(src, syn) {
 
 function classify(found, syn) {
   const headers = new Set();
+  const exempt = new Set();
+  const licence = items => {
+    const lines = items.length ? licenceLines(items) : null;
+    lines?.forEach(l => exempt.add(l));
+    return Boolean(lines);
+  };
   let group = [];
   const flush = () => {
-    if (group.some(f => LICENCE.test(f.body))) group.forEach(f => headers.add(f));
+    if (licence(group)) group.forEach(f => headers.add(f));
     group = [];
   };
   for (const f of found) {
@@ -349,14 +412,15 @@ function classify(found, syn) {
   const firstLine = body => body.split('\n').map(l => l.replace(/^[\s*]+/, '')).find(Boolean) ?? '';
   const segments = line => (syn.line ?? []).reduce((parts, m) => parts.flatMap(p => p.split(m)), [line]);
   const suppresses = body => segments(firstLine(body)).some(seg => SUPPRESSIONS.some(re => re.test(seg.trimStart())));
-  return found.map(f => {
+  const kinds = found.map(f => {
     const text = f.body.trim().replace(/^\*+\s*/, '');
-    if (suppresses(f.body)) return 'suppression';
+    if (f.kind === 'suppression' || suppresses(f.body)) return 'suppression';
     if (f.from < 2 && syn.encoding?.test(text)) return 'exempt';
     if (syn.directives?.some(re => re.test(text)) || RESUMES.some(re => re.test(text))) return 'exempt';
     if (f.kind === 'block' && syn.blockDirectives?.some(re => re.test(text))) return 'exempt';
-    return headers.has(f) || /SPDX-License-Identifier/.test(text) ? 'licence' : 'comment';
+    return headers.has(f) || (SPDX.test(text) && licence([f])) ? 'licence' : 'comment';
   });
+  return { kinds, exempt };
 }
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 << 20 });
