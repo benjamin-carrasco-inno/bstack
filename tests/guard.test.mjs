@@ -153,9 +153,6 @@ test('reviewer and adversary agents do not author', () => {
   allowed(as('gh issue list --state open', 'bstack:reviewer'));
   allowed(as('gh pr checkout 5 --detach', 'bstack:reviewer'));
   allowed(as('gh pr diff 5', 'bstack:reviewer'));
-  blocked(as('git commit -am "docs: drop comments"', 'bstack:comment-critic'));
-  blocked(as('gh issue create --title x --body y', 'bstack:comment-critic'));
-  allowed(as('git log -S priceCache --oneline', 'bstack:comment-critic'));
   allowed(as('git commit -m "fix: x"', 'bstack:worker'));
 });
 

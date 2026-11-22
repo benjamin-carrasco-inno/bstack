@@ -12,25 +12,25 @@ description: Clean up comments without letting the author judge them. Spawns the
 - No argument: the diff against the base branch, including the working tree (`git diff $(git merge-base origin/<base> HEAD)`) and untracked files (`git ls-files --others --exclude-standard`).
 - Paths, or "the whole repo": those files.
 
-For a diff, the comments in scope are those it adds or changes, plus existing ones in the changed files that name code the diff changes or removes (a code change can make an unchanged comment stale). Give the critic this definition with the scope.
+For a diff, the comments in scope are those it adds or changes, plus existing ones in the changed files that name code the diff changes or removes (a code change can make an unchanged comment stale).
 
-Record now, in the checkout: the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/fingerprint.mjs"` (HEAD, branch, index, exclude files and the content of every tracked and untracked file, ending in a `fingerprint:` line), and the result of the repo's tests and linters.
+Record now: `git status --porcelain`, and the result of the repo's tests and linters.
 
 ## 2. Spawn the critic
 
-Spawn `bstack:comment-critic` with only the checkout path and the scope. Not your view of the comments. It must form its own.
+The critic has only Read, Grep and Glob, so it cannot change the checkout; you run every command for it. Spawn `bstack:comment-critic` with only: the checkout path, the scope definition above, the absolute paths of the files in scope, and for a diff its full text. Not your view of the comments. It must form its own.
 
 ## 3. Check the report
 
 The report is accepted only when every check holds:
-- The fingerprint is unchanged: the script exits 0 both times and the `fingerprint:` lines are equal, so the critic edited nothing. A non-zero exit rejects the report.
+- `git status --porcelain` is unchanged.
 - Every line has five fields (the proof is all after the fourth ` | `) and a class with an action it allows: tautology and stale `delete`; excuse `fix` or `issue`; a suppression of any class also `fix`; decision `adr` or `delete`; constraint `encode` or `issue`; external `keep`.
-- Every line has proof, and the file and line hold a comment in scope as step 1 defines it.
+- Every line has proof, and the file and line hold a comment in scope as step 1 defines it. Run every command a proof names; its output must match.
 - No comment in scope is missing: compare against a search for the comment markers in the scope's files.
 - Every `keep` is external, and its proof holds when you check it again: run the command, or open the link and find the pinned version in the repo.
 - Every `adr` meets all three parts of the ADR bar in `bstack:plan` (hard to reverse, surprising without context, a real trade-off). A decision that fails one is deleted.
 
-A rejected report gets **one** rerun: a fresh critic with the scope and the failed lines, each with the check it failed. If the rerun is rejected too, the skill fails: act on nothing and report every comment in scope as open.
+A rejected report gets **one** rerun: a fresh critic with the same input and the failed lines, each with the check it failed. If the rerun is rejected too, the skill fails: act on nothing and report every comment in scope as open.
 
 ## 4. Act on an accepted report
 
