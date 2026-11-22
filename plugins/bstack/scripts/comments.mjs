@@ -34,7 +34,7 @@ export const SYNTAX = {
     line: ['#'],
     wordStart: true,
     strings: [
-      pattern(/(?<!<)<<(-?)[ \t]*(['"]?)([A-Za-z_]\w*)\2/y, m => new RegExp(`\\n${m[1] ? '\\t*' : ''}${m[3]}(?=\\n|$)`, 'y')),
+      pattern(/(?<!<)<<(?<!\(\((?:(?!\)\))[^\n])*<<)(-?)[ \t]*(['"]?)([A-Za-z_]\w*)\2/y, m => new RegExp(`\\n${m[1] ? '\\t*' : ''}${m[3]}(?=\\n|$)`, 'y')),
       str("$'", '\\', true, "'"),
       str('"', '\\', true),
       str("'", null, true),
@@ -133,6 +133,16 @@ function findComments(src, syn) {
   const startsWord = k => k === 0 || /[\s;|&()]/.test(src[k - 1]);
   const startsValue = k => k === 0 || /[\s[{,:]/.test(src[k - 1]);
   const opener = (list, k) => list?.find(m => src.startsWith(typeof m === 'string' ? m : m[0], k) && (!syn.wordStart || startsWord(k)));
+  const ahead = new Map();
+  const closesAhead = (close, from) => {
+    const seen = ahead.get(close.source);
+    if (seen && seen.from <= from && (seen.at < 0 || seen.at >= from)) return seen.at >= 0;
+    const re = new RegExp(close.source, 'g');
+    re.lastIndex = from;
+    const at = re.exec(src)?.index ?? -1;
+    ahead.set(close.source, { from, at });
+    return at >= 0;
+  };
   const stringAt = k => {
     for (const s of syn.strings) {
       if (typeof s.open === 'string') {
@@ -141,7 +151,8 @@ function findComments(src, syn) {
       }
       s.open.lastIndex = k;
       const m = s.open.exec(src);
-      if (m) return { s, body: k + m[0].length, close: s.close(m) };
+      const close = m && s.close(m);
+      if (m && (typeof close === 'string' || closesAhead(close, k + m[0].length))) return { s, body: k + m[0].length, close };
     }
     return null;
   };

@@ -102,6 +102,8 @@ test('a long single line with many strings counts in linear time', () => {
   assert.deepEqual(countSource('a.py', 'a="x";b="""y""";'.repeat(90000)), { comments: 0, suppressions: 0 });
   assert.deepEqual(countSource('a.js', `${'x=[/['.repeat(90000)}\n`), { comments: 0, suppressions: 0 });
   assert.deepEqual(countSource('a.py', 'f"{'.repeat(90000)), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'a=$((b << c))\n'.repeat(75000)), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'cat <<NOPE\n'.repeat(90000)), { comments: 0, suppressions: 0 });
   assert.ok(performance.now() - started < 2000, `took ${Math.round(performance.now() - started)} ms`);
 });
 
@@ -173,6 +175,12 @@ test('a sh heredoc body is a string, closed only by its delimiter on a line of i
   assert.deepEqual(countSource('a.sh', 'cat << END_X\n# d\nEND_X\n# four\n'), { comments: 1, suppressions: 0 });
   assert.deepEqual(countSource('a.sh', 'cat <<< EOF\n# one\nEOF\n# two\n'), { comments: 2, suppressions: 0 });
   assert.deepEqual(countSource('a.sh', 'echo $((1 << 2))\n# one\n2\n# two\n'), { comments: 2, suppressions: 0 });
+});
+
+test('a sh << in arithmetic or without its delimiter line is an operator, not a heredoc', () => {
+  assert.deepEqual(countSource('a.sh', 'echo $((x << y))\n# one\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', '(( x <<= 2 ))\n# two\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'cat <<NOPE\necho hi\n# three\n'), { comments: 1, suppressions: 0 });
 });
 
 test('a PowerShell here-string body is a string', () => {
