@@ -8,11 +8,13 @@ const USAGE = `usage: comments.mjs count [paths...]   comment lines and suppress
        comments.mjs baseline           write .github/comment-baseline.json for the tracked files of this repo`;
 
 const str = (open, escape = '\\', multiline = false) => ({ open, escape, multiline });
+const doc = open => ({ ...str(open, '\\', true), doc: true });
+const pattern = (open, close) => ({ open, close, escape: null, multiline: true });
 
 export const SYNTAX = {
   py: {
     line: ['#'],
-    strings: [str('"""', '\\', true), str("'''", '\\', true), str('"'), str("'")],
+    strings: [doc('"""'), doc("'''"), str('"'), str("'")],
     prefixes: /^[rbuf]{1,2}$/i,
     docstrings: true,
     directives: [/^type:/, /^(pyright|mypy):/, /^-\*-.*-\*-$/],
@@ -47,7 +49,17 @@ export const SYNTAX = {
     directives: [/^yaml-language-server:/],
   },
   sql: { line: ['--'], block: [['/*', '*/']], strings: [str("'", null, true), str('"', null, true)] },
-  rs: { line: ['//'], block: [['/*', '*/']], strings: [str('"', '\\', true)], codeSuppression: /^\s*#!?\[allow\(/ },
+  rs: {
+    line: ['//'],
+    block: [['/*', '*/']],
+    strings: [
+      pattern(/b?r(#*)"/y, m => `"${m[1]}`),
+      str('"', '\\', true),
+      pattern(/'(?:[^'\\\n]|\\(?:x[0-9a-f]{2}|u\{[0-9a-f]{1,6}\}|.))'/iuy, () => ''),
+    ],
+    prefixes: /^b$/,
+    codeSuppression: /^\s*#!?\[allow\(/,
+  },
 };
 
 export const EXTENSIONS = {
@@ -58,13 +70,21 @@ export const EXTENSIONS = {
 };
 
 export const SUPPRESSIONS = [
-  /\bnoqa\b/i, /\btype:\s*ignore\b/, /\bpyright:\s*ignore\b/, /\bpylint:\s*disable/, /\beslint-disable/,
-  /@ts-(ignore|expect-error|nocheck)\b/, /\bshellcheck\s+disable=/, /\byamllint\s+disable/,
+  /^noqa\b/i, /^type:\s*ignore\b/, /^pyright:\s*ignore\b/, /^pylint:\s*disable/, /^eslint-disable/,
+  /^@ts-(ignore|expect-error|nocheck)\b/, /^shellcheck\s+disable=/, /^yamllint\s+disable/,
+  /^mypy:\s*(ignore-errors|disable-error-code)\b/, /^pyright:.*\breport\w+\s*=\s*(false|none)\b/i,
 ];
 const ENCODING = /coding[:=]\s*[-\w.]+/;
 const LICENCE = /copyright\b|\(c\)\s*\d{4}|SPDX-License-Identifier|licensed under|all rights reserved|permission is hereby granted/i;
 const REGEX_AFTER = new Set('(,=:[!&|?{};+-*%<>~^');
 const REGEX_AFTER_WORD = new Set(['return', 'typeof', 'case', 'do', 'else', 'in', 'of', 'new', 'delete', 'void', 'throw', 'yield', 'await']);
+const DOC_TAIL = /[ \t]*(#|\n|$)/y;
+
+export function decodeSource(buf) {
+  if (buf[0] === 0xff && buf[1] === 0xfe) return buf.subarray(2).toString('utf16le');
+  if (buf[0] === 0xfe && buf[1] === 0xff) return Buffer.from(buf.subarray(2, buf.length - (buf.length % 2))).swap16().toString('utf16le');
+  return buf.toString('utf8');
+}
 
 export const syntaxFor = file => SYNTAX[EXTENSIONS[path.extname(file).slice(1).toLowerCase()]] ?? null;
 
@@ -96,27 +116,42 @@ function findComments(src, syn) {
     }
     return lo;
   };
-  const lineEnd = k => (src.indexOf('\n', k) < 0 ? n : src.indexOf('\n', k));
+  const lineStart = k => (lineOf(k) ? newlines[lineOf(k) - 1] + 1 : 0);
+  const lineEnd = k => newlines[lineOf(k)] ?? n;
   const startsWord = k => k === 0 || /[\s;|&()]/.test(src[k - 1]);
   const startsValue = k => k === 0 || /[\s[{,:]/.test(src[k - 1]);
   const opener = (list, k) => list?.find(m => src.startsWith(typeof m === 'string' ? m : m[0], k) && (!syn.wordStart || startsWord(k)));
-  const stringAt = k => syn.strings.find(s => src.startsWith(s.open, k));
+  const stringAt = k => {
+    for (const s of syn.strings) {
+      if (typeof s.open === 'string') {
+        if (src.startsWith(s.open, k)) return { s, body: k + s.open.length, close: s.open };
+        continue;
+      }
+      s.open.lastIndex = k;
+      const m = s.open.exec(src);
+      if (m) return { s, body: k + m[0].length, close: s.close(m) };
+    }
+    return null;
+  };
 
   const found = [];
-  let code = false, prev = '', word = '';
+  let code = false, prev = '', word = '', lastEnd = -1, regexFailsBefore = -1;
   const push = (from, stop, body) => found.push({ from: lineOf(from), to: lineOf(Math.max(from, stop - 1)), body, header: !code });
+  const operand = () => prev === 's' || prev === ')' || prev === ']' || (prev === 'w' && !REGEX_AFTER_WORD.has(word));
+  const isDocstring = (token, stop) => {
+    DOC_TAIL.lastIndex = stop;
+    return (!code || prev === ':') && lastEnd < lineStart(token) && DOC_TAIL.test(src);
+  };
 
-  const readString = (token, quote) => {
-    const s = stringAt(quote);
-    let k = quote + s.open.length, stop = n;
+  const readString = (token, { s, body, close }) => {
+    let k = body, stop = n;
     while (k < n) {
-      if (src.startsWith(s.open, k)) { stop = k + s.open.length; break; }
+      if (src.startsWith(close, k)) { stop = k + close.length; break; }
       if (src[k] === '\n' && !s.multiline) { stop = k; break; }
       k += src[k] === s.escape ? 2 : 1;
     }
-    const alone = src.slice(src.lastIndexOf('\n', token - 1) + 1, token).trim() === '';
-    if (syn.docstrings && s.open.length === 3 && alone && /^[ \t]*(#.*)?$/.test(src.slice(stop, lineEnd(stop)))) {
-      push(token, stop, src.slice(quote + 3, Math.max(quote + 3, stop - 3)));
+    if (syn.docstrings && s.doc && isDocstring(token, stop)) {
+      push(token, stop, src.slice(body, Math.max(body, stop - close.length)));
     } else {
       code = true;
       prev = 's';
@@ -125,10 +160,14 @@ function findComments(src, syn) {
   };
 
   const readRegex = start => {
+    if (start < regexFailsBefore) return start + 1;
     let k = start + 1, inClass = false;
     while (k < n) {
       const ch = src[k];
-      if (ch === '\n') return start + 1;
+      if (ch === '\n') {
+        regexFailsBefore = k;
+        return start + 1;
+      }
       if (ch === '\\') { k += 2; continue; }
       if (ch === '[') inClass = true;
       else if (ch === ']') inClass = false;
@@ -140,47 +179,53 @@ function findComments(src, syn) {
     return k;
   };
 
-  let i = src.startsWith('#!') ? lineEnd(0) : 0;
-  while (i < n) {
+  const step = i => {
     const c = src[i];
-    if (/\s/.test(c)) { i++; continue; }
     const block = opener(syn.block, i);
     if (block) {
       const close = src.indexOf(block[1], i + block[0].length);
       const stop = close < 0 ? n : close + block[1].length;
       push(i, stop, src.slice(i + block[0].length, close < 0 ? n : close));
-      i = stop;
-      continue;
+      return stop;
     }
     const line = opener(syn.line, i);
     if (line) {
       const stop = lineEnd(i);
       push(i, stop, src.slice(i + line.length, stop));
-      i = stop;
-      continue;
+      return stop;
     }
+    const quoted = stringAt(i);
+    if (quoted && (!syn.quoteWordStart || startsValue(i))) return readString(i, quoted);
     if (/[\w$]/.test(c)) {
       let j = i;
       while (j < n && /[\w$]/.test(src[j])) j++;
       const w = src.slice(i, j);
-      if (syn.prefixes?.test(w) && stringAt(j)) { i = readString(i, j); continue; }
+      const prefixed = syn.prefixes?.test(w) && stringAt(j);
+      if (prefixed) return readString(i, prefixed);
       code = true;
       prev = 'w';
       word = w;
-      i = j;
-      continue;
-    }
-    if (stringAt(i) && (!syn.quoteWordStart || startsValue(i))) { i = readString(i, i); continue; }
-    if (syn.regex && c === '/' && (prev === '' || REGEX_AFTER.has(prev) || (prev === 'w' && REGEX_AFTER_WORD.has(word)))) {
-      const stop = readRegex(i);
-      code = true;
-      prev = stop > i + 1 ? 's' : '/';
-      i = stop;
-      continue;
+      return j;
     }
     code = true;
+    if (syn.regex && c === '/' && (prev === '' || REGEX_AFTER.has(prev) || (prev === 'w' && REGEX_AFTER_WORD.has(word)))) {
+      const stop = readRegex(i);
+      prev = stop > i + 1 ? 's' : '/';
+      return stop;
+    }
+    if (syn.regex && (c === '+' || c === '-') && src[i + 1] === c && operand()) {
+      prev = ')';
+      return i + 2;
+    }
     prev = c;
-    i++;
+    return i + 1;
+  };
+
+  let i = src.startsWith('#!') ? lineEnd(0) : 0;
+  while (i < n) {
+    if (/\s/.test(src[i])) { i++; continue; }
+    i = step(i);
+    lastEnd = i;
   }
   return found;
 }
@@ -198,9 +243,12 @@ function classify(found, syn) {
     group.push(f);
   }
   flush();
+  const firstLine = body => body.split('\n').map(l => l.replace(/^[\s*]+/, '')).find(Boolean) ?? '';
+  const segments = line => (syn.line ?? []).reduce((parts, m) => parts.flatMap(p => p.split(m)), [line]);
+  const suppresses = body => segments(firstLine(body)).some(seg => SUPPRESSIONS.some(re => re.test(seg.trimStart())));
   return found.map(f => {
     const text = f.body.trim();
-    if (SUPPRESSIONS.some(re => re.test(text))) return 'suppression';
+    if (suppresses(f.body)) return 'suppression';
     if (licensed.has(f) || /SPDX-License-Identifier/.test(text)) return 'exempt';
     if (f.from < 2 && ENCODING.test(text)) return 'exempt';
     if (syn.directives?.some(re => re.test(text))) return 'exempt';
@@ -224,7 +272,7 @@ export function countFiles(cwd, files) {
   for (const f of files) {
     let text;
     try {
-      text = fs.readFileSync(path.join(cwd, f), 'utf8');
+      text = decodeSource(fs.readFileSync(path.join(cwd, f)));
     } catch (e) {
       if (e.code === 'ENOENT' || e.code === 'EISDIR') continue;
       throw e;
@@ -255,6 +303,8 @@ export function writeBaseline(cwd) {
   return { path: target, files: Object.keys(files).length, comments: Object.values(files).reduce((a, b) => a + b, 0) };
 }
 
+const plural = (amount, noun) => `${amount} ${noun}${amount === 1 ? '' : 's'}`;
+
 function main() {
   const [cmd, ...paths] = process.argv.slice(2);
   const cwd = process.cwd();
@@ -262,10 +312,10 @@ function main() {
     const result = count(cwd, paths);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     const { total } = result;
-    process.stderr.write(`${total.comments} comment lines and ${total.suppressions} suppressions in ${Object.keys(result.files).length} of ${total.files} files\n`);
+    process.stderr.write(`${plural(total.comments, 'comment line')} and ${plural(total.suppressions, 'suppression')} in ${Object.keys(result.files).length} of ${plural(total.files, 'file')}\n`);
   } else if (cmd === 'baseline' && !paths.length) {
     const out = writeBaseline(cwd);
-    process.stderr.write(`wrote ${BASELINE}: ${out.comments} comment lines in ${out.files} files\n`);
+    process.stderr.write(`wrote ${BASELINE}: ${plural(out.comments, 'comment line')} in ${plural(out.files, 'file')}\n`);
   } else {
     process.stderr.write(`${USAGE}\n`);
     process.exit(1);

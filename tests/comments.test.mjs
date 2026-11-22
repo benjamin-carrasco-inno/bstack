@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { countSource } from '../plugins/bstack/scripts/comments.mjs';
+import { countFiles, countSource, decodeSource } from '../plugins/bstack/scripts/comments.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixtures = path.join(here, 'fixtures', 'comments');
@@ -84,6 +84,74 @@ test('a docstring counts; a triple-quoted string that is not a statement does no
   assert.deepEqual(countSource('a.py', 'x = """\nnot\n"""\ny = f("""a""", 1)\n'), { comments: 0, suppressions: 0 });
 });
 
+test('a Rust char literal or raw string does not swallow the rest of the file', () => {
+  const chars = "let q = s.trim_matches('\"'); // real comment\nlet t = \"x\";\n// second comment\nfn f() {}\n";
+  assert.deepEqual(countSource('a.rs', chars), { comments: 2, suppressions: 0 });
+  assert.deepEqual(countSource('a.rs', 'let p = r"C:\\dir\\"; // real\nlet q = "y"; // real2\n'), { comments: 2, suppressions: 0 });
+  const mixed = [
+    "let a = '\\''; // one", "let b = '\\n'; // two", "let c = b'\"'; // three",
+    "fn f<'a>(x: &'a str) -> &'static str { x } // four",
+    'let d = r#"a "quoted" // not"#; // five', 'let e = br"\\"; // six', 'let g = b"\\" // not"; // seven',
+  ].join('\n');
+  assert.deepEqual(countSource('a.rs', mixed), { comments: 7, suppressions: 0 });
+});
+
+test('a long single line with many strings counts in linear time', () => {
+  const started = performance.now();
+  assert.deepEqual(countSource('a.js', 'var a="x",b="y";'.repeat(90000)), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', 'a="x";b="""y""";'.repeat(90000)), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.js', `${'x=[/['.repeat(90000)}\n`), { comments: 0, suppressions: 0 });
+  assert.ok(performance.now() - started < 2000, `took ${Math.round(performance.now() - started)} ms`);
+});
+
+test('a triple-quoted argument on its own line is not a docstring', () => {
+  assert.deepEqual(countSource('a.py', 'q = run(\n    """\n    SELECT 1\n    """\n)\n'), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', 'x = [\n    """a""",\n]\n'), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', 'class A:\n    """Doc."""\n'), { comments: 1, suppressions: 0 });
+});
+
+test('prose that mentions a suppression word is a comment, not a suppression', () => {
+  assert.deepEqual(countSource('a.py', 'def f():\n    """Explain.\n\n    We never add noqa here.\n    """\n'), { comments: 4, suppressions: 0 });
+  assert.deepEqual(countSource('a.js', '// we used to eslint-disable this\nx();\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', 'x = 1  # some text  # type: ignore\n'), { comments: 0, suppressions: 1 });
+  assert.deepEqual(countSource('a.js', '/**\n * @ts-ignore old types\n */\nx();\n'), { comments: 0, suppressions: 3 });
+  assert.deepEqual(countSource('a.js', 'x(); // eslint-disable-line no-console\n'), { comments: 0, suppressions: 1 });
+});
+
+test('file-wide type-check switches are suppressions; other type-checker settings are exempt', () => {
+  assert.deepEqual(countSource('a.py', '# mypy: ignore-errors\nx = 1\n'), { comments: 0, suppressions: 1 });
+  assert.deepEqual(countSource('a.py', '# mypy: disable-error-code="attr-defined"\nx = 1\n'), { comments: 0, suppressions: 1 });
+  assert.deepEqual(countSource('a.py', '# pyright: reportMissingImports=false\nx = 1\n'), { comments: 0, suppressions: 1 });
+  assert.deepEqual(countSource('a.py', '# pyright: basic, reportPrivateUsage=none\nx = 1\n'), { comments: 0, suppressions: 1 });
+  assert.deepEqual(countSource('a.py', '# mypy: strict\n# pyright: strict\n# pyright: reportUnusedImport=true\nx = 1\n'), { comments: 0, suppressions: 0 });
+});
+
+test('a slash after a postfix increment or decrement is division', () => {
+  assert.deepEqual(countSource('a.js', 'x = a++ / 2; // c\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.js', 'x = a-- / 2; // c\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.js', 'x = y + ++a / 2; // c\nz = [a--, /re/g]; // d\n'), { comments: 2, suppressions: 0 });
+});
+
+test('a UTF-16 file is decoded by its byte order mark', () => {
+  const text = '# a comment\r\n$x = 1 # another\r\n';
+  const le = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+  const be = Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(text, 'utf16le').swap16()]);
+  assert.equal(decodeSource(le), text);
+  assert.equal(decodeSource(be), text);
+  assert.equal(decodeSource(Buffer.from(text)), text);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-comments-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'a.ps1'), le);
+    fs.writeFileSync(path.join(dir, 'b.ps1'), be);
+    assert.deepEqual(countFiles(dir, ['a.ps1', 'b.ps1']), {
+      'a.ps1': { comments: 2, suppressions: 0 },
+      'b.ps1': { comments: 2, suppressions: 0 },
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('CRLF and a byte order mark give the same counts as LF', () => {
   const text = fs.readFileSync(path.join(fixtures, 'sample.py'), 'utf8');
   assert.deepEqual(countSource('a.py', `﻿${text.replace(/\n/g, '\r\n')}`), HAND_COUNTED['sample.py']);
@@ -143,9 +211,11 @@ test('count prints JSON per file and in total, with a summary line on stderr', (
       },
       total: { files: 4, comments: 4, suppressions: 1 },
     });
-    assert.equal(all.stderr, '4 comment lines and 1 suppressions in 3 of 4 files\n');
+    assert.equal(all.stderr, '4 comment lines and 1 suppression in 3 of 4 files\n');
     const some = run(dir, 'count', 'lib', 'untracked.py');
     assert.deepEqual(JSON.parse(some.stdout).total, { files: 2, comments: 2, suppressions: 1 });
+    assert.equal(some.stderr, '2 comment lines and 1 suppression in 2 of 2 files\n');
+    assert.equal(run(dir, 'count', 'src/a.mjs').stderr, '1 comment line and 0 suppressions in 1 of 1 file\n');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
