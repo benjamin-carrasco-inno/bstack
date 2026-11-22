@@ -406,6 +406,79 @@ test('comment ratchet: a file already over its baseline may change but not grow'
   assert.match(repo.run('git commit -m "fix: x"'), /app\.py: baseline 1, this commit 3 \(2 before it\)/);
 });
 
+function conflicted(start) {
+  const repo = fixture({ 'app.py': NONE, 'c.py': 'c = 0\n' }, { 'app.py': 0, 'c.py': 0 });
+  repo.git('switch', '-qc', 'feat');
+  repo.write('c.py', 'c = 2\n');
+  repo.git('commit', '-qam', 'feat: c');
+  repo.git('switch', '-q', 'main');
+  repo.write('app.py', ONE);
+  repo.write('c.py', 'c = 1\n');
+  repo.git('commit', '-qam', 'human: comment app.py');
+  const theirs = repo.git('rev-parse', 'HEAD').trim();
+  repo.git('switch', '-q', 'feat');
+  assert.throws(() => execFileSync('git', ['-C', repo.dir, ...start(theirs)], { stdio: 'ignore' }));
+  repo.write('c.py', 'c = 3\n');
+  return repo;
+}
+
+test('comment ratchet: concluding a merge or cherry-pick allows comments that came from the other side', () => {
+  const merge = conflicted(() => ['merge', 'main']);
+  assert.equal(merge.run('git add c.py && git commit --no-edit'), null);
+  const pick = conflicted(theirs => ['cherry-pick', theirs]);
+  assert.equal(pick.run('git add c.py && git commit --no-edit'), null);
+});
+
+test('comment ratchet: a comment the feature side adds while resolving a merge is still refused', () => {
+  const merge = conflicted(() => ['merge', 'main']);
+  merge.write('c.py', '# feature note\nc = 3\n');
+  assert.match(merge.run('git add c.py && git commit --no-edit') ?? '', /c\.py: baseline 0, this commit 1/);
+  merge.write('c.py', 'c = 3\n');
+  merge.write('app.py', TWO);
+  assert.match(merge.run('git add -A && git commit --no-edit') ?? '', /app\.py: baseline 0, this commit 2/);
+});
+
+test('comment ratchet: concluding a revert allows comments the reverted commit removed', () => {
+  const repo = fixture({ 'app.py': ONE, 'c.py': 'c = 0\n' }, { 'app.py': 1, 'c.py': 0 });
+  repo.write('app.py', NONE);
+  repo.write('c.py', 'c = 1\n');
+  repo.git('commit', '-qam', 'refactor: drop the comment');
+  const cleanup = repo.git('rev-parse', 'HEAD').trim();
+  repo.write('c.py', 'c = 2\n');
+  repo.write('.github/comment-baseline.json', `${JSON.stringify({ files: { 'app.py': 0, 'c.py': 0 } })}\n`);
+  repo.git('commit', '-qam', 'chore: lower the baseline');
+  assert.throws(() => execFileSync('git', ['-C', repo.dir, 'revert', '--no-edit', cleanup], { stdio: 'ignore' }));
+  repo.write('c.py', 'c = 2\n');
+  assert.equal(repo.run('git add -A && git commit --no-edit'), null);
+});
+
+test('comment ratchet: --pathspec-from-file limits the commit like positional pathspecs', () => {
+  const repo = fixture({ 'app.py': ONE, 'b.py': NONE }, { 'app.py': 1, 'b.py': 0 });
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  repo.write('b.py', `${NONE}y = 2\n`);
+  repo.write('list.txt', 'b.py\n');
+  assert.equal(repo.run('git commit -m x --pathspec-from-file=list.txt'), null);
+  assert.equal(repo.run('git commit -m x --pathspec-from-file list.txt'), null);
+  repo.git('reset', '-q');
+  repo.write('list.txt', 'app.py\n');
+  assert.match(repo.run('git commit -m x --pathspec-from-file=list.txt') ?? '', /app\.py: baseline 1, this commit 2/);
+  repo.write('list.txt', 'b.py\0app.py\0');
+  assert.match(repo.run('git commit -m x --pathspec-from-file list.txt --pathspec-file-nul') ?? '', /app\.py: baseline 1, this commit 2/);
+  repo.write('sub/list.txt', '../app.py\n');
+  assert.match(repo.run('git commit -m x --pathspec-from-file=list.txt', 'Bash', path.join(repo.dir, 'sub')) ?? '', /app\.py: baseline 1, this commit 2/);
+  assert.equal(repo.staged(), '', 'the guard must not touch the real index');
+});
+
+test('comment ratchet: the refusal says to run the baseline command on its own before committing', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  const reason = repo.run('git commit -m "feat: total"');
+  assert.match(reason, /first, as its own command/);
+  assert.match(reason, /then stage and commit/);
+});
+
 test('comment ratchet: an unreadable baseline fails closed', () => {
   const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
   repo.write('.github/comment-baseline.json', '{"files": {"app.py": "one"}}');
