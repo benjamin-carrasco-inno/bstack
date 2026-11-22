@@ -673,3 +673,37 @@ test('a sh command substitution inside a double-quoted string is code with its o
   assert.deepEqual(countSource('a.sh', 'n="$(( (1 + 2) * 3 ))" # real\n'), { comments: 1, suppressions: 0 });
   assert.deepEqual(countSource('a.sh', 'msg="cost \\$(not a field) # in the string"\n'), { comments: 0, suppressions: 0 });
 });
+
+test('a backslash outside a sh string, or a backtick outside a ps1 string, escapes the next character', () => {
+  const tail = '\n# one\nx=1 # two\n# three\n';
+  assert.deepEqual(countSource('a.sh', `echo don\\'t panic${tail}`), { comments: 3, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', `echo \\"hi${tail}`), { comments: 3, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'echo \\# not a comment\n'), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'echo a \\\n  # real\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.ps1', "Write-Output don`'t\n# one\n"), { comments: 1, suppressions: 0 });
+});
+
+test('a single-quoted Python string alone as the first statement is a docstring', () => {
+  assert.deepEqual(countSource('a.py', '"Module doc."\ndef f():\n    "Doc f."\nclass A:\n    \'Doc A.\'\n'), { comments: 3, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', 'x = 1\n"not a docstring after code"\n'), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', 'f(\n    "an argument",\n)\n'), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', 'd = {\n    "k":\n        "v"\n}\n'), { comments: 0, suppressions: 0 });
+});
+
+test('a doubled quote inside a YAML single-quoted scalar is an escape', () => {
+  assert.deepEqual(countSource('a.yml', "a: 'it''s # not a comment'\n"), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.yml', "a: 'it''s' # real\n"), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.yml', "a: '' # real\n"), { comments: 1, suppressions: 0 });
+});
+
+test('a SQL dollar-quoted body is a string', () => {
+  assert.deepEqual(countSource('a.sql', "CREATE FUNCTION f() AS $$ don't -- not $$;\n-- one\n"), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sql', "CREATE FUNCTION f() AS $body$ it's $$ -- not $body$;\n-- one\n"), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sql', 'SELECT $1 + $2; -- one\n'), { comments: 1, suppressions: 0 });
+});
+
+test('of, await and yield before a slash are operands', () => {
+  assert.deepEqual(countSource('a.js', 'const of = 4; const h = of / 2; // half\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.js', 'var await = 3; y = await / 2 // c\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.js', 'var yield = 3; y = yield / 2 // c\n'), { comments: 1, suppressions: 0 });
+});

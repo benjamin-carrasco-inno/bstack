@@ -10,7 +10,7 @@ const USAGE = `usage: comments.mjs count [paths...]   comment lines and suppress
 const str = (open, escape = '\\', multiline = false, close = open) => ({ open, escape, multiline, close });
 const doc = open => ({ ...str(open, '\\', true), doc: true });
 const pattern = (open, close) => ({ open, close, escape: null, multiline: true });
-const REGEX_AFTER_WORD = new Set(['return', 'typeof', 'case', 'do', 'else', 'in', 'of', 'new', 'delete', 'void', 'throw', 'yield', 'await']);
+const REGEX_AFTER_WORD = new Set(['return', 'typeof', 'case', 'do', 'else', 'in', 'new', 'delete', 'void', 'throw']);
 const QUOTE_AFTER_WORD = new Set([...REGEX_AFTER_WORD, 'from', 'import']);
 const unglued = open => ({ ...str(open), afterWord: QUOTE_AFTER_WORD });
 const literal = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -18,7 +18,7 @@ const literal = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export const SYNTAX = {
   py: {
     line: ['#'],
-    strings: [doc('"""'), doc("'''"), str('"'), str("'")],
+    strings: [doc('"""'), doc("'''"), { ...str('"'), doc: true }, { ...str("'"), doc: true }],
     prefixes: /^[rbuft]{1,2}$/i,
     field: { prefix: /[ft]/i, open: '{', literal: '{{', spec: ':' },
     docstrings: true,
@@ -42,6 +42,7 @@ export const SYNTAX = {
   sh: {
     line: ['#'],
     wordStart: true,
+    escape: '\\',
     strings: [
       pattern(/(?<!<)<<(?<!\(\((?:(?!\)\))[^\n])*<<)(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([A-Za-z_][^\s;&|<>()'"\\]*))/y, m => new RegExp(`\\n${m[1] ? '\\t*' : ''}${literal(m[2] ?? m[3] ?? m[4])}(?=\\n|$)`, 'y')),
       str("$'", '\\', true, "'"),
@@ -54,6 +55,7 @@ export const SYNTAX = {
     line: ['#'],
     block: [['<#', '#>']],
     wordStart: true,
+    escape: '`',
     strings: [
       pattern(/@(['"])[ \t]*(?=\n)/y, m => new RegExp(`\\n${m[1]}@`, 'y')),
       str('"', '`', true),
@@ -65,10 +67,14 @@ export const SYNTAX = {
     line: ['#'],
     wordStart: true,
     quoteWordStart: true,
-    strings: [str('"'), str("'", null)],
+    strings: [str('"'), { ...str("'", null), doubled: true }],
     directives: [/^yaml-language-server:/],
   },
-  sql: { line: ['--'], block: [['/*', '*/']], strings: [str("'", null, true), str('"', null, true)] },
+  sql: {
+    line: ['--'],
+    block: [['/*', '*/']],
+    strings: [pattern(/\$(\w*)\$/y, m => m[0]), str("'", null, true), str('"', null, true)],
+  },
   rs: {
     line: ['//'],
     block: [['/*', '*/']],
@@ -270,6 +276,7 @@ function findComments(src, syn) {
 
   const skipString = (k, s, close, field) => {
     while (k < n) {
+      if (s.doubled && src.startsWith(close + close, k)) { k += 2 * close.length; continue; }
       const end = closesAt(close, k);
       if (end >= 0) return end;
       if (src[k] === '\n' && !s.multiline) return k;
@@ -298,7 +305,7 @@ function findComments(src, syn) {
 
   const readString = (token, { s, body, close }, prefix = '') => {
     const stop = skipString(body, s, close, s.field ?? (syn.field?.prefix.test(prefix) ? syn.field : null));
-    if (syn.docstrings && s.doc && isDocstring(token, stop)) {
+    if (syn.docstrings && s.doc && (s.multiline || !/[fbt]/i.test(prefix)) && isDocstring(token, stop)) {
       push(token, stop, src.slice(body, Math.max(body, stop - close.length)), 'block');
     } else {
       code = true;
@@ -359,6 +366,11 @@ function findComments(src, syn) {
       const stop = lineEnd(i);
       push(i, stop, src.slice(i + line.length, stop), 'line');
       return stop;
+    }
+    if (syn.escape && c === syn.escape) {
+      code = true;
+      prev = 'w';
+      return Math.min(n, i + 2);
     }
     const quoted = stringAt(i);
     const glued = quoted?.s.afterWord && i > 0 && /[\w$]/.test(src[i - 1]) && !quoted.s.afterWord.has(word);
