@@ -10,7 +10,7 @@ const USAGE = `usage: comments.mjs count [paths...]   comment lines and suppress
 const str = (open, escape = '\\', multiline = false, close = open) => ({ open, escape, multiline, close });
 const doc = open => ({ ...str(open, '\\', true), doc: true });
 const pattern = (open, close) => ({ open, close, escape: null, multiline: true });
-const REGEX_AFTER_WORD = new Set(['return', 'typeof', 'case', 'do', 'else', 'in', 'new', 'delete', 'void', 'throw']);
+const REGEX_AFTER_WORD = new Set(['return', 'typeof', 'case', 'do', 'else', 'in', 'new', 'delete', 'void', 'throw', 'yield', 'await']);
 const QUOTE_AFTER_WORD = new Set([...REGEX_AFTER_WORD, 'from', 'import']);
 const unglued = open => ({ ...str(open), afterWord: QUOTE_AFTER_WORD });
 const literal = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -54,11 +54,11 @@ export const SYNTAX = {
   ps1: {
     line: ['#'],
     block: [['<#', '#>']],
-    wordStart: true,
+    wordStart: /[\s;|&(){}]/,
     escape: '`',
     strings: [
       pattern(/@(['"])[ \t]*(?=\n)/y, m => new RegExp(`\\n${m[1]}@`, 'y')),
-      str('"', '`', true),
+      { ...str('"', '`', true), field: { open: '$(', close: ')' } },
       str("'", null, true),
     ],
     directives: [/^requires\s+-/i],
@@ -67,13 +67,13 @@ export const SYNTAX = {
     line: ['#'],
     wordStart: true,
     quoteWordStart: true,
-    strings: [str('"'), { ...str("'", null), doubled: true }],
+    strings: [str('"', '\\', true), { ...str("'", null), doubled: true }],
     directives: [/^yaml-language-server:/],
   },
   sql: {
     line: ['--'],
     block: [['/*', '*/']],
-    strings: [pattern(/\$(\w*)\$/y, m => m[0]), str("'", null, true), str('"', null, true)],
+    strings: [pattern(/\$(\w*)\$/y, m => m[0]), str("E'", '\\', true, "'"), str("e'", '\\', true, "'"), str("'", null, true), str('"', null, true)],
   },
   rs: {
     line: ['//'],
@@ -232,7 +232,8 @@ function findComments(src, syn) {
   };
   const lineStart = k => (lineOf(k) ? newlines[lineOf(k) - 1] + 1 : 0);
   const lineEnd = k => newlines[lineOf(k)] ?? n;
-  const startsWord = k => k === 0 || /[\s;|&()]/.test(src[k - 1]);
+  const wordBoundary = syn.wordStart instanceof RegExp ? syn.wordStart : /[\s;|&()]/;
+  const startsWord = k => k === 0 || wordBoundary.test(src[k - 1]);
   const startsValue = k => k === 0 || /[\s[{,:]/.test(src[k - 1]);
   const opener = (list, k) => list?.find(m => src.startsWith(typeof m === 'string' ? m : m[0], k) && (!syn.wordStart || startsWord(k)));
   const ahead = new Map();

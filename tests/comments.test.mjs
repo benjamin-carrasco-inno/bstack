@@ -702,8 +702,26 @@ test('a SQL dollar-quoted body is a string', () => {
   assert.deepEqual(countSource('a.sql', 'SELECT $1 + $2; -- one\n'), { comments: 1, suppressions: 0 });
 });
 
-test('of, await and yield before a slash are operands', () => {
+test('of before a slash is an operand; yield and await before a slash start a regex', () => {
   assert.deepEqual(countSource('a.js', 'const of = 4; const h = of / 2; // half\n'), { comments: 1, suppressions: 0 });
-  assert.deepEqual(countSource('a.js', 'var await = 3; y = await / 2 // c\n'), { comments: 1, suppressions: 0 });
-  assert.deepEqual(countSource('a.js', 'var yield = 3; y = yield / 2 // c\n'), { comments: 1, suppressions: 0 });
+  const generators = "function* tokens() {\n  yield /'/; // the quote token\n}\nasync function f() { return await /\"/; } // awaits a regex\n";
+  assert.deepEqual(countSource('a.js', generators), { comments: 2, suppressions: 0 });
+});
+
+test('a PowerShell comment may follow a brace, and $( ) inside a double-quoted string is code', () => {
+  assert.deepEqual(countSource('a.ps1', 'if ($x) {# real\n}\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.ps1', 'if ($x) { $y }# real\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.ps1', '$y = "$($items -join " # ")"\n'), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.ps1', '$y = "$($items -join " # ") # still the string" # real\n'), { comments: 1, suppressions: 0 });
+});
+
+test('a SQL escape string takes backslash escapes', () => {
+  assert.deepEqual(countSource('a.sql', "SELECT E'it\\'s -- not a comment';\n"), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.sql', "SELECT e'a\\\\' -- real\n"), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sql', "SELECT 'it\\' -- real\n"), { comments: 1, suppressions: 0 });
+});
+
+test('a YAML double-quoted scalar may span lines', () => {
+  assert.deepEqual(countSource('a.yml', 'a: "line one\n  # not a comment\n  line two"\n# real\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.yml', 'size: 5" screen # real\n'), { comments: 1, suppressions: 0 });
 });
