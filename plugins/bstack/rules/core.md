@@ -20,8 +20,12 @@ Independence
 
 Autonomy
 - Make reversible choices yourself and state each in one line with the reason.
-- Stop and ask only before: deploys, changing or deleting existing data, migrations a revert cannot undo, force-pushing a shared branch, messages to other people (mail, posts, comments outside the PR), credentials or access, and product choices no experiment can settle. Ask once, all questions together, each with a recommended default.
+- Stop and ask only before: deploys, changing or deleting existing data, migrations a revert cannot undo, force-pushing a shared branch, messages to other people (mail, posts, a comment that asks or answers someone, mentioning or assigning someone else), credentials or access, and product choices no experiment can settle. Ask once, all questions together, each with a recommended default.
 - "No" and "don't" are valid answers. Challenge a wrong premise.
+
+Memory
+- Work that outlives a session lives in the repo's GitHub issues: plans, decisions, tickets (`bstack:plan`). Recording the work there (create, claim, label, comment, close what is done) is part of it, not a message. A PR that builds a ticket says `Closes #<n>`.
+- Where `GLOSSARY.md` and `docs/adr/` exist, read them before working in an area and use their terms.
 
 Done
 - Done means merged: the PR is squash-merged and read back as merged, and the branch and worktree are removed. End with what goes live at the next deploy.

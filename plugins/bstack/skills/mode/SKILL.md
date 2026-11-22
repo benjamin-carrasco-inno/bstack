@@ -18,16 +18,19 @@ Three lines, then start:
 
 | The task | Playbook |
 |-|-|
+| An idea bigger than one PR, or unclear what to build | the `bstack:plan` skill |
 | How or why does something work; no change | [investigate](playbooks/investigate.md) |
 | Something is broken | [bug-fix](playbooks/bug-fix.md) |
 | New behaviour | [feature](playbooks/feature.md) |
 | Same behaviour, better shape | [refactor](playbooks/refactor.md) |
 | Schema, stored data, or a file or payload format others read | [migration](playbooks/migration.md) |
+| An issue to build, or "the next ticket" | [ticket](playbooks/ticket.md) |
 | A branch exists and must land | [ship](playbooks/ship.md) |
 | "Keep going until X", or a run without the user | [autonomous-run](playbooks/autonomous-run.md) |
 | Review or clean up a whole repo | the `bstack:audit` skill |
+| Incoming issues to sort | the `bstack:triage` skill |
 
-When several fit, the riskiest wins. Every route that changes code ends in ship.
+When several fit, the riskiest wins. Every route that changes code ends in ship, except a `plan:prototype` branch, which is deleted unmerged when its ticket closes.
 
 ## Risk tier
 

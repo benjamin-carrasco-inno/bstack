@@ -1,0 +1,19 @@
+# Ticket
+
+Building one issue. The ticket is the contract: its acceptance criteria are the gate, and the reviewer judges against them.
+
+1. **Load**: `gh issue view <n> --json number,title,body,labels,assignees,parent,blockedBy,comments`. Without a number ("the next ticket"), take `next` from `node "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.mjs" next [<spec>]`. Read the parent spec; open its sources only where a decision is unclear. A status comment from an earlier session means continue its branch or PR (`gh pr list --search "Closes #<n> in:body"`, or the branch the comment names), not start over.
+2. **Check it can start**:
+   - An open blocker, or an assignee (a session is on it now): take the next one instead. A claim left by a session that died (the user says so, or its last status comment ended the work) may be taken over.
+   - A `plan:*` label: it is a decision, not a build. Use `bstack:plan`.
+   - `ready-for-human`: needs the user. Say what for, and take the next one.
+   - No acceptance criteria you could check: run `bstack:triage` on it first.
+3. **Claim** it: `gh issue edit <n> --add-assignee @me`, before any other work.
+4. **Build** through the playbook its content calls for (bug-fix, feature, refactor, migration). Each acceptance criterion is proven on the real surface, not just in a unit test.
+5. **Stay in the ticket.** Something else you find becomes a new issue (`needs-triage`, what you saw and where), not part of the diff.
+6. **Ship** ([ship](ship.md)) with the ticket as the request: the PR's Request section links the ticket and quotes its acceptance criteria, and the body has a line `Closes #<n>`.
+7. **After the merge**, read the ticket back as closed. If it was the last open sub-issue of its spec, close the spec, and the request issue in its Sources, as completed with a comment of what landed. Report the next ticket from `tracker.mjs next <spec>`, or `tracker.mjs next` for a ticket without a spec.
+
+**Gate to ship:** proof for every acceptance criterion, plus the gates of the build playbook.
+
+**Stopping mid-way:** push the branch and leave one status comment (on the PR if there is one, else on the ticket): how far, the branch, the next step, open questions. Then remove the claim (`--remove-assignee @me`): a claim means a session is on it now, and the next session finds the ticket through `next`.
