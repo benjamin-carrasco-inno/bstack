@@ -656,3 +656,20 @@ test('an unknown command prints usage and exits 1', () => {
   assert.equal(out.status, 1);
   assert.match(out.stderr, /usage: comments\.mjs count/);
 });
+
+test('a JS property named like a keyword is an operand, so a slash after it is division', () => {
+  for (const name of ['in', 'of', 'return', 'new', 'delete', 'typeof', 'case', 'yield']) {
+    assert.deepEqual(countSource('a.js', `const kb = stats.${name} / 1024; // inbound KB\n`), { comments: 1, suppressions: 0 }, name);
+    assert.deepEqual(countSource('a.js', `const kb = stats?.${name} / 1024; // inbound KB\n`), { comments: 1, suppressions: 0 }, name);
+  }
+  assert.deepEqual(countSource('a.js', 'function f() { return /\\/\\/ not/.test(x); }\n'), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.js', "if (k in /a/) {} // c\n"), { comments: 1, suppressions: 0 });
+});
+
+test('a sh command substitution inside a double-quoted string is code with its own strings', () => {
+  assert.deepEqual(countSource('a.sh', 'msg="$(printf "%s #%d" a 1)"\n'), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'msg="$(printf "%s #%d" a 1) # still the string"\n# real\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'msg="$(echo "$(date "+%H #%M")")"\n# real\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'n="$(( (1 + 2) * 3 ))" # real\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'msg="cost \\$(not a field) # in the string"\n'), { comments: 0, suppressions: 0 });
+});

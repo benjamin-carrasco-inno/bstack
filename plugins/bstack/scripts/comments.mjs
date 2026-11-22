@@ -45,7 +45,7 @@ export const SYNTAX = {
     strings: [
       pattern(/(?<!<)<<(?<!\(\((?:(?!\)\))[^\n])*<<)(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([A-Za-z_][^\s;&|<>()'"\\]*))/y, m => new RegExp(`\\n${m[1] ? '\\t*' : ''}${literal(m[2] ?? m[3] ?? m[4])}(?=\\n|$)`, 'y')),
       str("$'", '\\', true, "'"),
-      str('"', '\\', true),
+      { ...str('"', '\\', true), field: { open: '$(', close: ')' } },
       str("'", null, true),
     ],
     directives: [/^shellcheck\s+(shell|source|source-path|enable|external-sources)=/],
@@ -287,7 +287,7 @@ function findComments(src, syn) {
     prev = '{';
     while (k < n) {
       if (/\s/.test(src[k])) k++;
-      else if (depth === saved.depth && src[k] === '}') { k++; break; }
+      else if (depth === saved.depth && src[k] === (field.close ?? '}')) { k++; break; }
       else if (depth === saved.depth && src[k] === field.spec) { k = skipString(k + 1, SPEC, '}', field); break; }
       else k = step(k);
     }
@@ -370,8 +370,8 @@ function findComments(src, syn) {
       const prefixed = syn.prefixes?.test(w) && stringAt(j);
       if (prefixed) return readString(i, prefixed, w);
       code = true;
+      word = prev === '.' ? '' : w;
       prev = 'w';
-      word = w;
       return j;
     }
     code = true;
