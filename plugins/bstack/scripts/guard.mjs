@@ -61,7 +61,7 @@ function agentRule(c, agent) {
   if (!NO_AUTHORING_AGENTS.test(agent)) return null;
   const git = c.cmd === 'git' ? parseGit(c.args).sub : '';
   const gh = c.cmd === 'gh' ? `${c.args[0]} ${c.args[1] ?? ''}` : '';
-  if (/^(commit|push|merge|rebase|tag|cherry-pick|am|revert)$/.test(git) || /^pr (merge|comment|review|edit|close|create|ready)|^issue (comment|create|edit)|^api /.test(gh) && !(gh.startsWith('api ') && !hasWriteFields(c.args))) {
+  if (/^(commit|push|merge|rebase|tag|cherry-pick|am|revert)$/.test(git) || /^pr (merge|comment|review|edit|close|create|ready)|^issue (comment|create|edit|close|reopen|delete|transfer|lock|unlock|pin|unpin|develop)|^label (create|edit|delete|clone)|^api /.test(gh) && !(gh.startsWith('api ') && !hasWriteFields(c.args))) {
     return `The ${agent} agent judges and reproduces; it does not commit, push or post. Report the finding in your final message; the hook posts it.`;
   }
   return null;
