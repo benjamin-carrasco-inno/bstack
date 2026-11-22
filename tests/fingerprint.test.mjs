@@ -158,6 +158,17 @@ test('a worktree created inside the checkout and removed again leaves it equal',
   assert.equal(fingerprintLine(work).line, before);
 });
 
+test('another worktree of the same repository inside the checkout is listed, but edits in it do not change it', () => {
+  const work = fixtureRepo();
+  const other = path.join(work, '.claude', 'worktrees', 'other-session');
+  git(work, 'worktree', 'add', '-q', '-b', 'other-session', other);
+  const before = fingerprintLine(work);
+  fs.writeFileSync(path.join(other, 'package.json'), 'edited by another session\n');
+  const after = fingerprintLine(work);
+  assert.match(after.out, /^worktree \.claude\/worktrees\/other-session\/$/m);
+  assert.equal(after.line, before.line);
+});
+
 test('it fails without output outside a git repository', () => {
   const dir = scratch();
   const res = runScript(dir, { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(dir) });

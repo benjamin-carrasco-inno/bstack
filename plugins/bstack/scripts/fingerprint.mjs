@@ -58,10 +58,12 @@ function globalExcludesFile(root) {
 }
 
 const isNestedRepo = dir => entryState(dir) === 'dir' && fs.existsSync(path.join(dir, '.git'));
+const commonDir = dir => path.resolve(dir, git(dir, ['rev-parse', '--git-common-dir']).trim());
 
 function entryLines(root, file) {
   const full = path.join(root, file);
   if (!isNestedRepo(full)) return [`${entryState(full)} ${file}`];
+  if (commonDir(full) === commonDir(root)) return [`worktree ${file}`];
   return [`repo ${file}`, ...checkoutLines(full).map(line => `  ${line}`)];
 }
 

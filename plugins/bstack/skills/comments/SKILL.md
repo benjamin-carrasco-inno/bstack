@@ -14,7 +14,7 @@ description: Clean up comments without letting the author judge them. Spawns the
 
 For a diff, the comments in scope are those it adds or changes, plus existing ones in the changed files that name code the diff changes or removes (a code change can make an unchanged comment stale). Give the critic this definition with the scope.
 
-Record now, in the checkout: the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/fingerprint.mjs"` (HEAD and a content hash of every tracked and untracked file, ending in a `fingerprint:` line), and the result of the repo's tests and linters.
+Record now, in the checkout: the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/fingerprint.mjs"` (HEAD, branch, index, exclude files and the content of every tracked and untracked file, ending in a `fingerprint:` line), and the result of the repo's tests and linters.
 
 ## 2. Spawn the critic
 
