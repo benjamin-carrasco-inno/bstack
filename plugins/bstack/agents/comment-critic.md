@@ -26,4 +26,6 @@ Report one line per item and nothing between them, file paths relative to the ch
 
 `<file> | <line> | <class> | <action> | <proof>`
 
+The proof is the rest of the line, so it may contain `|`.
+
 Then the items you were unsure of and why, if any.
