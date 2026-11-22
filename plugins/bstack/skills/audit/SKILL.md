@@ -1,13 +1,13 @@
 ---
 name: audit
-description: Review and clean up an existing repository end to end. Finds real bugs, data and security risks, broken contracts, missing checks and slop, proves each finding, and lands the fixes as small gated PRs. Use for "review this repo", "find fejl", "ryd op", "gennemgå repoet", or before building on code you did not write.
+description: Review and clean up a whole repository. Finds real bugs, data and security risks, broken contracts, missing checks and slop, proves each finding, and lands the fixes as small gated PRs. Use for "review this repo", "find fejl", "ryd op", "gennemgå repoet", or before building on code you did not write.
 ---
 
 # Audit
 
 **Goal:** the repo ends up correct, smaller and guarded by checks that stop the same problems coming back, reached through small PRs that each prove one thing. The report is a means, not the product.
 
-Run one audit per repo, in its own session and worktree. The bstack session rules and gates apply throughout.
+Run one audit per repo, in its own session and worktree.
 
 ## 1. Map (read-only)
 
@@ -24,7 +24,7 @@ Look in this order. It is the order of damage.
 3. **Failure handling**: swallowed exceptions, retries without limits, silent fallbacks, missing timeouts on outbound calls.
 4. **External contracts**: payloads and files others read; renames that would break them; missing contract tests.
 5. **Missing checks**: what CI does not run, and risky paths without tests.
-6. **Slop**: dead code, duplicated logic, narrating comments, defensive branches for impossible states, options nobody uses, files nothing imports, suppressions without a reason.
+6. **Slop**: dead code, duplicated logic, defensive branches for impossible states, options nobody uses, files nothing imports. Comments and suppressions: `bstack:comments`.
 
 For a large repo, split the reading across parallel read-only Explore subagents, one per area, each returning findings with `file:line`.
 

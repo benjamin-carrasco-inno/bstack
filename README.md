@@ -30,9 +30,11 @@ Requirements: Node 18+ on `PATH` (the hooks are Node scripts), git, and the GitH
 | `bstack:audit` | Review and clean up a whole repo: map, find, prove, present once, fix through small gated PRs. |
 | `bstack:verify` | Run the app safely on test data and prove behaviour on the real surface. |
 | `bstack:interrogate` | Adversarial review for risky changes; findings count only when reproduced. |
+| `bstack:comments` | Comment cleanup judged by a critic agent, not the author. See [Comments](#comments). |
 | `bstack:correct` | Turn repeated mistakes into checks (weekly or after a revert). |
 | `bstack:reviewer` agent | Fresh Sonnet agent in its own worktree. Runs the change, reads the diff, returns PASS, PASS+NOTES or FAIL for the head SHA. |
 | `bstack:adversary` agent | Opus agent (Fable for large architecture changes) that tries to break tier 2 changes and reproduces what it finds. |
+| `bstack:comment-critic` agent | Classifies each comment and suppression with proof; has only Read, Grep and Glob. |
 | `bstack:worker` agent | Fresh context for one scoped implementation round. |
 
 ## From idea to merge
@@ -71,6 +73,14 @@ A new commit changes the head SHA, so an old verdict no longer counts.
 - **2**: SQL that writes or changes schema, file deletion, outbound calls with side effects, mail and webhooks, concurrency, auth and importer code, `n8n/` code, and weakened checks (deleted or skipped tests, fewer assertions, new suppressions, removed CI steps). Adds interrogate, and the user's OK when a revert cannot undo it.
 
 A repo can raise paths to tier 2 with globs in `.github/risk-paths.txt`.
+
+## Comments
+
+The goal is fewer comments: what a comment says becomes a better name, a check, an ADR or nothing.
+
+- `bstack:comments` spawns the critic on a diff or paths, checks its report, and acts per class: deletes tautologies and stale comments, fixes excuses and suppressions that hide bugs, encodes constraints as checks, writes ADRs, opens issues for the rest. Only external facts with proof stay, as `external: <fact> (<proof>)`.
+- `scripts/comments.mjs count` estimates comment lines and suppressions per file. The skill's first run in a repo writes `.github/comment-baseline.json` with `comments.mjs baseline` after the cleanup; later runs rewrite it when counts fell.
+- The ratchet: the guard refuses a commit that adds comment lines over the baseline (see above). `bstack:audit` sends its comment findings to `bstack:comments`.
 
 ## Auditing your repos
 

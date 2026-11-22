@@ -10,7 +10,7 @@ Evidence
 Change
 - Name the data shape before writing logic: a model, a table or a registry beats a chain of branches.
 - Make the smallest change the evidence supports. Delete before adding. Revert what only "might help".
-- A comment that explains your own code means rename or extract instead.
+- A comment that explains your own code means rename or extract instead (`bstack:comments`; the guard ratchets comment lines down).
 - One pull request is one change.
 - Never weaken a check to get green: no deleted or skipped tests, no new suppressions, no loosened CI, unless that is the task and the PR says why.
 

@@ -1,6 +1,6 @@
 ---
 name: comments
-description: Clean up comments without letting the author judge them. Spawns the bstack:comment-critic agent on a scope, checks its report, then deletes tautologies and stale comments, fixes excuses and suppressions that hide bugs, encodes constraints as checks, writes ADRs, and opens issues for what is out of scope. Use for "ryd op i kommentarer", "comments", or comment findings in a review or audit.
+description: Clean up comments without letting the author judge them. Spawns the bstack:comment-critic agent on a scope, checks its report, acts on each class and keeps the comment baseline. Use for "ryd op i kommentarer", "comments", or comment findings in a review or audit.
 ---
 
 # Comments
@@ -12,7 +12,7 @@ description: Clean up comments without letting the author judge them. Spawns the
 - No argument: the diff against the base branch, including the working tree (`git diff $(git merge-base origin/<base> HEAD)`) and untracked files (`git ls-files --others --exclude-standard`).
 - Paths, or "the whole repo": those files.
 
-For a diff, the comments in scope are those it adds or changes, plus existing ones in the changed files that name code the diff changes or removes (a code change can make an unchanged comment stale).
+For a diff, the comments in scope are those it adds or changes, plus existing ones in the changed files that name code the diff changes or removes.
 
 Record now: `git status --porcelain`, and the result of the repo's tests and linters.
 
@@ -46,8 +46,10 @@ A rejected report gets **one** rerun: a fresh critic with the same input and the
 
 Only `fix` and `encode` change code; every other edit changes only comment text. A fix that needs files outside the scope is an `issue`. Then run the repo's tests and linters again: all that passed in step 1 must pass, plus each new check. If not, undo the item that broke it and report it open.
 
-**Issues.** One per root cause, so items with the same root cause share one. The title names the hack and its `file:line` after all your edits; the body quotes the hack's code and the deleted comment and says why it is out of scope; label `ready-for-agent` (or none, saying so, when the repo lacks it). First search open issues (`gh issue list --state open --search "<file> <key words>"`); when one names the same hack, link it instead. When `gh repo view` fails (no GitHub remote) or the user asks for a dry run, print each issue's title, label and body and open none.
+**Issues.** One per root cause. The title names the hack and its `file:line` after all your edits; the body quotes the hack's code and the deleted comment and says why it is out of scope; label `ready-for-agent` (or none, saying so, when the repo lacks it). First search open issues (`gh issue list --state open --search "<file> <key words>"`); when one names the same hack, link it instead. When `gh repo view` fails (no GitHub remote) or the user asks for a dry run, print each issue's title, label and body and open none.
+
+**Baseline.** Then run `node "${CLAUDE_PLUGIN_ROOT}/scripts/comments.mjs" baseline` on its own when `.github/comment-baseline.json` is missing or a count fell, and commit it with the cleanup.
 
 ## 5. Report
 
-Counts: deleted, kept as external, moved to ADRs, encoded as checks, issues opened, suppressions removed, open. Then each encoded check with its command and the shortest line of its failing run; each issue by title with its link (or `dry run`); each suppression removed; each open item: `file:line`, class, and why it is open. Then the diff of what changed.
+Counts: `comments.mjs count` before and after, deleted, kept as external, moved to ADRs, encoded as checks, issues opened, suppressions removed, open. Then each encoded check with its command and the shortest line of its failing run; each issue by title with its link (or `dry run`); each suppression removed; each open item: `file:line`, class, and why it is open. Then the diff of what changed.
