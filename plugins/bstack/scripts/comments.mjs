@@ -24,6 +24,7 @@ export const SYNTAX = {
     block: [['/*', '*/']],
     strings: [str('`', '\\', true), str('"'), str("'")],
     regex: true,
+    lineNotAfter: /[a-z]:$/i,
     directives: [/^@ts-check\b/, /^@flow\b/, /^\/\s*<reference\b/, /^eslint-env\b/],
   },
   css: { block: [['/*', '*/']], strings: [str('"'), str("'")] },
@@ -52,6 +53,7 @@ export const SYNTAX = {
   rs: {
     line: ['//'],
     block: [['/*', '*/']],
+    nestedBlock: true,
     strings: [
       pattern(/b?r(#*)"/y, m => `"${m[1]}`),
       str('"', '\\', true),
@@ -70,15 +72,16 @@ export const EXTENSIONS = {
 };
 
 export const SUPPRESSIONS = [
-  /^noqa\b/i, /^type:\s*ignore\b/, /^pyright:\s*ignore\b/, /^pylint:\s*disable/, /^eslint-disable/,
+  /^((ruff|flake8):\s*)?noqa\b/i, /^type:\s*ignore\b/, /^pyright:\s*ignore\b/, /^pylint:\s*disable/, /^eslint-disable/,
   /^@ts-(ignore|expect-error|nocheck)\b/, /^shellcheck\s+disable=/, /^yamllint\s+disable/,
   /^mypy:\s*(ignore-errors|disable-error-code)\b/, /^pyright:.*\breport\w+\s*=\s*(false|none)\b/i,
 ];
 const ENCODING = /coding[:=]\s*[-\w.]+/;
 const LICENCE = /copyright\b|\(c\)\s*\d{4}|SPDX-License-Identifier|licensed under|all rights reserved|permission is hereby granted/i;
-const REGEX_AFTER = new Set('(,=:[!&|?{};+-*%<>~^');
+const REGEX_AFTER = new Set('(,=:[!&|?{};+-*%>~^');
 const REGEX_AFTER_WORD = new Set(['return', 'typeof', 'case', 'do', 'else', 'in', 'of', 'new', 'delete', 'void', 'throw', 'yield', 'await']);
 const DOC_TAIL = /[ \t]*(#|\n|$)/y;
+const FSTRING_LEVELS = 150;
 
 export function decodeSource(buf) {
   if (buf[0] === 0xff && buf[1] === 0xfe) return buf.subarray(2).toString('utf16le');
@@ -135,21 +138,43 @@ function findComments(src, syn) {
   };
 
   const found = [];
-  let code = false, prev = '', word = '', lastEnd = -1, regexFailsBefore = -1;
+  let code = false, prev = '', word = '', lastEnd = -1, regexFailsBefore = -1, depth = 0;
   const push = (from, stop, body) => found.push({ from: lineOf(from), to: lineOf(Math.max(from, stop - 1)), body, header: !code });
   const operand = () => prev === 's' || prev === ')' || prev === ']' || (prev === 'w' && !REGEX_AFTER_WORD.has(word));
   const isDocstring = (token, stop) => {
     DOC_TAIL.lastIndex = stop;
-    return (!code || prev === ':') && lastEnd < lineStart(token) && DOC_TAIL.test(src);
+    return (!code || (prev === ':' && depth === 0)) && lastEnd < lineStart(token) && DOC_TAIL.test(src);
   };
 
-  const readString = (token, { s, body, close }) => {
-    let k = body, stop = n;
+  const skipString = (k, s, close, fmt, level = 0) => {
     while (k < n) {
-      if (src.startsWith(close, k)) { stop = k + close.length; break; }
-      if (src[k] === '\n' && !s.multiline) { stop = k; break; }
-      k += src[k] === s.escape ? 2 : 1;
+      if (src.startsWith(close, k)) return k + close.length;
+      if (src[k] === '\n' && !s.multiline) return k;
+      if (fmt && src[k] === '{' && level < FSTRING_LEVELS) k = src[k + 1] === '{' ? k + 2 : skipField(k + 1, level + 1);
+      else k += src[k] === s.escape ? 2 : 1;
     }
+    return n;
+  };
+
+  const skipField = (k, level) => {
+    let open = 1;
+    while (k < n && open) {
+      let j = k;
+      while (j < n && /[\w$]/.test(src[j])) j++;
+      const w = src.slice(k, j);
+      const nested = (j === k || syn.prefixes?.test(w)) && stringAt(j);
+      if (nested) k = skipString(nested.body, nested.s, nested.close, /f/i.test(w), level);
+      else if (j > k) k = j;
+      else {
+        open += src[k] === '{' ? 1 : src[k] === '}' ? -1 : 0;
+        k++;
+      }
+    }
+    return k;
+  };
+
+  const readString = (token, { s, body, close }, fmt = false) => {
+    const stop = skipString(body, s, close, fmt);
     if (syn.docstrings && s.doc && isDocstring(token, stop)) {
       push(token, stop, src.slice(body, Math.max(body, stop - close.length)));
     } else {
@@ -157,6 +182,20 @@ function findComments(src, syn) {
       prev = 's';
     }
     return stop;
+  };
+
+  const nestedClose = ([open, close], k) => {
+    let level = 1;
+    while (k < n) {
+      if (src.startsWith(close, k)) {
+        if (--level === 0) return k;
+        k += close.length;
+      } else if (src.startsWith(open, k)) {
+        level++;
+        k += open.length;
+      } else k++;
+    }
+    return -1;
   };
 
   const readRegex = start => {
@@ -183,13 +222,13 @@ function findComments(src, syn) {
     const c = src[i];
     const block = opener(syn.block, i);
     if (block) {
-      const close = src.indexOf(block[1], i + block[0].length);
+      const close = syn.nestedBlock ? nestedClose(block, i + block[0].length) : src.indexOf(block[1], i + block[0].length);
       const stop = close < 0 ? n : close + block[1].length;
       push(i, stop, src.slice(i + block[0].length, close < 0 ? n : close));
       return stop;
     }
     const line = opener(syn.line, i);
-    if (line) {
+    if (line && !syn.lineNotAfter?.test(src.slice(Math.max(0, i - 2), i))) {
       const stop = lineEnd(i);
       push(i, stop, src.slice(i + line.length, stop));
       return stop;
@@ -201,13 +240,15 @@ function findComments(src, syn) {
       while (j < n && /[\w$]/.test(src[j])) j++;
       const w = src.slice(i, j);
       const prefixed = syn.prefixes?.test(w) && stringAt(j);
-      if (prefixed) return readString(i, prefixed);
+      if (prefixed) return readString(i, prefixed, /f/i.test(w));
       code = true;
       prev = 'w';
       word = w;
       return j;
     }
     code = true;
+    if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c)) depth = Math.max(0, depth - 1);
     if (syn.regex && c === '/' && (prev === '' || REGEX_AFTER.has(prev) || (prev === 'w' && REGEX_AFTER_WORD.has(word)))) {
       const stop = readRegex(i);
       prev = stop > i + 1 ? 's' : '/';
@@ -221,7 +262,7 @@ function findComments(src, syn) {
     return i + 1;
   };
 
-  let i = src.startsWith('#!') ? lineEnd(0) : 0;
+  let i = /^#!(?!\[)/.test(src) ? lineEnd(0) : 0;
   while (i < n) {
     if (/\s/.test(src[i])) { i++; continue; }
     i = step(i);

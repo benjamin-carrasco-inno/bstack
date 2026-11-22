@@ -101,6 +101,7 @@ test('a long single line with many strings counts in linear time', () => {
   assert.deepEqual(countSource('a.js', 'var a="x",b="y";'.repeat(90000)), { comments: 0, suppressions: 0 });
   assert.deepEqual(countSource('a.py', 'a="x";b="""y""";'.repeat(90000)), { comments: 0, suppressions: 0 });
   assert.deepEqual(countSource('a.js', `${'x=[/['.repeat(90000)}\n`), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', 'f"{'.repeat(90000)), { comments: 0, suppressions: 0 });
   assert.ok(performance.now() - started < 2000, `took ${Math.round(performance.now() - started)} ms`);
 });
 
@@ -130,6 +131,37 @@ test('a slash after a postfix increment or decrement is division', () => {
   assert.deepEqual(countSource('a.js', 'x = a++ / 2; // c\n'), { comments: 1, suppressions: 0 });
   assert.deepEqual(countSource('a.js', 'x = a-- / 2; // c\n'), { comments: 1, suppressions: 0 });
   assert.deepEqual(countSource('a.js', 'x = y + ++a / 2; // c\nz = [a--, /re/g]; // d\n'), { comments: 2, suppressions: 0 });
+});
+
+test('a quote inside an f-string replacement field starts a nested string', () => {
+  assert.deepEqual(countSource('a.py', 'tags = f"{"#".join(xs)}"\n'), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', 'a = F\'{d["#"]:{w}} {{# not}}\'  # c\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', 'b = rf"{ {"k": "#"}["k"] }" # c\n'), { comments: 1, suppressions: 0 });
+});
+
+test('a file-level ruff or flake8 noqa is a suppression', () => {
+  assert.deepEqual(countSource('a.py', '# ruff: noqa: E501\nx = 1\n'), { comments: 0, suppressions: 1 });
+  assert.deepEqual(countSource('a.py', '# flake8: noqa\nx = 1\n'), { comments: 0, suppressions: 1 });
+});
+
+test('a triple-quoted value after a colon inside brackets is not a docstring', () => {
+  assert.deepEqual(countSource('a.py', 'HELP = {\n    "run":\n        """Run it.\n        Two lines."""\n}\n'), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', 'def f(\n    a,\n) -> int:\n    """Doc."""\n'), { comments: 1, suppressions: 0 });
+});
+
+test('JSX text is not a regex or a line comment, and a JSX comment counts', () => {
+  assert.deepEqual(countSource('a.jsx', 'const A = () => <div><p>x</p>{/* note */}</div>;\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.tsx', 'const L = () => <p>Docs: https://example.com</p>;\n'), { comments: 0, suppressions: 0 });
+  assert.deepEqual(countSource('a.js', 'switch (x) {\n  case 1: // c\n    break;\n  default: // c\n}\n'), { comments: 2, suppressions: 0 });
+});
+
+test('a Rust block comment nests', () => {
+  assert.deepEqual(countSource('a.rs', '/* outer\n   /* inner */\n   still outer\n*/\nfn main() {}\n'), { comments: 4, suppressions: 0 });
+});
+
+test('a Rust inner attribute on line 1 is not a shebang', () => {
+  assert.deepEqual(countSource('a.rs', '#![allow(dead_code)] // kept for the FFI layer\n'), { comments: 1, suppressions: 1 });
+  assert.deepEqual(countSource('a.rs', '#!/usr/bin/env run-cargo-script\n// c\nfn main() {}\n'), { comments: 1, suppressions: 0 });
 });
 
 test('a UTF-16 file is decoded by its byte order mark', () => {
