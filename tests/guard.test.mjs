@@ -309,6 +309,75 @@ test('comment ratchet: checks the repo that a cd earlier in the call moves to', 
   assert.equal(repo.run(`cd "${other.dir}" && git commit -m "chore: z"`), null);
 });
 
+test('comment ratchet: popd and cd - return to the directory they came from', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  const elsewhere = tempDir();
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  assert.match(repo.run(`pushd "${elsewhere}" && popd && git commit -m "feat: x"`) ?? '', /app\.py/);
+  assert.match(repo.run(`cd "${elsewhere}"; cd -; git commit -m "feat: x"`) ?? '', /app\.py/);
+  assert.match(repo.run(`Push-Location "${elsewhere}"; Pop-Location; git commit -m "feat: x"`, 'PowerShell') ?? '', /app\.py/);
+  assert.match(repo.run(`pushd "${elsewhere}" && pushd "${repo.dir}" && popd && popd && git commit -m "feat: x"`) ?? '', /app\.py/);
+});
+
+test('push rules read the hook cwd, not a directory changed earlier in the line', () => {
+  const onMain = fixture({ 'a.py': NONE });
+  const onBranch = fixture({ 'b.py': NONE });
+  onBranch.git('checkout', '-qb', 'feat/x');
+  for (const line of [`pushd "${onBranch.dir}" && popd && git push`, `bash -c "cd '${onBranch.dir}' && git status"; git push`, `cd "${onBranch.dir}"; cd -; git push`, `cd "${onBranch.dir}" && git push`]) {
+    assert.match(onMain.run(line) ?? '', /Direct push to main is blocked/, line);
+  }
+});
+
+test('comment ratchet: unstaging earlier in the call is replayed on the temporary index only', () => {
+  const repo = fixture({ 'app.py': ONE, 'b.py': NONE }, { 'app.py': 1, 'b.py': 0 });
+  repo.write('app.py', TWO);
+  repo.write('b.py', `${NONE}y = 2\n`);
+  repo.git('add', '-A');
+  const head = repo.git('rev-parse', 'HEAD');
+  const unstaging = [
+    ['git reset -q app.py && git commit -m "feat: b"', 'Bash'],
+    ['git restore --staged app.py; git commit -m "feat: b"', 'PowerShell'],
+    ['git restore -S app.py 2>&1 && git commit -m "feat: b"', 'Bash'],
+    ['git reset -- app.py && git commit -m "feat: b"', 'Bash'],
+    ['git reset HEAD app.py && git commit -m "feat: b"', 'Bash'],
+    ['git reset -q HEAD -- app.py && git commit -m "feat: b"', 'Bash'],
+    ['git reset && git add b.py && git commit -m "feat: b"', 'Bash'],
+    ['git rm -q --cached app.py && git commit -m "feat: b"', 'Bash'],
+  ];
+  for (const [line, tool] of unstaging) assert.equal(repo.run(line, tool), null, line);
+  for (const line of ['git reset --hard && git commit -m "feat: b"', 'git restore --staged --worktree app.py && git commit -m "feat: b"', 'git reset --soft HEAD && git commit -m "feat: b"']) {
+    assert.match(repo.run(line) ?? '', /app\.py/, line);
+  }
+  assert.equal(repo.git('rev-parse', 'HEAD'), head);
+  assert.equal(repo.staged(), 'app.py\nb.py', 'the guard must not touch the real index');
+  assert.equal(fs.readFileSync(path.join(repo.dir, 'app.py'), 'utf8'), TWO, 'the guard must not touch the working tree');
+
+  const fromBranch = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  fromBranch.git('checkout', '-qb', 'more');
+  fromBranch.write('app.py', TWO);
+  fromBranch.git('commit', '-qam', 'more comments');
+  fromBranch.git('checkout', '-q', 'main');
+  assert.match(fromBranch.run('git reset more -- app.py && git commit -m "feat: x"') ?? '', /app\.py: baseline 1, this commit 2/);
+  assert.match(fromBranch.run('git reset -q more app.py && git commit -m "feat: x"') ?? '', /app\.py: baseline 1, this commit 2/);
+  assert.equal(fromBranch.staged(), '');
+});
+
+test('comment ratchet: in Bash a glob in git add expands like bash, in PowerShell git reads it as a pathspec', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', `${ONE}x = 1\n`);
+  repo.write('scratch/tmp.py', '# scratch note\n');
+  repo.write('scratch/tmp.js', '// scratch note\n');
+  repo.write('.hidden.py', '# hidden\n');
+  for (const line of ['git add *.py && git commit -m "feat: x"', 'git add ?pp.py && git commit -m "feat: x"', 'git add [ab]pp.p[!a] && git commit -m "feat: x"']) {
+    assert.equal(repo.run(line), null, line);
+  }
+  assert.match(repo.run('git add s*/*.py && git commit -m "feat: x"') ?? '', /scratch\/tmp\.py/);
+  assert.match(repo.run('git add .h* && git commit -m "feat: x"') ?? '', /\.hidden\.py/);
+  assert.match(repo.run('git add *.js && git commit -m "feat: x"') ?? '', /scratch\/tmp\.js/, 'an unmatched glob stays literal');
+  assert.match(repo.run('git add *.py; git commit -m "feat: x"', 'PowerShell') ?? '', /scratch\/tmp\.py/);
+});
+
 test('comment ratchet: a PowerShell here-string message is one argument', () => {
   const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
   repo.write('app.py', TWO);
