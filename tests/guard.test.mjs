@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -174,8 +174,17 @@ const ONE = 'def total(xs):\n    # sum the list\n    return sum(xs)\n';
 const TWO = 'def total(xs):\n    # sum the list\n    # and return it\n    return sum(xs)\n';
 const NONE = 'def total(xs):\n    return sum(xs)\n';
 
-function fixture(files, baseline) {
+const tempDirs = [];
+after(() => { for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true }); });
+
+function tempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-ratchet-test-'));
+  tempDirs.push(dir);
+  return dir;
+}
+
+function fixture(files, baseline) {
+  const dir = tempDir();
   const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
   const write = (file, text) => {
     fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
@@ -257,6 +266,55 @@ test('comment ratchet: sees what git add, -a and pathspecs in the same call woul
   assert.equal(repo.run('git add other.py && git commit -m "feat: y"'), null);
   assert.equal(repo.run('git commit --dry-run -am "feat: x"'), null);
   assert.equal(repo.staged(), '', 'the guard must not touch the real index');
+});
+
+test('comment ratchet: shell redirections are neither pathspecs nor git add arguments', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  assert.match(repo.run('git add app.py 2>&1 && git commit -m "feat: x"') ?? '', /app\.py/);
+  assert.match(repo.run('git add -A && git commit -m "feat: x" 2>&1') ?? '', /app\.py/);
+  assert.match(repo.run('git commit -m ">x" app.py') ?? '', /app\.py/);
+  repo.git('add', 'app.py');
+  for (const command of ['git commit -m "feat: x" 2>&1', 'git commit -m "feat: x" 2>&1 | tail -3', "git commit -F - <<'EOF'\nfeat: x\n\nbody\nEOF", 'git commit -F - << EOF\nfeat: x\nEOF']) {
+    assert.match(repo.run(command) ?? '', /app\.py/, command);
+  }
+  assert.match(repo.run('git commit -m "feat: x" 2>$null', 'PowerShell') ?? '', /app\.py/);
+  assert.match(repo.run('git commit -m "feat: x" *>&1', 'PowerShell') ?? '', /app\.py/);
+
+  const legit = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  legit.write('app.py', `${ONE}x = 1\n`);
+  legit.git('add', 'app.py');
+  for (const command of ['git commit -m "feat: x" > /dev/null', 'git commit -q -m "feat: x" >/dev/null 2>&1', 'git commit -m "feat: x" 2> err.txt', 'git commit -m "feat: x" &>log']) {
+    assert.equal(legit.run(command), null, command);
+  }
+  assert.equal(legit.run('git commit -m "feat: x" > $null', 'PowerShell'), null);
+});
+
+test('comment ratchet: checks the repo that a cd earlier in the call moves to', () => {
+  const repo = fixture({ 'app.py': ONE, 'src/b.py': NONE }, { 'app.py': 1, 'src/b.py': 0 });
+  const elsewhere = tempDir();
+  repo.write('app.py', TWO);
+  assert.match(repo.run(`cd "${repo.dir}" && git add app.py && cd "${elsewhere}" && git -C "${repo.dir}" commit -m "feat: x"`, 'Bash', elsewhere) ?? '', /app\.py/);
+  repo.git('add', 'app.py');
+  assert.match(repo.run(`cd "${repo.dir}" && git commit -m "feat: x"`, 'Bash', elsewhere) ?? '', /app\.py/);
+  assert.match(repo.run(`cd "${elsewhere}"; cd "${repo.dir}/src"; cd ..; git commit -m "feat: x"`, 'Bash', elsewhere) ?? '', /app\.py/);
+  assert.match(repo.run(`Set-Location -Path "${repo.dir}"; git commit -m "feat: x"`, 'PowerShell', elsewhere) ?? '', /app\.py/);
+  assert.match(repo.run(`sl "${repo.dir}"; git commit -m "feat: x"`, 'PowerShell', elsewhere) ?? '', /app\.py/);
+  assert.match(repo.run(`pushd "${repo.dir}" && git commit -m "feat: x"`, 'Bash', elsewhere) ?? '', /app\.py/);
+  assert.match(repo.run('cd "$OTHER" && cd - && git commit -m "feat: x"') ?? '', /app\.py/);
+
+  const other = fixture({ 'z.py': 'x = 1\n' });
+  other.write('z.py', 'x = 2\n');
+  other.git('add', '-A');
+  assert.equal(repo.run(`cd "${other.dir}" && git commit -m "chore: z"`), null);
+});
+
+test('comment ratchet: a PowerShell here-string message is one argument', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  assert.match(repo.run("git commit -m @'\nfix: don't break x\n'@", 'PowerShell') ?? '', /app\.py/);
+  assert.match(repo.run('git commit -m @"\r\nfix: the "x" case\r\n"@', 'PowerShell') ?? '', /app\.py/);
 });
 
 test('comment ratchet: a rename keeps its count, and a baseline raised in the same commit is honoured', () => {

@@ -14,6 +14,16 @@ test('tokens drop quotes', () => {
   assert.deepEqual(tokenize('a ""'), ['a', '']);
 });
 
+test('a PowerShell here-string is one word and never splits', () => {
+  const line = "git commit -m @'\nfix: don't break x; or y\n'@; git status";
+  assert.deepEqual(splitSegments(line), ["git commit -m @'\nfix: don't break x; or y\n'@", 'git status']);
+  assert.deepEqual(tokenize(splitSegments(line)[0]), ['git', 'commit', '-m', "fix: don't break x; or y"]);
+  assert.deepEqual(tokenize('a @"\r\nsay "hi" @x\r\n  "@ still\r\n"@ b'), ['a', 'say "hi" @x\r\n  "@ still', 'b']);
+  assert.deepEqual(tokenize("a @'\n'@"), ['a', '']);
+  assert.deepEqual(commandsIn("git commit -m @'\nfix: x\n\nbody\n'@\ngit push").map(c => c.cmd), ['git', 'git']);
+  assert.deepEqual(tokenize("a @'b'"), ['a', '@b']);
+});
+
 test('nested shells are unwrapped', () => {
   const cmds = commandsIn('pwsh -NoProfile -Command "git status; gh pr list"');
   assert.deepEqual(cmds.map(c => c.cmd), ['git', 'gh']);
