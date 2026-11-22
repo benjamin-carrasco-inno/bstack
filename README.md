@@ -32,7 +32,7 @@ Requirements: Node 18+ on `PATH` (the hooks are Node scripts), git, and the GitH
 | `bstack:interrogate` | Adversarial review for risky changes; findings count only when reproduced. |
 | `bstack:correct` | Turn repeated mistakes into checks (weekly or after a revert). |
 | `bstack:reviewer` agent | Fresh Sonnet agent in its own worktree. Runs the change, reads the diff, returns PASS, PASS+NOTES or FAIL for the head SHA. |
-| `bstack:adversary` agent | Fable agent that tries to break tier 2 changes and reproduces what it finds. |
+| `bstack:adversary` agent | Opus agent (Fable for large architecture changes) that tries to break tier 2 changes and reproduces what it finds. |
 | `bstack:worker` agent | Fresh context for one scoped implementation round. |
 
 ## From idea to merge
@@ -85,7 +85,7 @@ The agent maps the repo, runs the existing and the stricter checks, proves each 
 
 - The gate stops forgetting, stale verdicts and side doors. It does not stop an agent determined to cheat (for example by obfuscating the marker). On a free GitHub plan, required status checks cannot be enforced server-side, so this is the enforcement layer.
 - `risk-tier.mjs` is a heuristic. It errs towards higher tiers. You may treat a change as riskier, never as safer.
-- Weekly quota: the reviewer runs Sonnet and the adversary Fable, only where the tier calls for them.
+- Weekly quota: the reviewer runs Sonnet and the adversary Opus (Fable only for large architecture changes), only where the tier calls for them.
 
 ## Development
 
