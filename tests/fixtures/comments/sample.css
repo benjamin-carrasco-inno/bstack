@@ -1,0 +1,12 @@
+/*! Copyright 2026 Example Authors | MIT licence */
+@import url("https://example.com/a.css");
+
+/* Layout */
+.grid {
+  display: grid; /* trailing */
+  content: "/* not a comment */";
+}
+
+/*
+ * Multi-line
+ */
