@@ -60,6 +60,7 @@ The guard runs before every `Bash` and `PowerShell` command (Windows routes shel
   - a reviewer verdict exists for that exact SHA and is not FAIL, and for tier 2 an interrogate result for that SHA reports zero confirmed findings.
 - No merging or moving `main` through side doors: `gh api` merge and ref endpoints, the contents API on the default branch, GraphQL merge mutations, MCP merge or push tools.
 - Verdicts are posted by a `SubagentStop` hook when the reviewer or adversary agent finishes, after it checks that the SHA is still the PR head. The guard blocks the verdict marker anywhere else (commands, body files, file writes), and the reviewer and adversary cannot commit, push or post.
+- In a repo with `.github/comment-baseline.json` (written by `comments.mjs baseline`), no `git commit` whose version of a file has more comment lines than both its baseline and its previous version. The check counts what the commit would contain: the index, plus `git add` earlier in the same command, `-a` and pathspecs.
 
 A new commit changes the head SHA, so an old verdict no longer counts.
 

@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decide, ciState } from '../plugins/bstack/scripts/guard.mjs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { decide, ciState, realDeps } from '../plugins/bstack/scripts/guard.mjs';
 import { commentBody } from '../plugins/bstack/scripts/lib/verdicts.mjs';
 
 const SHA = 'a'.repeat(40);
@@ -17,7 +22,8 @@ function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, fil
   return {
     git: (_cwd, args) => {
       if (args.includes('@{u}')) { if (!upstream) throw new Error('no upstream'); return upstream; }
-      return branch;
+      if (args.join(' ') === 'rev-parse --abbrev-ref HEAD') return branch;
+      throw new Error(`not a git repository: git ${args.join(' ')}`);
     },
     gh: (_cwd, args) => {
       if (args[1] === 'view') return JSON.stringify({ number: 5, url: 'https://github.com/o/r/pull/5', headRefOid: SHA, state: 'OPEN', statusCheckRollup: GREEN, comments: [], ...pr });
@@ -161,4 +167,145 @@ test('ciState treats skipped-only and missing checks as not green', () => {
   assert.equal(ciState([{ __typename: 'CheckRun', name: 'a', status: 'COMPLETED', conclusion: 'SKIPPED' }]).ok, false);
   assert.equal(ciState([{ __typename: 'StatusContext', context: 'x', state: 'SUCCESS' }]).ok, true);
   assert.equal(ciState(GREEN).ok, true);
+});
+
+const GUARD = fileURLToPath(new URL('../plugins/bstack/scripts/guard.mjs', import.meta.url));
+const ONE = 'def total(xs):\n    # sum the list\n    return sum(xs)\n';
+const TWO = 'def total(xs):\n    # sum the list\n    # and return it\n    return sum(xs)\n';
+const NONE = 'def total(xs):\n    return sum(xs)\n';
+
+function fixture(files, baseline) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-ratchet-test-'));
+  const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+  const write = (file, text) => {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), text);
+  };
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.name', 'test');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'core.autocrlf', 'false');
+  for (const [file, text] of Object.entries(files)) write(file, text);
+  if (baseline) write('.github/comment-baseline.json', `${JSON.stringify({ files: baseline }, null, 2)}\n`);
+  git('add', '-A');
+  git('commit', '-qm', 'init');
+  const run = (command, tool = 'Bash', cwd = dir) => decide({ tool_name: tool, tool_input: { command }, cwd }, realDeps);
+  return { dir, git, write, run, staged: () => git('diff', '--cached', '--name-only').trim() };
+}
+
+test('comment ratchet: a raised count is refused, naming the file, both counts and the fix', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  const reason = repo.run('git commit -m "feat: total"');
+  assert.match(reason, /app\.py: baseline 1, this commit 2/);
+  assert.match(reason, /rename or extract/);
+  assert.match(reason, /test, type or runtime check/);
+  assert.match(reason, /external: with proof/);
+  assert.match(reason, /comments\.mjs" baseline/);
+});
+
+test('comment ratchet: a lowered or equal count is allowed', () => {
+  const repo = fixture({ 'app.py': TWO, 'b.py': ONE }, { 'app.py': 2, 'b.py': 1 });
+  repo.write('app.py', ONE);
+  repo.write('b.py', `${ONE}x = 1\n`);
+  repo.git('add', '-A');
+  assert.equal(repo.run('git commit -m "refactor: fewer comments"'), null);
+});
+
+test('comment ratchet: a new file with comments and no baseline entry is refused', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('src/new.js', 'export const a = 1; // the answer\n');
+  repo.git('add', '-A');
+  assert.match(repo.run('git commit -m "feat: new"'), /src\/new\.js: baseline 0, this commit 1/);
+  repo.write('src/new.js', 'export const a = 1;\n');
+  repo.git('add', '-A');
+  assert.equal(repo.run('git commit -m "feat: new"'), null);
+});
+
+test('comment ratchet: a repo without a baseline file is not affected', () => {
+  const repo = fixture({ 'app.py': ONE });
+  repo.write('app.py', TWO);
+  repo.write('new.js', '// hello\n');
+  repo.git('add', '-A');
+  assert.equal(repo.run('git commit -am "feat: x"'), null);
+});
+
+test('comment ratchet: staged content counts, not the working tree', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', `${ONE}x = 1\n`);
+  repo.git('add', 'app.py');
+  repo.write('app.py', `${TWO}x = 1\n`);
+  assert.equal(repo.run('git commit -m "feat: x"'), null);
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  repo.write('app.py', NONE);
+  assert.match(repo.run('git commit -m "feat: x"'), /app\.py: baseline 1, this commit 2/);
+});
+
+test('comment ratchet: sees what git add, -a and pathspecs in the same call would commit', () => {
+  const repo = fixture({ 'app.py': ONE, 'other.py': NONE }, { 'app.py': 1, 'other.py': 0 });
+  repo.write('app.py', TWO);
+  assert.match(repo.run('git add -A && git commit -m "feat: x"'), /app\.py/);
+  assert.match(repo.run('git add app.py; git commit -m "feat: x"', 'PowerShell'), /app\.py/);
+  assert.match(repo.run('git commit -am "feat: x"'), /app\.py/);
+  assert.match(repo.run('git commit -m "feat: x" -- app.py'), /app\.py/);
+  assert.match(repo.run('git commit -m "feat: x" app.py'), /app\.py/);
+  assert.match(repo.run(`git -C "${repo.dir}" add -A && git -C "${repo.dir}" commit -m "feat: x"`, 'Bash', os.tmpdir()), /app\.py/);
+  repo.write('other.py', `${NONE}y = 2\n`);
+  assert.equal(repo.run('git commit -m "feat: y" other.py'), null);
+  assert.equal(repo.run('git add other.py && git commit -m "feat: y"'), null);
+  assert.equal(repo.run('git commit --dry-run -am "feat: x"'), null);
+  assert.equal(repo.staged(), '', 'the guard must not touch the real index');
+});
+
+test('comment ratchet: a rename keeps its count, and a baseline raised in the same commit is honoured', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.git('mv', 'app.py', 'lib.py');
+  assert.equal(repo.run('git commit -m "refactor: rename"'), null);
+  repo.write('lib.py', TWO);
+  repo.write('.github/comment-baseline.json', `${JSON.stringify({ files: { 'lib.py': 2 } })}\n`);
+  repo.git('add', '-A');
+  assert.equal(repo.run('git commit -m "fix: note the library bug"'), null);
+});
+
+test('comment ratchet: a file already over its baseline may change but not grow', () => {
+  const repo = fixture({ 'app.py': TWO }, { 'app.py': 1 });
+  repo.write('app.py', `${TWO}x = 1\n`);
+  repo.git('add', '-A');
+  assert.equal(repo.run('git commit -m "fix: x"'), null);
+  repo.write('app.py', `${TWO}# three\n`);
+  repo.git('add', '-A');
+  assert.match(repo.run('git commit -m "fix: x"'), /app\.py: baseline 1, this commit 3 \(2 before it\)/);
+});
+
+test('comment ratchet: an unreadable baseline fails closed', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('.github/comment-baseline.json', '{"files": {"app.py": "one"}}');
+  repo.write('app.py', `${ONE}x = 1\n`);
+  repo.git('add', '-A');
+  assert.match(repo.run('git commit -m "fix: x"'), /is not valid/);
+});
+
+test('comment ratchet: the hook refuses through stdin and exit code 2', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git commit -am "feat: x"' }, cwd: repo.dir });
+  const out = spawnSync(process.execPath, [GUARD], { input, encoding: 'utf8' });
+  assert.equal(out.status, 2);
+  assert.match(out.stderr, /^bstack guard: This commit adds comment lines over \.github\/comment-baseline\.json/);
+});
+
+test('comment ratchet: a few hundred staged files stay well inside the 90 s hook timeout', t => {
+  const files = {};
+  for (let k = 0; k < 400; k++) files[`src/m${k}.py`] = ONE;
+  const repo = fixture(files, Object.fromEntries(Object.keys(files).map(f => [f, 1])));
+  for (let k = 0; k < 400; k++) repo.write(`src/m${k}.py`, k === 399 ? TWO : `${ONE}x = ${k}\n`);
+  const started = Date.now();
+  const reason = repo.run('git add -A && git commit -m "feat: many"');
+  const ms = Date.now() - started;
+  t.diagnostic(`400 changed files checked in ${ms} ms`);
+  assert.match(reason, /src\/m399\.py: baseline 1, this commit 2/);
+  assert.doesNotMatch(reason, /m398/);
+  assert.ok(ms < 30000, `took ${ms} ms`);
 });
