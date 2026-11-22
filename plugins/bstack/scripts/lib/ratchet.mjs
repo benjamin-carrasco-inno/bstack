@@ -7,7 +7,8 @@ import { parseGit } from './shell.mjs';
 
 const COMMENTS_SCRIPT = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'comments.mjs').replace(/\\/g, '/');
 const VALUE_OPTS = new Set(['-m', '--message', '-F', '--file', '-C', '--reuse-message', '-c', '--reedit-message', '-t', '--template',
-  '--fixup', '--squash', '--author', '--date', '--cleanup', '--trailer', '--pathspec-from-file']);
+  '--fixup', '--squash', '--author', '--date', '--cleanup', '--trailer']);
+const PATHSPEC_FILE = '--pathspec-from-file';
 const VALUE_SHORTS = 'mFCct';
 const ATTACHED_SHORTS = 'Su';
 const ZERO = /^0+$/;
@@ -31,17 +32,20 @@ function withoutRedirections(words) {
 }
 
 export function parseCommit(rest) {
-  const opts = { all: false, include: false, dryRun: false, paths: [] };
+  const opts = { all: false, include: false, dryRun: false, paths: [], pathspecFile: null, pathspecNul: false };
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     const skip = redirectionLength(rest, i);
     if (skip) { i += skip - 1; continue; }
     if (a === '--') { opts.paths.push(...withoutRedirections(rest.slice(i + 1))); break; }
     if (VALUE_OPTS.has(a)) { i++; continue; }
+    if (a === PATHSPEC_FILE) { opts.pathspecFile = rest[++i] ?? null; continue; }
     if (a.startsWith('--')) {
       if (a === '--all') opts.all = true;
       else if (a === '--include') opts.include = true;
       else if (a === '--dry-run') opts.dryRun = true;
+      else if (a === '--pathspec-file-nul') opts.pathspecNul = true;
+      else if (a.startsWith(`${PATHSPEC_FILE}=`)) opts.pathspecFile = a.slice(PATHSPEC_FILE.length + 1);
       continue;
     }
     if (a.startsWith('-') && a.length > 1) {
@@ -62,6 +66,7 @@ export function parseCommit(rest) {
 export function commentRatchet({ repo, rest, prior, tool }, deps) {
   const opts = parseCommit(rest);
   if (opts.dryRun) return null;
+  opts.paths.push(...pathspecsFromFile(repo, opts, deps));
   let root, realIndex;
   try {
     [root, realIndex] = deps.git(repo, ['rev-parse', '--show-toplevel', '--git-path', 'index']).trim().split('\n').map(s => s.trim());
@@ -84,6 +89,12 @@ export function commentRatchet({ repo, rest, prior, tool }, deps) {
   } finally {
     if (temp) for (const f of [temp, `${temp}.lock`]) fs.rmSync(f, { force: true });
   }
+}
+
+function pathspecsFromFile(repo, { pathspecFile, pathspecNul }, deps) {
+  if (!pathspecFile || pathspecFile === '-') return [];
+  const text = deps.readFile(path.resolve(repo, pathspecFile)) ?? '';
+  return text.split(pathspecNul ? '\0' : /\r?\n/).filter(Boolean);
 }
 
 const INDEX_REPLAYS = { add: addArgs, stage: addArgs, restore: restoreArgs, rm: rmArgs, reset: resetArgs };
