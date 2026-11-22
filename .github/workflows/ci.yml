@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tests (guard, risk tier, verdict hook, shell parsing)
+        run: node --test "tests/*.test.mjs"
+      - name: Plugin structure, budgets and public-content check
+        run: node tools/check-plugin.mjs
+      - name: Hooks start and emit valid JSON
+        shell: bash
+        run: |
+          export CLAUDE_PLUGIN_ROOT="$PWD/plugins/bstack"
+          node plugins/bstack/scripts/context.mjs session | node -e "JSON.parse(require('fs').readFileSync(0,'utf8')).hookSpecificOutput.additionalContext.length > 500 || process.exit(1)"
+          echo '{"tool_name":"Bash","tool_input":{"command":"git push origin main"},"cwd":"."}' | node plugins/bstack/scripts/guard.mjs && exit 1 || test $? -eq 2
+          echo '{"tool_name":"PowerShell","tool_input":{"command":"git status"},"cwd":"."}' | node plugins/bstack/scripts/guard.mjs
+
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: claude plugin validate
+        run: |
+          npm install --global @anthropic-ai/claude-code >/dev/null
+          claude plugin validate . | tee validate.log
+          claude plugin validate ./plugins/bstack | tee -a validate.log
+          # Warnings are allowed (no "version" on purpose: installs track commits); errors fail the step.
+          ! grep -Eiq "validation failed|found [0-9]+ errors?" validate.log
