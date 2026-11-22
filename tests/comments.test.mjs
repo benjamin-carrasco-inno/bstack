@@ -96,19 +96,26 @@ test('a Rust char literal or raw string does not swallow the rest of the file', 
   assert.deepEqual(countSource('a.rs', mixed), { comments: 7, suppressions: 0 });
 });
 
-test('a long single line with many strings counts in linear time', () => {
-  const started = performance.now();
-  assert.deepEqual(countSource('a.js', 'var a="x",b="y";'.repeat(90000)), { comments: 0, suppressions: 0 });
-  assert.deepEqual(countSource('a.py', 'a="x";b="""y""";'.repeat(90000)), { comments: 0, suppressions: 0 });
-  assert.deepEqual(countSource('a.js', `${'x=[/['.repeat(90000)}\n`), { comments: 0, suppressions: 0 });
-  assert.deepEqual(countSource('a.py', 'f"{'.repeat(90000)), { comments: 0, suppressions: 0 });
-  assert.deepEqual(countSource('a.js', '`${'.repeat(90000)), { comments: 0, suppressions: 0 });
-  assert.deepEqual(countSource('a.sh', 'a=$((b << c))\n'.repeat(75000)), { comments: 0, suppressions: 0 });
-  assert.deepEqual(countSource('a.sh', 'cat <<NOPE\n'.repeat(90000)), { comments: 0, suppressions: 0 });
-  assert.deepEqual(countSource('a.rs', '#[cfg_attr(a, b('.repeat(90000)), { comments: 0, suppressions: 0 });
-  assert.deepEqual(countSource('a.py', `# Copyright 2024 Acme\n${'# the software is provided as is\n'.repeat(5000)}`), { comments: 5000, suppressions: 0 });
-  assert.ok(performance.now() - started < 2000, `took ${Math.round(performance.now() - started)} ms`);
-});
+const LINEAR_INPUTS = {
+  'js strings': ['a.js', 'var a="x",b="y";'.repeat(90000), 0],
+  'py strings': ['a.py', 'a="x";b="""y""";'.repeat(90000), 0],
+  'js unclosed regex classes': ['a.js', `${'x=[/['.repeat(90000)}\n`, 0],
+  'py unclosed f-string fields': ['a.py', 'f"{'.repeat(90000), 0],
+  'js unclosed template fields': ['a.js', '`${'.repeat(90000), 0],
+  'sh arithmetic shifts': ['a.sh', 'a=$((b << c))\n'.repeat(75000), 0],
+  'sh heredocs without a delimiter line': ['a.sh', 'cat <<NOPE\n'.repeat(90000), 0],
+  'rs unclosed attributes': ['a.rs', '#[cfg_attr(a, b('.repeat(90000), 0],
+  'py licence header with narration': ['a.py', `# Copyright 2024 Acme\n${'# the software is provided as is\n'.repeat(5000)}`, 5000],
+};
+
+for (const [name, [file, text, comments]] of Object.entries(LINEAR_INPUTS)) {
+  test(`a long input counts in linear time: ${name}`, () => {
+    const started = performance.now();
+    assert.deepEqual(countSource(file, text), { comments, suppressions: 0 }, name);
+    const took = performance.now() - started;
+    assert.ok(took < 2000, `${name} took ${Math.round(took)} ms`);
+  });
+}
 
 test('a triple-quoted argument on its own line is not a docstring', () => {
   assert.deepEqual(countSource('a.py', 'q = run(\n    """\n    SELECT 1\n    """\n)\n'), { comments: 0, suppressions: 0 });
