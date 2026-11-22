@@ -115,10 +115,14 @@ function replay(command, { repo, root, tool }, env, deps) {
 
 function onTempIndex(cwd, args, env, deps) {
   if (!env.GIT_INDEX_FILE) return;
-  try { deps.git(cwd, args, { env, timeout: 45000 }); } catch {}
+  try { deps.git(cwd, args, { env: { ...env, ...NO_EDITOR }, timeout: 45000 }); } catch {}
 }
 
+const NO_EDITOR = { GIT_EDITOR: ':', GIT_SEQUENCE_EDITOR: ':' };
+const INTERACTIVE_ADD = /^(--(interactive|patch|edit)|-[a-zA-Z]*[ipe][a-zA-Z]*)$/;
+
 function addArgs(words, { shellCwd, tool }) {
+  if (beforeDashes(words).some(w => INTERACTIVE_ADD.test(w))) return [];
   return [['add', ...(tool === 'Bash' ? words.flatMap(w => bashGlob(w, shellCwd)) : words)]];
 }
 

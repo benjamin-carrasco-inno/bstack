@@ -509,3 +509,18 @@ test('comment ratchet: a few hundred staged files stay well inside the 90 s hook
   assert.doesNotMatch(reason, /m398/);
   assert.ok(ms < 30000, `took ${ms} ms`);
 });
+
+test('comment ratchet: interactive adds are not replayed, so no editor runs inside the guard', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  const saved = process.env.GIT_EDITOR;
+  process.env.GIT_EDITOR = 'touch editor-ran';
+  try {
+    for (const add of ['git add -e app.py', 'git add -p', 'git add --interactive']) {
+      repo.run(`${add} && git commit -m "feat: x"`);
+      assert.equal(fs.existsSync(path.join(repo.dir, 'editor-ran')), false, add);
+    }
+  } finally {
+    if (saved === undefined) delete process.env.GIT_EDITOR; else process.env.GIT_EDITOR = saved;
+  }
+});
