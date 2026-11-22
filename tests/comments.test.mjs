@@ -164,6 +164,34 @@ test('a Rust inner attribute on line 1 is not a shebang', () => {
   assert.deepEqual(countSource('a.rs', '#!/usr/bin/env run-cargo-script\n// c\nfn main() {}\n'), { comments: 1, suppressions: 0 });
 });
 
+test('a sh heredoc body is a string, closed only by its delimiter on a line of its own', () => {
+  const script = "#!/usr/bin/env bash\nusage() {\n  cat <<EOF\nUsage: deploy.sh [env]\nDon't run this on prod.\n# not a comment\nEOF\n}\n# Pick the target.\nTARGET=${1:-dev}\n# Build first.\nmake build # quiet\n# Then upload.\nscp out \"$TARGET:/srv\"\n";
+  assert.deepEqual(countSource('a.sh', script), { comments: 4, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', "cat <<'EOF'\n# a\nEOF not yet\n  EOF\nEOF\n# one\n"), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'cat <<"EOF"\n# b\nEOF\n# two\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', '\tcat <<-EOF\n\t# c\n\t\tEOF\n# three\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'cat << END_X\n# d\nEND_X\n# four\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'cat <<< EOF\n# one\nEOF\n# two\n'), { comments: 2, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', 'echo $((1 << 2))\n# one\n2\n# two\n'), { comments: 2, suppressions: 0 });
+});
+
+test('a PowerShell here-string body is a string', () => {
+  const single = "$help = @'\nThis script can't be undone.\n# not a comment\n'@\n# Step one.\nWrite-Output $help\n# Step two.\n$x = 1 # trailing\n";
+  assert.deepEqual(countSource('a.ps1', single), { comments: 3, suppressions: 0 });
+  const double = '$m = @"\nA "quote # not a comment\n"@\n# real\n$y = "x" # trailing\n';
+  assert.deepEqual(countSource('a.ps1', double), { comments: 2, suppressions: 0 });
+});
+
+test('a sh ANSI-C quoted string takes backslash escapes', () => {
+  assert.deepEqual(countSource('a.sh', "echo $'don\\'t'\n# real\n"), { comments: 1, suppressions: 0 });
+});
+
+test('the encoding-line exemption applies only to Python', () => {
+  assert.deepEqual(countSource('a.js', '// Output encoding: utf-8 is assumed\nx = 1\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.sh', '#!/bin/sh\n# coding: utf-8\ntrue\n'), { comments: 1, suppressions: 0 });
+  assert.deepEqual(countSource('a.py', '#!/usr/bin/env python3\n# vim: set fileencoding=utf-8 :\nx = 1\n'), { comments: 0, suppressions: 0 });
+});
+
 test('a UTF-16 file is decoded by its byte order mark', () => {
   const text = '# a comment\r\n$x = 1 # another\r\n';
   const le = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);

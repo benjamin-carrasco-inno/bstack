@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const USAGE = `usage: comments.mjs count [paths...]   comment lines and suppressions per file and in total (JSON on stdout, summary on stderr)
        comments.mjs baseline           write .github/comment-baseline.json for the tracked files of this repo`;
 
-const str = (open, escape = '\\', multiline = false) => ({ open, escape, multiline });
+const str = (open, escape = '\\', multiline = false, close = open) => ({ open, escape, multiline, close });
 const doc = open => ({ ...str(open, '\\', true), doc: true });
 const pattern = (open, close) => ({ open, close, escape: null, multiline: true });
 
@@ -18,6 +18,7 @@ export const SYNTAX = {
     prefixes: /^[rbuf]{1,2}$/i,
     docstrings: true,
     directives: [/^type:/, /^(pyright|mypy):/, /^-\*-.*-\*-$/],
+    encoding: /coding[:=]\s*[-\w.]+/,
   },
   js: {
     line: ['//'],
@@ -32,14 +33,23 @@ export const SYNTAX = {
   sh: {
     line: ['#'],
     wordStart: true,
-    strings: [str('"', '\\', true), str("'", null, true)],
+    strings: [
+      pattern(/(?<!<)<<(-?)[ \t]*(['"]?)([A-Za-z_]\w*)\2/y, m => new RegExp(`\\n${m[1] ? '\\t*' : ''}${m[3]}(?=\\n|$)`, 'y')),
+      str("$'", '\\', true, "'"),
+      str('"', '\\', true),
+      str("'", null, true),
+    ],
     directives: [/^shellcheck\s+(shell|source)=/],
   },
   ps1: {
     line: ['#'],
     block: [['<#', '#>']],
     wordStart: true,
-    strings: [str('"', '`', true), str("'", null, true)],
+    strings: [
+      pattern(/@(['"])[ \t]*(?=\n)/y, m => new RegExp(`\\n${m[1]}@`, 'y')),
+      str('"', '`', true),
+      str("'", null, true),
+    ],
     directives: [/^requires\s+-/i],
   },
   yml: {
@@ -76,7 +86,6 @@ export const SUPPRESSIONS = [
   /^@ts-(ignore|expect-error|nocheck)\b/, /^shellcheck\s+disable=/, /^yamllint\s+disable/,
   /^mypy:\s*(ignore-errors|disable-error-code)\b/, /^pyright:.*\breport\w+\s*=\s*(false|none)\b/i,
 ];
-const ENCODING = /coding[:=]\s*[-\w.]+/;
 const LICENCE = /copyright\b|\(c\)\s*\d{4}|SPDX-License-Identifier|licensed under|all rights reserved|permission is hereby granted/i;
 const REGEX_AFTER = new Set('(,=:[!&|?{};+-*%>~^');
 const REGEX_AFTER_WORD = new Set(['return', 'typeof', 'case', 'do', 'else', 'in', 'of', 'new', 'delete', 'void', 'throw', 'yield', 'await']);
@@ -127,7 +136,7 @@ function findComments(src, syn) {
   const stringAt = k => {
     for (const s of syn.strings) {
       if (typeof s.open === 'string') {
-        if (src.startsWith(s.open, k)) return { s, body: k + s.open.length, close: s.open };
+        if (src.startsWith(s.open, k)) return { s, body: k + s.open.length, close: s.close };
         continue;
       }
       s.open.lastIndex = k;
@@ -146,9 +155,16 @@ function findComments(src, syn) {
     return (!code || (prev === ':' && depth === 0)) && lastEnd < lineStart(token) && DOC_TAIL.test(src);
   };
 
+  const closesAt = (close, k) => {
+    if (typeof close === 'string') return src.startsWith(close, k) ? k + close.length : -1;
+    close.lastIndex = k;
+    return close.test(src) ? close.lastIndex : -1;
+  };
+
   const skipString = (k, s, close, fmt, level = 0) => {
     while (k < n) {
-      if (src.startsWith(close, k)) return k + close.length;
+      const end = closesAt(close, k);
+      if (end >= 0) return end;
       if (src[k] === '\n' && !s.multiline) return k;
       if (fmt && src[k] === '{' && level < FSTRING_LEVELS) k = src[k + 1] === '{' ? k + 2 : skipField(k + 1, level + 1);
       else k += src[k] === s.escape ? 2 : 1;
@@ -291,7 +307,7 @@ function classify(found, syn) {
     const text = f.body.trim();
     if (suppresses(f.body)) return 'suppression';
     if (licensed.has(f) || /SPDX-License-Identifier/.test(text)) return 'exempt';
-    if (f.from < 2 && ENCODING.test(text)) return 'exempt';
+    if (f.from < 2 && syn.encoding?.test(text)) return 'exempt';
     if (syn.directives?.some(re => re.test(text))) return 'exempt';
     return 'comment';
   });
