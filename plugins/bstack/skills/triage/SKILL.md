@@ -22,9 +22,9 @@ Issues labelled `plan:*` belong to a map or spec (`bstack:plan`) and are not tri
 ## Triage one issue
 
 1. **Read all of it**: body, comments, labels, earlier triage notes (do not re-ask what is answered).
-2. **Already there?** Search the code by concept, not only by the issue's words, and search open and closed issues. Already built: close as `wontfix` with where it lives. A duplicate: close it with a link to the original.
+2. **Already there?** Search the code by concept, not only by the issue's words, and search open and closed issues. Already built: a closing comment with where it lives (`gh issue close <n> --reason completed`). A duplicate: `gh issue close <n> --duplicate-of <original>`. Both close someone's request, so see Talking to people.
 3. **Check the claim.** A bug is reproduced on the surface the reporter used (`bstack:verify`, test data only). Record what happened: confirmed with the code path, not reproduced, or too little detail. A confirmed reproduction makes the best ticket.
-4. **Grill if needed.** When the request is unclear and the user owns the decision, grill them (`bstack:plan`). Bigger than one PR: it becomes a spec or a map, and this issue links to it.
+4. **Grill if needed.** When the request is unclear and the user owns the decision, grill them (`bstack:plan`). Bigger than one PR: it becomes a spec or a map. Remove this issue's state label, comment the link, and list it under the spec's Sources; it closes with the spec.
 5. **Write the outcome** as one comment and set the labels:
    - `ready-for-agent`: the ticket shape from `bstack:plan` ([tickets](../plan/tickets.md)): current and wanted behaviour, acceptance criteria a reviewer can check, out of scope. Describe behaviour and contracts, not files or lines.
    - `ready-for-human`: the same, plus why an agent cannot do it.
@@ -33,7 +33,7 @@ Issues labelled `plan:*` belong to a map or spec (`bstack:plan`) and are not tri
 
 ## Talking to people
 
-Labels, ticket comments and closing duplicates or built work are part of the work. A comment that asks the reporter something or turns their request down is a message to a person: draft them all, show them to the user once, and post only after the OK. Never mention or assign someone else without the OK.
+Labels, briefs and links are part of the work, and so is closing an issue because the work it asked for is merged. Anything that asks a reporter something or closes their request for another reason (duplicate, already built, wontfix) is a message to a person: draft them all, show them to the user once, and post only after the OK. The user's own issues and issues an agent created need no OK. Never mention or assign someone else without the OK.
 
 ## Done
 

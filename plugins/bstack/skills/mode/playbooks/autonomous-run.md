@@ -2,7 +2,7 @@
 
 For "keep going until X", background sessions and runs nobody watches.
 
-1. **Write the stop condition as a checkable predicate**, not a duration: "all tests green and `ruff check` reports 0 errors", "p95 under 200 ms on the fixture", "every finding in the audit list has a merged PR or a stated reason", "`tracker.mjs next <spec>` is empty and every ticket under it is closed". State it in the first reply.
+1. **Write the stop condition as a checkable predicate**, not a duration: "all tests green and `ruff check` reports 0 errors", "p95 under 200 ms on the fixture", "every finding in the audit list has a merged PR or a stated reason", "every ticket under the spec is closed, or handed to the user as `ready-for-human`". State it in the first reply.
 2. **One change and one check per round.** Measure before and after. A change that did not move the predicate is reverted, not kept "just in case".
 3. **On a plateau, change approach**: a different hypothesis, a smaller step, a fresh subagent. Never relax the predicate to reach it.
 4. **Side findings go in their own PR**, never folded into the current one.

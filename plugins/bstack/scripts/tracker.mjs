@@ -2,8 +2,8 @@
 // Issue tracker helper for the planning layer. Two deterministic jobs agents get wrong by eye:
 //   labels [-R owner/repo]           create the bstack labels a repo lacks; never edits or deletes one
 //   next [<parent>] [-R owner/repo]  the frontier: open tickets with no open blocker and no assignee,
-//                                    in the parent's sub-issue order, or oldest-first ready-for-agent
-//                                    issues when no parent is given
+//                                    in the parent's sub-issue order, or the oldest ready-for-agent build
+//                                    tickets when no parent is given (specs and maps are skipped)
 // Output is JSON on stdout. Exit 1 with a message on stderr when gh fails.
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -39,7 +39,7 @@ export function ensureLabels(gh, repo) {
   return { created, existing: LABELS.length - created.length };
 }
 
-const FIELDS = 'number,title,url,state,labels,assignees,blockedBy';
+const FIELDS = 'number,title,url,state,labels,assignees,blockedBy,subIssuesSummary';
 
 function classify(issue) {
   if (issue.state && issue.state !== 'OPEN') return 'closed';
@@ -50,24 +50,28 @@ function classify(issue) {
 }
 
 const brief = i => ({ number: i.number, title: i.title, url: i.url, labels: names(i.labels) });
+const isPlan = i => names(i.labels).some(l => l.startsWith('plan:')) || (i.subIssuesSummary?.total ?? 0) > 0;
 
 export function frontier(gh, { parent, repo } = {}) {
-  const view = n => JSON.parse(gh(['issue', 'view', String(n), '--json', FIELDS, ...repoArgs(repo)]));
   if (parent) {
     const p = JSON.parse(gh(['issue', 'view', String(parent), '--json', 'number,title,url,labels,subIssues,subIssuesSummary', ...repoArgs(repo)]));
     const open = (p.subIssues?.nodes ?? []).filter(s => s.state === 'OPEN');
-    return { parent: brief(p), progress: p.subIssuesSummary ?? null, ...sort(open.map(s => view(s.number))) };
+    // A sub-issue can live in another repo, so each child is read by its URL.
+    const children = open.map(s => JSON.parse(gh(['issue', 'view', s.url ?? String(s.number), '--json', FIELDS, ...(s.url ? [] : repoArgs(repo))])));
+    return { parent: brief(p), progress: p.subIssuesSummary ?? null, ...sort(children) };
   }
-  const listed = JSON.parse(gh(['issue', 'list', '--state', 'open', '--label', 'ready-for-agent', '--limit', '200', '--json', 'number,createdAt', ...repoArgs(repo)]));
+  // The queue: build tickets only. Specs and maps (plan:* labels, or issues with sub-issues) are parents, not work.
+  const listed = JSON.parse(gh(['issue', 'list', '--state', 'open', '--label', 'ready-for-agent', '--search', 'sort:created-asc', '--limit', '200', '--json', `${FIELDS},createdAt`, ...repoArgs(repo)]));
   listed.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)) || a.number - b.number);
-  return { parent: null, progress: null, ...sort(listed.map(s => view(s.number))) };
+  return { parent: null, progress: null, ...sort(listed.filter(i => !isPlan(i))) };
 }
 
 function sort(issues) {
   const out = { ready: [], blocked: [], claimed: [] };
   for (const i of issues) {
     const kind = classify(i);
-    if (kind !== 'closed') out[kind].push(brief(i));
+    if (kind === 'claimed') out.claimed.push({ ...brief(i), assignees: names(i.assignees) });
+    else if (kind !== 'closed') out[kind].push(brief(i));
   }
   return { next: out.ready[0] ?? null, ready: out.ready, blocked: out.blocked, claimed: out.claimed };
 }
@@ -77,10 +81,17 @@ export function parseArgs(argv) {
   let repo = null;
   const positional = [];
   for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === '-R' || rest[i] === '--repo') repo = rest[++i];
-    else if (rest[i].startsWith('--repo=')) repo = rest[i].slice(7);
-    else positional.push(rest[i]);
+    const a = rest[i];
+    if (a === '-R' || a === '--repo') {
+      repo = rest[++i];
+      if (!repo || repo.startsWith('-')) throw new Error(`${a} needs owner/repo`);
+    } else if (a.startsWith('--repo=')) {
+      repo = a.slice(7);
+      if (!repo) throw new Error('--repo needs owner/repo');
+    } else if (a.startsWith('-')) throw new Error(`unknown flag ${a}`);
+    else positional.push(a);
   }
+  if (positional.length > 1) throw new Error(`one parent at most, got ${positional.join(' ')}`);
   const ref = positional[0] ? String(positional[0]).replace(/^#/, '') : null;
   return { cmd, repo, parent: ref };
 }

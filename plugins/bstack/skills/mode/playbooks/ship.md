@@ -11,7 +11,7 @@ Title: `type(scope): subject`, a Conventional Commit, imperative, at most 72 cha
 
 Body under 40 lines, empty sections dropped:
 - **Request**: the user's ask, verbatim, or for a ticket its link and acceptance criteria. The reviewer judges against this.
-- `Closes #<n>` for each ticket the PR builds, so the merge closes it.
+- `Closes #<issue>` for the ticket the PR builds, so the merge closes it.
 - **Why**: the problem in the user's terms.
 - **What changed**: behaviour, not a file list.
 - **Scope**: what is deliberately not done.

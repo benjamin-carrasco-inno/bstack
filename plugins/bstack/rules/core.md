@@ -24,7 +24,7 @@ Autonomy
 - "No" and "don't" are valid answers. Challenge a wrong premise.
 
 Memory
-- Work that outlives a session lives in the repo's GitHub issues: plans, decisions, tickets (`bstack:plan`). Recording the work there (create, claim, label, comment, close) is part of it, not a message. A PR that builds a ticket says `Closes #<n>`.
+- Work that outlives a session lives in the repo's GitHub issues: plans, decisions, tickets (`bstack:plan`). Recording the work there (create, claim, label, comment, close what is done) is part of it, not a message. A PR that builds a ticket says `Closes #<n>`.
 - Where `GLOSSARY.md` and `docs/adr/` exist, read them before working in an area and use their terms.
 
 Done

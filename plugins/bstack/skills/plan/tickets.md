@@ -26,7 +26,7 @@ The boundary the tests drive (HTTP route, CLI, page), the hostile inputs, prior 
 What this work deliberately leaves alone.
 
 ## Sources
-Links to the map and the decision tickets, when there are some.
+Links to the request issue, the map and the decision tickets, when there are some.
 ```
 
 Before writing tickets, check with the user that the proving boundary is the one they expect.
@@ -57,4 +57,4 @@ Name types, fields and contracts the builder should look for, not paths. The rev
 1. Show the breakdown as a numbered list (title, blocked by, what it delivers) and ask once whether the granularity and order are right. Recommend your answer.
 2. Run `tracker.mjs labels`. Create tickets in dependency order as sub-issues (`--parent <spec>`), then wire `--blocked-by` with the real numbers.
 3. Label each `ready-for-agent`, or `ready-for-human` with the reason.
-4. Leave the spec open. It closes when its last ticket is merged (the ticket playbook does it).
+4. Leave the spec open. The ticket playbook closes it when its last ticket is merged; when a person does the last ticket, whoever records that closes the spec. The request issue it came from closes with it, as completed, with a link to the spec.

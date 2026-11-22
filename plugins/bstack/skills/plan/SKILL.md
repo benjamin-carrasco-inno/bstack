@@ -18,7 +18,7 @@ State the size and the reason in one line. When in doubt, the smaller plan; move
 ## Grill
 
 The user's intent is the one input no tool can produce. Interview in rounds:
-- A round asks every question whose prerequisites are settled, numbered, each with your recommended answer, worded so "ja" accepts it. A question that hangs on an open answer waits for a later round.
+- A round asks every question whose prerequisites are settled, numbered, each with your recommended answer, worded so "yes" accepts it. A question that hangs on an open answer waits for a later round.
 - Facts are yours to find (code, tracker, docs, a read-only subagent); never ask the user what you can look up. Decisions are the user's; never answer your own question.
 - Test the picture with concrete scenarios and edge cases, and check what the user says against the code. Name contradictions.
 - Done when nothing is silently assumed and the user confirms the shared picture. Then write it down. Planning and building are separate sessions.
@@ -37,10 +37,10 @@ GitHub issues in the repo where the work lands, through `gh` (2.94 or newer for 
 - What can start now: `node "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.mjs" next [<parent>]` lists open tickets with no open blocker and no assignee, in order. Trust it over judging by eye.
 - Children are native sub-issues (`gh issue create --parent`), order is native blocking (`--blocked-by`). Create the issues first, wire blocking and cross-links in a second pass with real numbers. A guessed `#n` links an unrelated issue.
 - In text the user reads, name issues by title with the link inside, not walls of numbers.
-- Claim by assigning yourself (`gh issue edit <n> --add-assignee @me`) before any work. Assigned means taken.
+- Claim by assigning yourself (`gh issue edit <n> --add-assignee @me`) before any work. Assigned means a session is on it now; a session that stops leaves a status comment and removes its claim.
 - The issue holds the question or the contract. The answer goes in a comment when resolved, then close it. Prototypes and long research are linked, not pasted.
 - Issues are readable by everyone with access to the repo: no secrets, personal or customer data.
-- Nobody keeps issues by hand. Whoever changes the state of the work updates its issue in the same step: claim, resolve, close, rule out of scope. A session that stops mid-ticket leaves one comment: how far, the next step, open questions.
+- Nobody keeps issues by hand. Whoever changes the state of the work updates its issue in the same step: claim, resolve, close, rule out of scope.
 
 ## Labels
 

@@ -53,4 +53,4 @@ Research tickets may run several per session; every other type is one per sessio
 
 ## Finish
 
-When `tracker.mjs next <map>` is empty and Not yet specified is empty, the way is clear. Write the destination: usually a spec from the map ([tickets](tickets.md)), linked from the map and linking back to the decision tickets, so a builder can read the source of any decision. Then close the map.
+When every sub-issue is closed (`progress` from `tracker.mjs next <map>` has completed equal to total) and Not yet specified is empty, the way is clear. An empty `next` alone is not enough: the rest may be blocked or claimed. Write the destination: usually a spec from the map ([tickets](tickets.md)), linked from the map and linking back to the decision tickets, so a builder can read the source of any decision. Then close the map.

@@ -30,7 +30,7 @@ Three lines, then start:
 | Review or clean up a whole repo | the `bstack:audit` skill |
 | Incoming issues to sort | the `bstack:triage` skill |
 
-When several fit, the riskiest wins. Every route that changes code ends in ship.
+When several fit, the riskiest wins. Every route that changes code ends in ship, except a `plan:prototype` branch, which is deleted unmerged when its ticket closes.
 
 ## Risk tier
 
