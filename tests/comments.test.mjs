@@ -230,11 +230,95 @@ test('only a real licence statement exempts, and only its own run of line commen
   at('a.py', '# Copyright holders may reuse this.\nx = 1\n', 1);
   at('a.py', '"""Copyright 2024 X. All rights reserved."""\nx = 1\n', 0);
   at('a.js', '/* Copyright (c) 2024 X */\n// Explains the module.\nexport const x = 1;\n', 1);
-  at('a.js', '/*\n * © 2019-2024 X\n * Released as is.\n */\n/** Module doc. */\nexport const x = 1;\n', 1);
+  at('a.js', '/*\n * © 2019-2024 X\n * Released as is.\n */\n/** Module doc. */\nexport const x = 1;\n', 2);
   at('a.js', '/* Bump the copyright year. */\nx = 1;\n', 1);
   at('a.js', '// Permission is hereby granted, free of charge.\n/** @module x */\n', 1);
   at('a.css', '/* Copyright © 2024 X */\n/* Layout for the header. */\n.a {}\n', 1);
   at('a.html', '<!-- All rights reserved. -->\n<!-- Page layout. -->\n<p></p>\n', 1);
+});
+
+const APACHE_HEADER = [
+  'Copyright 2024 Acme Corp', '',
+  'Licensed under the Apache License, Version 2.0 (the "License");',
+  'you may not use this file except in compliance with the License.',
+  'You may obtain a copy of the License at', '',
+  '    http://www.apache.org/licenses/LICENSE-2.0', '',
+  'Unless required by applicable law or agreed to in writing, software',
+  'distributed under the License is distributed on an "AS IS" BASIS,',
+  'WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.',
+  'See the License for the specific language governing permissions and',
+  'limitations under the License.',
+];
+const MIT_LICENCE = [
+  'MIT License', '', 'Copyright (c) 2024 Acme Corp', '',
+  'Permission is hereby granted, free of charge, to any person obtaining a copy',
+  'of this software and associated documentation files (the "Software"), to deal',
+  'in the Software without restriction, including without limitation the rights',
+  'to use, copy, modify, merge, publish, distribute, sublicense, and/or sell',
+  'copies of the Software, and to permit persons to whom the Software is',
+  'furnished to do so, subject to the following conditions:', '',
+  'The above copyright notice and this permission notice shall be included in all',
+  'copies or substantial portions of the Software.', '',
+  'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR',
+  'IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,',
+  'FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE',
+  'AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER',
+  'LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,',
+  'OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE',
+  'SOFTWARE.',
+];
+const hashed = lines => lines.map(l => (l ? `# ${l}` : '#')).join('\n');
+const starred = lines => `/*\n${lines.map(l => (l ? ` * ${l}` : ' *')).join('\n')}\n */`;
+
+test('a licence header exempts only its licence lines; any other line in the same group or block counts', () => {
+  const at = (file, text, comments) => assert.deepEqual(countSource(file, text), { comments, suppressions: 0 }, text);
+  at('a.py', '"""Fetch photos licensed under CC-BY from Flickr.\n\nLong explanation\nmore narration\n"""\nimport x\n', 5);
+  at('a.py', '# SPDX-License-Identifier: MIT\n# This function works around a bug\n# so do not remove it\nimport x\n', 2);
+  at('a.js', '// Copyright 2024 Acme\n// HACK: this is a workaround, do not touch\nimport x from "y";\n', 1);
+  at('a.py', `${hashed(APACHE_HEADER)}\nimport os\n`, 0);
+  at('a.js', `${starred(MIT_LICENCE)}\nexport const x = 1;\n`, 0);
+  at('a.py', `${hashed(MIT_LICENCE)}\nimport os\n`, 0);
+  at('a.js', `${APACHE_HEADER.map(l => `// ${l}`.trimEnd()).join('\n')}\n// Parses the config and caches it.\nexport const x = 1;\n`, 1);
+  at('a.js', '/*\n * Copyright 2024 Acme\n * HACK: works around a parser bug\n */\nx();\n', 1);
+  at('a.py', '"""Copyright 2024 Acme.\n\nThis module parses the config.\n"""\n', 1);
+  at('a.py', '# Licensed under the MIT license\n# Do not remove this branch\nx = 1\n', 1);
+  at('a.py', '# licensed under CC-BY\n# more narration\nx = 1\n', 2);
+  at('a.py', '# Copyright 2024 Acme\n# keep this as is, it is a hack\nx = 1\n', 1);
+  at('a.py', '# Copyright 2024 Acme\n# See the issue tracker: this works around a bug\nx = 1\n', 1);
+  at('a.js', 'x();\n/* SPDX-License-Identifier: MIT\n * narration hidden behind the tag\n */\n', 1);
+  at('a.js', '// Copyright 2024 Acme\n// -----\n//\nx();\n', 0);
+});
+
+test('a line comment right after a colon counts; only a // glued to the next character after a colon is a URL', () => {
+  const at = (file, text, comments) => assert.deepEqual(countSource(file, text), { comments, suppressions: 0 }, text);
+  at('a.js', 'switch (x) {\n  default:// real\n}\n', 1);
+  at('a.js', 'const o = {a:// real\n 1};\n', 1);
+  at('a.js', 'switch (x) {\n  case 1:// one\n  case b:// two\n}\n', 2);
+  at('a.js', 'const y = a ? b:// real\n c;\n', 1);
+  at('a.tsx', 'const L = () => <p>Docs: https://example.com</p>;\n', 0);
+  at('a.jsx', 'const L = () => <a>see http://x.y/z and ftp://h</a>;\n', 0);
+});
+
+test('a JSX self-closing tag after an attribute brace is not a regex', () => {
+  const at = (file, text, comments) => assert.deepEqual(countSource(file, text), { comments, suppressions: 0 }, text);
+  at('a.tsx', 'const x = <Foo a={b} />; // real comment\n', 1);
+  at('a.tsx', 'const x = <Foo a={b}/>; // real comment\n', 1);
+  at('a.jsx', 'const x = <Foo {...p} />; // real comment\n', 1);
+  at('a.jsx', 'const x = <Foo a={b} c={{ d: 1 }} />; // real comment\n', 1);
+  at('a.js', 'const p = x.split(/>/); // c\n', 1);
+  at('a.js', 'const p = x.split(/>\\/\\/ not/); // c\n', 1);
+});
+
+test('a quote glued to a word does not open a JS string, except after a keyword; a tagged template still does', () => {
+  const at = (file, text, comments) => assert.deepEqual(countSource(file, text), { comments, suppressions: 0 }, text);
+  at('a.jsx', "const e = <p>Don't</p>; // yes\n", 1);
+  at('a.jsx', "const e = <p>It's 5 o'clock</p>; // yes\n", 1);
+  at('a.tsx', "const e = <p>Students' work</p>; // yes\nconst f = 'x'; // two\n", 2);
+  at('a.jsx', 'const e = <p>say"hi</p>; // yes\n', 1);
+  at('a.js', 'const s = "it\'s // not";\nconst t = \'a\' + b; // c\n', 1);
+  at('a.js', 'const s = tag`// not ${a}`; // c\nconst u = String.raw`/* not */`;\n', 1);
+  at('a.js', 'import a from"b";// c\nimport"./c.css";// d\nfunction f(){return\'// not\'}// e\n', 3);
+  at('a.js', 'switch(x){case"// not":break}// c\nif(typeof"x"in{});// d\n', 2);
 });
 
 const SUPPRESSION_FAMILIES = {

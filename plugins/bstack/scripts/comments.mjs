@@ -10,6 +10,9 @@ const USAGE = `usage: comments.mjs count [paths...]   comment lines and suppress
 const str = (open, escape = '\\', multiline = false, close = open) => ({ open, escape, multiline, close });
 const doc = open => ({ ...str(open, '\\', true), doc: true });
 const pattern = (open, close) => ({ open, close, escape: null, multiline: true });
+const REGEX_AFTER_WORD = new Set(['return', 'typeof', 'case', 'do', 'else', 'in', 'of', 'new', 'delete', 'void', 'throw', 'yield', 'await']);
+const QUOTE_AFTER_WORD = new Set([...REGEX_AFTER_WORD, 'from', 'import']);
+const unglued = open => ({ ...str(open), afterWord: QUOTE_AFTER_WORD });
 
 export const SYNTAX = {
   py: {
@@ -24,9 +27,9 @@ export const SYNTAX = {
   js: {
     line: ['//'],
     block: [['/*', '*/']],
-    strings: [{ ...str('`', '\\', true), field: { open: '${' } }, str('"'), str("'")],
+    strings: [{ ...str('`', '\\', true), field: { open: '${' } }, unglued('"'), unglued("'")],
     regex: true,
-    lineNotAfter: /[a-z]:$/i,
+    lineNotAt: /(?<=[a-z]:)\/\/\S/iy,
     directives: [
       /^@ts-check\b/, /^@flow\b/, /^\/\s*<reference\b/, /^eslint-env\b/, /^[#@]\s*source(Mapping)?URL=/,
       /^@jsx(Frag|ImportSource|Runtime)?\s/, /^[#@]__(PURE|NO_SIDE_EFFECTS)__$/, /^webpack[A-Z]\w*\s*:/,
@@ -99,9 +102,20 @@ const RESUMES = [
   /^(eslint|oxlint|stylelint)-enable\b/, /^(c8|v8)\s+ignore\s+stop\b/, /^node:coverage\s+enable\b/, /^biome-ignore-end\b/,
   /^(fmt|yapf|isort):\s*(on|enable)\b/, /^pylint:\s*enable\b/, /^yamllint\s+enable\b/,
 ];
-const LICENCE = /copyright\s*(\(c\)|©)?\s*\d{4}|(\(c\)|©)\s*\d{4}|SPDX-License-Identifier|licensed under|all rights reserved|permission is hereby granted/i;
+const LICENCE = /copyright\s*(\(c\)|©)?\s*\d{4}|(\(c\)|©)\s*\d{4}|SPDX-License-Identifier|licensed under\b.*\blicen[cs]e|all rights reserved|permission is hereby granted/i;
+const LICENCE_LINE = [
+  /copyright|\(c\)|©|SPDX|licen[cs]e|rights reserved|permission|warrant(y|ies)|distributed|liability|merchantability|fitness for a particular purpose|you may not use|unless required by applicable law|obtain a copy|https?:\/\//i,
+  /\bAS IS\b/,
+  /^[^\p{L}\p{N}]*$/u,
+];
+const words = line => line.replace(/^[\s*]+/, '').trim().replace(/\s+/g, ' ').toLowerCase();
+const LICENCE_TEXTS = [
+  'Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:',
+  'The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.',
+  'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.',
+].map(t => ` ${words(t)} `);
+const licenceLine = line => LICENCE_LINE.some(re => re.test(line)) || LICENCE_TEXTS.some(t => t.includes(` ${words(line)} `));
 const REGEX_AFTER = new Set('(,=:[!&|?{};+-*%>~^');
-const REGEX_AFTER_WORD = new Set(['return', 'typeof', 'case', 'do', 'else', 'in', 'of', 'new', 'delete', 'void', 'throw', 'yield', 'await']);
 const DOC_TAIL = /[ \t]*(#|\n|$)/y;
 const FIELD_LEVELS = 150;
 const SPEC = { escape: null, multiline: true };
@@ -124,7 +138,12 @@ export function countText(text, syntax) {
   const found = findComments(src, syntax);
   const lines = { comment: new Set(), suppression: new Set() };
   classify(found, syntax).forEach((kind, k) => {
-    for (let l = found[k].from; l <= found[k].to; l++) lines[kind]?.add(l);
+    const { from, to, body } = found[k];
+    const bodyLines = kind === 'licence' ? body.split('\n') : [];
+    for (let l = from; l <= to; l++) {
+      if (kind !== 'licence') lines[kind]?.add(l);
+      else if (!licenceLine(bodyLines[l - from] ?? '')) lines.comment.add(l);
+    }
   });
   if (syntax.codeSuppression) src.split('\n').forEach((l, k) => syntax.codeSuppression.test(l) && lines.suppression.add(k));
   return { comments: lines.comment.size, suppressions: lines.suppression.size };
@@ -269,13 +288,14 @@ function findComments(src, syn) {
       return stop;
     }
     const line = opener(syn.line, i);
-    if (line && !syn.lineNotAfter?.test(src.slice(Math.max(0, i - 2), i))) {
+    if (line && !(syn.lineNotAt && closesAt(syn.lineNotAt, i) >= 0)) {
       const stop = lineEnd(i);
       push(i, stop, src.slice(i + line.length, stop), 'line');
       return stop;
     }
     const quoted = stringAt(i);
-    if (quoted && (!syn.quoteWordStart || startsValue(i))) return readString(i, quoted);
+    const glued = quoted?.s.afterWord && i > 0 && /[\w$]/.test(src[i - 1]) && !quoted.s.afterWord.has(word);
+    if (quoted && !glued && (!syn.quoteWordStart || startsValue(i))) return readString(i, quoted);
     if (/[\w$]/.test(c)) {
       let j = i;
       while (j < n && /[\w$]/.test(src[j])) j++;
@@ -290,7 +310,8 @@ function findComments(src, syn) {
     code = true;
     if ('([{'.includes(c)) depth++;
     else if (')]}'.includes(c)) depth = Math.max(0, depth - 1);
-    if (syn.regex && c === '/' && (prev === '' || REGEX_AFTER.has(prev) || (prev === 'w' && REGEX_AFTER_WORD.has(word)))) {
+    const selfClose = prev === '}' && src[i + 1] === '>';
+    if (syn.regex && c === '/' && !selfClose && (prev === '' || REGEX_AFTER.has(prev) || (prev === 'w' && REGEX_AFTER_WORD.has(word)))) {
       const stop = readRegex(i);
       prev = stop > i + 1 ? 's' : '/';
       return stop;
@@ -313,10 +334,10 @@ function findComments(src, syn) {
 }
 
 function classify(found, syn) {
-  const licensed = new Set();
+  const headers = new Set();
   let group = [];
   const flush = () => {
-    if (group.some(f => LICENCE.test(f.body))) group.forEach(f => licensed.add(f));
+    if (group.some(f => LICENCE.test(f.body))) group.forEach(f => headers.add(f));
     group = [];
   };
   for (const f of found) {
@@ -331,11 +352,10 @@ function classify(found, syn) {
   return found.map(f => {
     const text = f.body.trim().replace(/^\*+\s*/, '');
     if (suppresses(f.body)) return 'suppression';
-    if (licensed.has(f) || /SPDX-License-Identifier/.test(text)) return 'exempt';
     if (f.from < 2 && syn.encoding?.test(text)) return 'exempt';
     if (syn.directives?.some(re => re.test(text)) || RESUMES.some(re => re.test(text))) return 'exempt';
     if (f.kind === 'block' && syn.blockDirectives?.some(re => re.test(text))) return 'exempt';
-    return 'comment';
+    return headers.has(f) || /SPDX-License-Identifier/.test(text) ? 'licence' : 'comment';
   });
 }
 
