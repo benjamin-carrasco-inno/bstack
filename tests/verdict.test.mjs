@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { handle, kindOf } from '../plugins/bstack/scripts/verdict.mjs';
+import { handle, kindOf, readSettled } from '../plugins/bstack/scripts/verdict.mjs';
 import { parseReport, latestFor } from '../plugins/bstack/scripts/lib/verdicts.mjs';
 
 const SHA = 'c'.repeat(40);
@@ -93,4 +93,23 @@ test('the last verdict line wins and backticks are tolerated', () => {
   const r = parseReport('verdict', `bstack-verdict: FAIL pr=7 sha=${'e'.repeat(40)}\nre-checked\n\`bstack-verdict: PASS pr=7 sha=${SHA}\``);
   assert.equal(r.result, 'PASS');
   assert.equal(r.sha, SHA);
+});
+
+test('a hand-back written after the hook starts is still read and posted', () => {
+  const file = transcript([prompt('PR 7 in o/r.'), said('Checking the diff.')]);
+  let pauses = 0;
+  const pause = () => {
+    if (++pauses === 2) fs.appendFileSync(file, JSON.stringify(handback(`Works.\nbstack-verdict: PASS pr=7 sha=${SHA}`)) + '\n');
+  };
+  const input = { agent_type: 'bstack:reviewer', stop_hook_active: false, agent_transcript_path: file };
+  const out = handle(input, gh(SHA), f => readSettled(f, { pause }));
+  assert.equal(out.post?.pr, 'https://github.com/o/r/pull/7');
+});
+
+test('a transcript that stops growing without a hand-back is read once it is quiet', () => {
+  const file = transcript([prompt('PR 7 in o/r.'), said('Done.')]);
+  let pauses = 0;
+  const entries = readSettled(file, { pause: () => pauses++, step: 100, quiet: 500, limit: 5000 });
+  assert.equal(entries.length, 2);
+  assert.equal(pauses, 5);
 });

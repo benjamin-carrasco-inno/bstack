@@ -39,6 +39,31 @@ function readTranscript(file) {
 
 const blocks = entry => (Array.isArray(entry?.message?.content) ? entry.message.content : []);
 const isHandback = block => block.type === 'tool_use' && block.name === 'SubagentHandback';
+const lastBlockOf = entries => blocks(entries.findLast(e => e.type === 'assistant')).at(-1);
+const endsWithHandback = entries => Boolean(lastBlockOf(entries) && isHandback(lastBlockOf(entries)));
+const sizeOf = file => { try { return fs.statSync(file).size; } catch { return -1; } };
+const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+// SubagentStop can fire before the hand-back line reaches the transcript on disk (seen 170 ms after
+// it on 2026-11-22). Re-read until the hand-back shows, the file has been quiet for `quiet` ms, or
+// `limit` ms have passed.
+export function readSettled(file, { pause = sleep, step = 100, quiet = 500, limit = 5000 } = {}) {
+  let entries = readTranscript(file);
+  let size = sizeOf(file);
+  let still = 0;
+  for (let waited = 0; file && !endsWithHandback(entries) && still < quiet && waited < limit; waited += step) {
+    pause(step);
+    const now = sizeOf(file);
+    if (now === size) {
+      still += step;
+    } else {
+      still = 0;
+      size = now;
+      entries = readTranscript(file);
+    }
+  }
+  return entries;
+}
 
 // Everything the agent wrote or handed back, newest first. A run that ends with the SubagentHandback
 // call arrives with no last_assistant_message, so the report is only in the transcript.
@@ -56,13 +81,12 @@ function promptedPr(entries) {
 }
 
 // Returns { post: { pr, body } }, { block: reason } for the agent, { warn: message } for the user, or {}.
-export function handle(input, gh) {
+export function handle(input, gh, read = readTranscript) {
   const kind = kindOf(String(input.agent_type ?? ''));
   if (!kind) return {};
-  const entries = readTranscript(input.agent_transcript_path);
+  const entries = read(input.agent_transcript_path);
   // After a hand-back the run is over: a block reaches the agent only if someone resumes it.
-  const lastBlock = blocks(entries.findLast(e => e.type === 'assistant')).at(-1);
-  const heard = !input.stop_hook_active && !(lastBlock && isHandback(lastBlock));
+  const heard = !input.stop_hook_active && !endsWithHandback(entries);
   const fail = (where, problem, ask) => (heard
     ? { block: `${problem} ${ask}` }
     : { warn: `bstack: nothing was posted for ${where}. ${problem} Run a fresh ${input.agent_type} agent for it.` });
@@ -93,7 +117,7 @@ async function main() {
   for await (const chunk of process.stdin) raw += chunk;
   const input = JSON.parse(raw || '{}');
   const gh = (cwd, args) => execFileSync('gh', args, { cwd: cwd || process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 45000, maxBuffer: 64 << 20 });
-  const out = handle(input, gh);
+  const out = handle(input, gh, readSettled);
   if (out.block) {
     process.stdout.write(JSON.stringify({ decision: 'block', reason: out.block }));
     return;
