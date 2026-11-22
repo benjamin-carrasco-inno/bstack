@@ -145,6 +145,12 @@ test('reviewer and adversary agents do not author', () => {
   blocked(as('git commit -m "test: repro"', 'bstack:adversary'));
   blocked(as('git push origin feat/x', 'bstack:reviewer'));
   blocked(as('gh pr comment 5 --body hi', 'bstack:reviewer'));
+  blocked(as('gh issue close 12', 'bstack:reviewer'));
+  blocked(as('gh issue reopen 12', 'bstack:adversary'));
+  blocked(as('gh issue edit 12 --add-label wontfix', 'bstack:reviewer'));
+  blocked(as('gh label delete bug --yes', 'bstack:reviewer'));
+  allowed(as('gh issue view 12 --json title,body,comments', 'bstack:reviewer'));
+  allowed(as('gh issue list --state open', 'bstack:reviewer'));
   allowed(as('gh pr checkout 5 --detach', 'bstack:reviewer'));
   allowed(as('gh pr diff 5', 'bstack:reviewer'));
   allowed(as('git commit -m "fix: x"', 'bstack:worker'));
