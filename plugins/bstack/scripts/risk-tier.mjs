@@ -14,16 +14,20 @@ const NOT_DOCS = /(^|\/)(AGENTS|CLAUDE)\.md$|(^|\/)requirements[^/]*\.txt$|(^|\/
 const CONFIG = /(^|\/)(\.github\/workflows\/|\.claude\/)|(^|\/)(pyproject\.toml|setup\.cfg|ruff\.toml|\.ruff\.toml|pyrightconfig\.json|eslint\.config\.[cm]?js|\.eslintrc[^/]*|Cargo\.toml|clippy\.toml|rustfmt\.toml|package\.json|tsconfig[^/]*\.json|Dockerfile|docker-compose[^/]*\.ya?ml|\.pre-commit-config\.yaml)$/i;
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)test_[^/]+\.py$|_test\.(py|go|rs)$|\.(test|spec)\.[cm]?[jt]sx?$/i;
 const CODE = /\.(py|pyi|js|mjs|cjs|ts|tsx|jsx|rs|go|sql|sh|ps1|html|css|vue|svelte)$/i;
+const FIXTURE = /(^|\/)(fixtures|__fixtures__|testdata)\//i;
+const SCHEMA_FILE = /(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i;
 
 const PATH_RULES = [
-  [/(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i, 'schema or migration file'],
+  [SCHEMA_FILE, 'schema or migration file'],
   [/(^|\/)n8n\//i, 'n8n flow code (external consumer)'],
   [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code'],
   [/(import|sync|upsert|ingest|backfill)[^/]*\.(py|rs|js|mjs|ts)$/i, 'importer or sync code'],
 ];
 
+const SCHEMA_STATEMENT = /\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i;
+
 const ADDED_OR_REMOVED = [
-  [/\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i, 'SQL schema statement'],
+  [SCHEMA_STATEMENT, 'SQL schema statement'],
   [/\bDELETE\s+FROM\b|\bTRUNCATE\b|\bUPDATE\s+[\w."]+\s+SET\b|\bINSERT\s+(OR\s+\w+\s+)?INTO\b|\bON\s+CONFLICT\b/i, 'SQL that writes data'],
   [/\b(os\.remove|os\.unlink|shutil\.rmtree|\.unlink\(|\.rmdir\(|fs\.(rm|rmSync|unlink|unlinkSync|rmdir)\(|remove_file|remove_dir_all)\b/, 'deletes files'],
   [/\b(requests|httpx|session|client|reqwest|axios)\s*\.\s*(post|put|patch|delete)\s*\(|method\s*[:=]\s*['"](POST|PUT|PATCH|DELETE)['"]|Method::(POST|PUT|PATCH|DELETE)/i, 'outbound call with side effects'],
@@ -45,9 +49,14 @@ export function parseDiff(diff) {
   let f = null;
   for (const line of String(diff ?? '').split(/\r?\n/)) {
     const head = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-    if (head) { f = { path: head[2], added: [], removed: [], created: false, deleted: false }; files.push(f); continue; }
+    if (head) {
+      f = { path: head[2], oldPath: head[1] === head[2] ? null : head[1], added: [], removed: [], created: false, deleted: false };
+      files.push(f); continue;
+    }
     if (!f) continue;
-    if (line.startsWith('new file mode')) f.created = true;
+    const from = /^rename from (.+)$/.exec(line);
+    if (from) f.oldPath = from[1] === f.path ? null : from[1];
+    else if (line.startsWith('new file mode')) f.created = true;
     else if (line.startsWith('deleted file mode')) f.deleted = true;
     else if (line.startsWith('+++') || line.startsWith('---')) continue;
     else if (line.startsWith('+')) f.added.push(line.slice(1));
@@ -73,9 +82,15 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
     const docs = DOCS.test(p) && !NOT_DOCS.test(p);
     if (!docs) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
     if (extra.some(re => re.test(p))) raise(2, `listed in .github/risk-paths.txt: ${p}`);
-    for (const [re, why] of PATH_RULES) if (re.test(p)) raise(2, `${why}: ${p}`);
-
+    const paths = f.oldPath ? [p, f.oldPath.replace(/\\/g, '/')] : [p];
+    const fixture = paths.every(q => FIXTURE.test(q));
     const isTest = TEST_PATH.test(p);
+    const testOnly = paths.every(q => TEST_PATH.test(q));
+    const sqlLines = [...f.added, ...f.removed];
+    const testFixtureSql = testOnly && fixture && paths.every(q => /\.sql$/i.test(q)) && sqlLines.length > 0;
+    if (testFixtureSql && sqlLines.some(l => SCHEMA_STATEMENT.test(l))) raise(2, `SQL schema statement: ${p}`);
+    for (const q of paths) for (const [re, why] of PATH_RULES) if (re.test(q) && !(testFixtureSql && re === SCHEMA_FILE)) raise(2, `${why}: ${q}`);
+
     if (isTest && f.deleted) raise(2, `test file deleted: ${p}`);
     if (isTest && f.removed.some(l => TEST_REMOVED.test(l))) raise(2, `test removed: ${p}`);
     if (isTest) {
@@ -83,7 +98,7 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
       if (lost > 0) raise(2, `fewer assertions: ${p}`);
     }
     for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
-    if (!PROSE.test(p) && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
+    if (!PROSE.test(p) && !fixture && !testOnly && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
     if (CODE.test(p) && !isTest) {

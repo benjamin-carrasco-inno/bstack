@@ -75,6 +75,84 @@ test('a suppression in a source file is tier 2', () => {
   assert.equal(tier(file('src/lib.rs', { add: ['#[allow(dead_code)]'] })), 2);
 });
 
+test('suppression tokens in fixture files are not suppressions', () => {
+  assert.equal(tier(file('tests/fixtures/comments/sample.js', { created: true, add: ['// eslint-disable-next-line no-console'] })), 1);
+  assert.equal(tier(file('fixtures/a.py', { add: ['import os  # noqa: F401'] })), 1);
+  assert.equal(tier(file('src/__fixtures__/a.ts', { add: ['// @ts-ignore'] })), 1);
+  assert.equal(tier(file('pkg/testdata/a.rs', { add: ['#[allow(dead_code)]'] })), 1);
+});
+
+test('suppression tokens in test files are not suppressions', () => {
+  assert.equal(tier(file('tests/x.test.mjs', { add: ["  assert.equal(tier(file('src/app.js', { add: ['// eslint-disable-next-line'] })), 2);"] })), 1);
+  assert.equal(tier(file('tests/fixtures/comments/sample.ts', { add: ['// @ts-ignore'] })), 1);
+  assert.equal(tier(file('test/test_scan.py', { add: ['    assert count("x = 1  # noqa") == 1'] })), 1);
+  assert.equal(tier(file('src/__tests__/a.js', { add: ['// eslint-disable-line'] })), 1);
+  assert.equal(tier(file('src/a.test.ts', { add: ['// @ts-expect-error'] })), 1);
+  assert.equal(tier(file('pkg/scan_test.rs', { add: ['#[allow(dead_code)]'] })), 1);
+});
+
+test('a suppression token in a string in non-test source is tier 2, the accepted cost of not parsing literals', () => {
+  assert.equal(tier(file('src/a.js', { add: ['const s = "eslint-disable";'] })), 2);
+  assert.equal(tier(file('src/scan.mjs', { add: ['const RE = /eslint-disable|@ts-ignore/;'] })), 2);
+  assert.equal(tier(file('src/a.py', { add: ['x = "# noqa"'] })), 2);
+});
+
+test('a data-only .sql test fixture is tier 1, created or modified', () => {
+  assert.equal(tier(file('tests/fixtures/comments/sample.sql', { created: true, add: ['-- count rows', 'SELECT id, name', 'FROM t;'] })), 1);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["INSERT INTO t (id, name) VALUES (1, 'a');", 'DELETE FROM t WHERE id = 2;'] })), 1);
+  assert.equal(tier(file('tests/fixtures/db/q.sql', { add: ['SELECT a,', '  b', 'FROM t;'], del: ['SELECT a FROM t;'] })), 1);
+  assert.equal(tier(file('pkg/test/testdata/seed.sql', { created: true, add: ['SELECT 1;'] })), 1);
+});
+
+test('a schema statement in a .sql test fixture is tier 2', () => {
+  for (const s of ['CREATE TABLE t (id int);', 'DROP TABLE t;', 'ALTER TABLE t ADD COLUMN x int;']) {
+    assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: [s] })), 2, s);
+    assert.equal(tier(file('tests/fixtures/db/seed.sql', { add: ['SELECT 1;', s] })), 2, s);
+    assert.equal(tier(file('tests/fixtures/db/seed.sql', { del: [s] })), 2, s);
+  }
+  assert.deepEqual(riskTier(file('tests/fixtures/db/seed.sql', { add: ['DROP TABLE t;'] })).reasons,
+    ['SQL schema statement: tests/fixtures/db/seed.sql']);
+});
+
+test('a .sql test fixture whose diff shows no lines keeps the path rule', () => {
+  const binary = ['diff --git a/tests/fixtures/db/seed.sql b/tests/fixtures/db/seed.sql', 'new file mode 100644',
+    'index 0000000..1234567', 'Binary files /dev/null and b/tests/fixtures/db/seed.sql differ'].join('\n');
+  assert.equal(tier(binary), 2);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true })), 2);
+});
+
+test('a .sql file outside a test fixture keeps the path rule', () => {
+  assert.equal(tier(file('db/migrations/001_init.sql', { add: ['SELECT 1;'] })), 2);
+  assert.equal(tier(file('app/queries.sql', { add: ['SELECT 1;'] })), 2);
+  assert.equal(tier(file('fixtures/seed.sql', { created: true, add: ['SELECT 1;'] })), 2);
+  assert.equal(tier(file('tests/seed.sql', { created: true, add: ['SELECT 1;'] })), 2);
+});
+
+const renamed = (from, to, lines, { headers = false } = {}) =>
+  [`diff --git a/${from} b/${to}`, ...(headers ? ['similarity index 95%', `rename from ${from}`, `rename to ${to}`] : []),
+    `--- a/${from}`, `+++ b/${to}`, '@@ -18,3 +18,4 @@', ...lines].join('\n');
+
+test('a schema file renamed into a test fixture dir keeps tier 2', () => {
+  for (const headers of [false, true]) {
+    const migration = riskTier(renamed('migrations/0005_users.sql', 'tests/fixtures/0005_users.sql',
+      [' CREATE TABLE t18 (id int);', '+-- fixture copy'], { headers }));
+    assert.equal(migration.tier, 2, `migration, headers=${headers}`);
+    assert.ok(migration.reasons.includes('schema or migration file: migrations/0005_users.sql'), migration.reasons.join());
+    assert.equal(tier(renamed('db/schema.sql', 'tests/fixtures/schema.sql', ["+INSERT INTO t VALUES (1);"], { headers })), 2, `schema, headers=${headers}`);
+  }
+});
+
+test('a rename within test fixtures keeps the fixture exemptions', () => {
+  for (const headers of [false, true]) {
+    assert.equal(tier(renamed('tests/fixtures/a/seed.sql', 'tests/fixtures/b/seed.sql', ["+INSERT INTO t VALUES (1);"], { headers })), 1);
+    assert.equal(tier(renamed('tests/fixtures/a.js', 'tests/fixtures/b.js', ['+// eslint-disable-next-line'], { headers })), 1);
+  }
+});
+
+test('a source file renamed into a test dir loses no suppression check', () => {
+  assert.equal(tier(renamed('src/a.js', 'tests/fixtures/a.js', ['+// eslint-disable-next-line'], { headers: true })), 2);
+});
+
 test('adding tests stays tier 1', () => {
   assert.equal(tier(file('tests/test_api.py', { created: true, add: ['def test_c():', '    assert c()'] })), 1);
 });
