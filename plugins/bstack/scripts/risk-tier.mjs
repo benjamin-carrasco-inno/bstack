@@ -24,8 +24,10 @@ const PATH_RULES = [
   [/(import|sync|upsert|ingest|backfill)[^/]*\.(py|rs|js|mjs|ts)$/i, 'importer or sync code'],
 ];
 
+const SCHEMA_STATEMENT = /\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i;
+
 const ADDED_OR_REMOVED = [
-  [/\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i, 'SQL schema statement'],
+  [SCHEMA_STATEMENT, 'SQL schema statement'],
   [/\bDELETE\s+FROM\b|\bTRUNCATE\b|\bUPDATE\s+[\w."]+\s+SET\b|\bINSERT\s+(OR\s+\w+\s+)?INTO\b|\bON\s+CONFLICT\b/i, 'SQL that writes data'],
   [/\b(os\.remove|os\.unlink|shutil\.rmtree|\.unlink\(|\.rmdir\(|fs\.(rm|rmSync|unlink|unlinkSync|rmdir)\(|remove_file|remove_dir_all)\b/, 'deletes files'],
   [/\b(requests|httpx|session|client|reqwest|axios)\s*\.\s*(post|put|patch|delete)\s*\(|method\s*[:=]\s*['"](POST|PUT|PATCH|DELETE)['"]|Method::(POST|PUT|PATCH|DELETE)/i, 'outbound call with side effects'],
@@ -41,24 +43,6 @@ const PROSE = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
 const SUPPRESSION = /#\s*noqa|type:\s*ignore|pyright:\s*ignore|eslint-disable|@ts-(ignore|expect-error|nocheck)|#!?\[allow\(/;
 const TEST_REMOVED = /^\s*(async\s+)?def\s+test_|^\s*#\[(tokio::)?test\]|^\s*(it|test)\s*\(/;
 const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
-
-const SQL_BLANK_OR_COMMENT = /^\s*(--|$)/;
-const SQL_UNPARSED_QUOTING = /[$\\]|\b[Ee]'/;
-const SQL_DATA_START = /^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|VALUES)\b/i;
-const SQL_NOT_DATA = [
-  /\b(CREATE|ALTER|DROP|GRANT|REVOKE|TRUNCATE|RENAME|EXECUTE|CALL|setval)\b|\bCOMMENT\s+ON\b/i,
-  /\bINTO\b/i,
-  /\b(pg_catalog|pg_attribute|pg_class|information_schema|sqlite_master|sqlite_schema)\b|\bpg_\w+\s*\(|\bdblink|\b(sys|mysql)["`\]]?\s*\./i,
-];
-const SQL_INSERT_INTO = /\bINSERT\s+(OR\s+\w+\s+|IGNORE\s+)?INTO\b/gi;
-
-function isSqlData(lines) {
-  if (lines.some(line => SQL_UNPARSED_QUOTING.test(line))) return false;
-  const everything = lines.join('\n').replace(SQL_INSERT_INTO, 'INSERT');
-  if (SQL_NOT_DATA.some(re => re.test(everything))) return false;
-  const code = lines.filter(line => !SQL_BLANK_OR_COMMENT.test(line)).join('\n');
-  return code.split(';').filter(s => s.trim()).every(statement => SQL_DATA_START.test(statement));
-}
 
 export function parseDiff(diff) {
   const files = [];
@@ -94,10 +78,12 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
     if (!docs) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
     if (extra.some(re => re.test(p))) raise(2, `listed in .github/risk-paths.txt: ${p}`);
     const fixture = FIXTURE.test(p);
-    const dataFixture = fixture && /\.sql$/i.test(p) && (f.created || f.deleted) && isSqlData(f.created ? f.added : f.removed);
-    for (const [re, why] of PATH_RULES) if (re.test(p) && !(dataFixture && re === SCHEMA_FILE)) raise(2, `${why}: ${p}`);
-
     const isTest = TEST_PATH.test(p);
+    const sqlLines = [...f.added, ...f.removed];
+    const testFixtureSql = isTest && fixture && /\.sql$/i.test(p) && sqlLines.length > 0;
+    if (testFixtureSql && sqlLines.some(l => SCHEMA_STATEMENT.test(l))) raise(2, `SQL schema statement: ${p}`);
+    for (const [re, why] of PATH_RULES) if (re.test(p) && !(testFixtureSql && re === SCHEMA_FILE)) raise(2, `${why}: ${p}`);
+
     if (isTest && f.deleted) raise(2, `test file deleted: ${p}`);
     if (isTest && f.removed.some(l => TEST_REMOVED.test(l))) raise(2, `test removed: ${p}`);
     if (isTest) {
