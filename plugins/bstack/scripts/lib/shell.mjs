@@ -2,7 +2,8 @@
 // recognise git and gh invocations. It evaluates nothing: variables and substitutions stay text.
 
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'pwsh', 'powershell', 'cmd']);
-const PREFIXES = new Set(['&', 'env', 'command', 'exec', 'time', 'nohup', 'sudo', 'call']);
+const PREFIXES = new Set(['&', 'env', 'command', 'exec', 'time', 'nohup', 'sudo', 'call',
+  'if', 'then', 'elif', 'else', 'elseif', 'while', 'until', 'do', '!']);
 
 const HERE_STRING_OPEN = /^@(['"])\r?\n/;
 
@@ -16,11 +17,14 @@ function hereString(text, i) {
   return { body: text.slice(bodyStart, close).replace(/\r$/, ''), end: close + 3 };
 }
 
-// Cut a line into segments at ; && || | & and newlines, outside quotes.
+const CLOSER = { '(': ')', '{': '}' };
+
+// Cut a line into segments at ; && || | & newlines and word-initial ( ) { } groups, outside quotes.
 export function splitSegments(line) {
   const segments = [];
   let cur = '';
   let quote = null;
+  const groups = [];
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (quote) {
@@ -32,6 +36,16 @@ export function splitSegments(line) {
     const here = hereString(line, i);
     if (here) { cur += line.slice(i, here.end); i = here.end - 1; continue; }
     if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
+    if (ch in CLOSER) {
+      const splits = cur === '' || /\s$/.test(cur);
+      groups.push({ closer: CLOSER[ch], splits });
+      if (splits) { segments.push(cur); cur = ''; } else cur += ch;
+      continue;
+    }
+    if (ch === groups.at(-1)?.closer) {
+      if (groups.pop().splits) { segments.push(cur); cur = ''; } else cur += ch;
+      continue;
+    }
     if (ch === '\n' || ch === '\r' || ch === ';') { segments.push(cur); cur = ''; continue; }
     if (ch === '|') { if (line[i + 1] === '|') i++; segments.push(cur); cur = ''; continue; }
     if (ch === '&') {
