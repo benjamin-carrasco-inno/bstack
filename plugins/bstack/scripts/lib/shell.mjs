@@ -55,6 +55,7 @@ export function splitSegments(line) {
       continue;
     }
     if (ch === '\n' || ch === '\r' || ch === ';') { segments.push(cur); cur = ''; continue; }
+    if (ch === '|' && line[i - 1] === '>') { cur += ch; continue; }
     if (ch === '|') { if (line[i + 1] === '|') i++; segments.push(cur); cur = ''; continue; }
     if (ch === '&') {
       const prev = line[i - 1];
@@ -110,6 +111,7 @@ export function redirectTargets(segment) {
     if (ch !== '>') continue;
     if (segment[i + 1] === '>') i++;
     if (segment[i + 1] === '&') { i++; continue; }
+    if (segment[i + 1] === '|') i++;
     const [word] = tokenize(segment.slice(i + 1));
     if (word) targets.push(word);
   }

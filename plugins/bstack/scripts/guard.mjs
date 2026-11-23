@@ -111,7 +111,9 @@ function agentRule(c, agent, root) {
 
 const TREE_REWRITING_GIT = {
   stash: { rewrites: rest => !/^(list|show)$/.test(rest[0] ?? ''), anywhere: true },
-  checkout: { rewrites: rest => rest.some(a => a === '--' || a === '.' || a === '-f' || a === '--force') },
+  checkout: { rewrites: () => true },
+  switch: { rewrites: () => true },
+  worktree: { rewrites: rest => /^(add|remove|move|prune|repair)$/.test(rest[0] ?? ''), paths: rest => positionalArgs(rest.slice(1), /^(-b|-B|--reason)$/) },
   restore: { rewrites: () => true },
   reset: { rewrites: () => true },
   apply: { rewrites: rest => !rest.some(a => /^--(check|stat|numstat|summary)$/.test(a)) },
@@ -128,7 +130,8 @@ function treeRewriteRule(c, agent, root) {
   if (rule.anywhere) return `The ${agent} agent must not run git ${sub}: the stash stack is shared by every worktree of the repo. Read with git stash list or git stash show.`;
   const otherTree = c.args.some(a => /^--(work-tree|git-dir)\b/.test(a));
   const repo = dir ? writeTarget(dir, c.cwd) : c.cwd;
-  if (otherTree || !repo || !owns(root, repo)) return `The ${agent} agent must not run git ${sub} on a checkout outside its own worktree (${root}); it would rewrite someone else's uncommitted work. Read with git diff or git show instead.`;
+  const touched = [repo, ...(rule.paths?.(rest) ?? []).map(p => repo && writeTarget(p, repo))];
+  if (otherTree || touched.some(p => !p || !owns(root, p))) return `The ${agent} agent must not run git ${sub} on a checkout outside its own worktree (${root}); it would rewrite someone else's uncommitted work. Read with git diff or git show instead.`;
   return null;
 }
 
@@ -148,7 +151,27 @@ const FILE_WRITERS = {
   cp: COPIES, 'copy-item': COPIES, cpi: COPIES, copy: COPIES,
   'set-content': WRITES_CONTENT, sc: WRITES_CONTENT, 'add-content': WRITES_CONTENT, ac: WRITES_CONTENT,
   'out-file': WRITES_CONTENT, 'tee-object': WRITES_CONTENT, 'new-item': WRITES_CONTENT, ni: WRITES_CONTENT,
+  dd: args => args.filter(a => a.startsWith('of=')).map(a => a.slice(3)),
+  truncate: args => positionalArgs(args, /^(-s|-r|--size|--reference)$/),
+  ln: linkTargets,
 };
+
+function positionalArgs(args, valued) {
+  return args.filter((a, i) => !a.startsWith('-') && !valued.test(args[i - 1] ?? ''));
+}
+
+function linkTargets(args) {
+  const named = args.flatMap((a, i) => a === '-t' || a === '--target-directory' ? [args[i + 1]] : a.startsWith('--target-directory=') ? [a.slice(19)] : []);
+  if (named.length) return named;
+  const positional = positionalArgs(args, /^(-t|--target-directory|-S|--suffix)$/);
+  return positional.length > 1 ? positional.slice(-1) : [];
+}
+
+const DOTNET_FILE_WRITE = /\[(System\.)?IO\.File\]::(Write|Append)\w*\s*\(\s*(?:(['"])(.*?)\3|([^,\s)]+))/gi;
+
+function dotnetWriteTargets(text) {
+  return [...text.matchAll(DOTNET_FILE_WRITE)].map(m => m[4] ?? m[5]);
+}
 
 function writeTargets(args, { pick, named, valued = false }) {
   const byName = [];
@@ -195,7 +218,7 @@ function owns(root, target) {
 }
 
 function fileWriteRule(c, agent, root) {
-  const words = [...redirectTargets(c.text), ...(FILE_WRITERS[c.cmd]?.(c.args) ?? [])];
+  const words = [...redirectTargets(c.text), ...dotnetWriteTargets(c.text), ...(FILE_WRITERS[c.cmd]?.(c.args) ?? [])];
   for (const word of words) {
     const target = writeTarget(word, c.cwd);
     if (target === null) continue;
