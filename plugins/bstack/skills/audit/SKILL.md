@@ -36,14 +36,13 @@ Rank by severity (data loss or security, then wrong results, then maintenance co
 
 ## 4. Present once
 
-One message: the findings ranked, each with its evidence, its risk tier, and the PR it belongs to. Ask only what needs the user (product choices, anything a revert cannot undo) and proceed with everything else by default.
+One message: the findings ranked, each with its evidence, its risk tier, and the PR it belongs to.
 
 ## 5. Fix
 
-- **Checks first.** The first PR turns on the missing checks (strict lint, typecheck, tests in CI, contract tests). Fix the existing violations or baseline them per file with a stated reason. No blanket ignores.
+- **Checks first.** The first PR turns on the missing checks (strict lint, typecheck, tests in CI, contract tests), with workflows written per [CI](../mode/ci.md). Fix the existing violations or baseline them per file with a stated reason. No blanket ignores.
 - **Then one PR per finding** or per class of identical findings, each through its playbook: bug-fix for bugs (the evidence from step 3 becomes the failing test), refactor for slop (lock the behaviour first), migration for anything that touches stored data or contracts.
 - Independent PRs can run in parallel worktrees. Keep at most three open per repo, to limit merge-ins.
-- Every PR goes through ship, gates included. No exceptions for "small" cleanups.
 
 ## 6. Close
 

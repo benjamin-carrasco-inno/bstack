@@ -123,51 +123,64 @@ function programName(word) {
 }
 
 const DIALECT_OF_SHELL = { pwsh: 'powershell', powershell: 'powershell', cmd: 'cmd' };
+export const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
+export const UNRESOLVED = /[$%`]/;
 
 // Every simple command in a line, including commands nested in bash -c, pwsh -Command and cmd /c.
-export function commandsIn(line, depth = 0, dialect = 'posix') {
+export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shellCount = { n: 0 }) {
   const out = [];
   for (const segment of splitSegments(line)) {
     let words = tokenize(segment);
-    while (words.length && (PREFIXES.has(words[0].toLowerCase()) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]))) {
+    const env = {};
+    while (words.length && (PREFIXES.has(words[0].toLowerCase()) || ASSIGNMENT.test(words[0]))) {
+      const set = ASSIGNMENT.exec(words[0]);
+      if (set) env[set[1]] = set[2];
       words = words.slice(1);
     }
-    if (!words.length) continue;
+    if (!words.length) {
+      if (Object.keys(env).length) out.push({ cmd: '', args: [], text: segment, env, scope });
+      continue;
+    }
     const cmd = programName(words[0]);
     const args = words.slice(1);
     if (depth < 3 && SHELLS.has(cmd)) {
       const at = args.findIndex(a => /^(-c|-command|\/c|-encodedcommand)$/i.test(a));
-      if (at >= 0) { out.push(...commandsIn(args.slice(at + 1).join(' '), depth + 1, DIALECT_OF_SHELL[cmd] ?? 'posix')); continue; }
+      if (at >= 0) { out.push(...commandsIn(args.slice(at + 1).join(' '), depth + 1, DIALECT_OF_SHELL[cmd] ?? 'posix', `${scope}/${++shellCount.n}`, shellCount)); continue; }
     }
     if (depth < 3 && /^(invoke-expression|iex)$/.test(cmd) && args.length) {
-      out.push(...commandsIn(args.join(' '), depth + 1, dialect));
+      out.push(...commandsIn(args.join(' '), depth + 1, dialect, scope, shellCount));
       continue;
     }
-    out.push({ cmd, args, text: segment, dialect });
+    out.push({ cmd, args, text: segment, dialect, env, scope });
   }
   return out;
 }
 
 const ABSOLUTE = /^([a-z]:)?[\\/]/i;
 const ALIAS_KEY = /^alias\./i;
+const GIT_PATH_OPTS = { '--git-dir': 'gitDir', '--work-tree': 'workTree' };
 
-// git global options come before the subcommand: git -C dir -c k=v push ... Each -C is relative to the one before.
+// git global options come before the subcommand: git -C dir --git-dir=x -c k=v push ... Each -C is relative to the one before.
 export function parseGit(args) {
-  let dir = null;
+  const found = { dir: null, gitDir: null, workTree: null };
   let aliases = false;
   let i = 0;
   while (i < args.length && args[i].startsWith('-')) {
     const a = args[i];
     const value = args[i + 1];
     if (a === '-C') {
-      if (value !== undefined) dir = dir === null || ABSOLUTE.test(value) ? value : `${dir}/${value}`;
+      if (value !== undefined) found.dir = found.dir === null || ABSOLUTE.test(value) ? value : `${found.dir}/${value}`;
       i += 2;
       continue;
     }
+    const eq = a.startsWith('--') ? a.indexOf('=') : -1;
+    const key = GIT_PATH_OPTS[eq > 0 ? a.slice(0, eq) : a];
+    if (key && eq > 0) { found[key] = a.slice(eq + 1); i += 1; continue; }
+    if (key) { found[key] = value ?? null; i += 2; continue; }
     if (a === '-c' || a === '--config-env') { aliases ||= ALIAS_KEY.test(value ?? ''); i += 2; continue; }
     if (a.startsWith('--config-env=')) aliases ||= ALIAS_KEY.test(a.slice(13));
-    if (a === '--git-dir' || a === '--work-tree' || a === '--namespace') { i += 2; continue; }
+    if (a === '--namespace') { i += 2; continue; }
     i += 1;
   }
-  return { dir, aliases, sub: args[i] ?? '', rest: args.slice(i + 1) };
+  return { ...found, aliases, sub: args[i] ?? '', rest: args.slice(i + 1) };
 }

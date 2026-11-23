@@ -11,4 +11,4 @@ The default level arrives with the session rules. Other levels:
 - **ultra** ("kortere"): maximum compression, arrows for cause (X -> Y), common abbreviations (DB, config, PR). Never abbreviate code symbols or invent abbreviations.
 - **normal** ("normal mode", "stop caveman"): the style is off until asked again.
 
-A level holds until changed. Warnings, irreversible actions, ordered steps and requested explanations are always written in full, then the level resumes.
+A level holds until changed.

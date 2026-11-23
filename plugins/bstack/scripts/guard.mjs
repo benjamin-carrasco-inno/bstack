@@ -9,8 +9,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { commandsIn, parseGit, redirectTargets } from './lib/shell.mjs';
-import { MARKER, latestFor } from './lib/verdicts.mjs';
+import { ASSIGNMENT, UNRESOLVED, commandsIn, parseGit, redirectTargets, tokenize } from './lib/shell.mjs';
+import { KINDS, MARKER, latestFor, timeOf } from './lib/verdicts.mjs';
+import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { contains, isAbsolute, resolvePath } from './lib/paths.mjs';
 import { riskTier, readRiskPaths } from './risk-tier.mjs';
@@ -44,28 +45,56 @@ const HOME = /^~(?=$|[\\/])/;
 const OPAQUE = /[$`(]|%[^%\s]+%/;
 const GIT_LOCATION_VARIABLE = /\bGIT_(DIR|WORK_TREE)\b/i;
 
+const UNKNOWN_DIR = null;
+const PS_ENV = /^\$env:([A-Za-z_]\w*)\s*=\s*(.*)$/is;
+
 function located(commands, start) {
-  let here = { dir: start, known: true };
-  let previous = null;
+  const scopes = new Map();
   let gitRedirected = false;
-  const stack = [];
   return commands.map(c => {
     gitRedirected ||= GIT_LOCATION_VARIABLE.test(c.text);
-    const at = { ...c, cwd: here.dir, cwdKnown: here.known, gitRedirected };
-    const move = DIR_MOVES[c.cmd];
-    const target = dirTarget(c.args);
-    if (move === 'pop') {
-      if (stack.length) [previous, here] = [here, stack.pop()];
-    } else if (move && target === '-') {
-      if (previous) [previous, here] = [here, previous];
-    } else if (move) {
-      if (move === 'push') stack.push(here);
-      previous = here;
-      const opaque = target === undefined || OPAQUE.test(target) || HOME.test(target);
-      here = { dir: resolvedDir(target, here.dir), known: !opaque && (here.known || isAbsolute(target)) };
-    }
+    const shell = shellState(scopes, c.scope ?? '', start);
+    const at = { ...c, cwd: shell.here.dir, cwdKnown: shell.here.known, gitRedirected, env: { ...shell.env, ...c.env } };
+    changeDir(shell, c);
+    setVariables(shell.env, c);
     return at;
   });
+}
+
+function shellState(scopes, scope, start) {
+  if (!scopes.has(scope)) {
+    const parent = scope ? shellState(scopes, scope.slice(0, scope.lastIndexOf('/')), start) : { here: { dir: start, known: true }, previous: undefined, stack: [], env: {} };
+    scopes.set(scope, { ...parent, stack: [...parent.stack], env: { ...parent.env } });
+  }
+  return scopes.get(scope);
+}
+
+function changeDir(shell, c) {
+  const move = DIR_MOVES[c.cmd];
+  const target = dirTarget(c.args);
+  if (move === 'pop') {
+    if (shell.stack.length) [shell.previous, shell.here] = [shell.here, shell.stack.pop()];
+  } else if (move && target === '-') {
+    if (shell.previous !== undefined) [shell.previous, shell.here] = [shell.here, shell.previous];
+  } else if (move) {
+    if (move === 'push') shell.stack.push(shell.here);
+    shell.previous = shell.here;
+    const dir = resolvedDir(target, shell.here.dir);
+    const opaque = target === undefined || OPAQUE.test(target) || HOME.test(target);
+    shell.here = { dir, known: dir !== UNKNOWN_DIR && !opaque && (shell.here.known || isAbsolute(target)) };
+  }
+}
+
+function setVariables(env, c) {
+  if (c.cmd === '') Object.assign(env, c.env);
+  if (c.cmd === 'export') {
+    for (const set of c.args.map(a => ASSIGNMENT.exec(a)).filter(Boolean)) env[set[1]] = set[2];
+  }
+  const ps = PS_ENV.exec(c.text);
+  if (ps) {
+    const value = tokenize(ps[2]);
+    env[ps[1].toUpperCase()] = value.length === 1 ? value[0] : '$';
+  }
 }
 
 function dirTarget(args) {
@@ -73,16 +102,22 @@ function dirTarget(args) {
 }
 
 function resolvedDir(target, here) {
-  if (target === undefined || target.includes('$')) return here;
-  return resolvePath(here, target.replace(HOME, os.homedir()));
+  if (target === undefined) return here;
+  if (UNRESOLVED.test(target)) return UNKNOWN_DIR;
+  const literal = target.replace(HOME, os.homedir());
+  if (here === UNKNOWN_DIR && !isAbsolute(literal)) return UNKNOWN_DIR;
+  return resolvePath(here ?? '', literal);
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
+const SAVED_VERDICTS = 'Saved verdicts are written only by the bstack hook when GitHub does not answer; the guard posts them at the next merge. Run the bstack:reviewer or bstack:adversary agent instead.';
+
 function markerRule(c, cwd, deps) {
   const readOnlyGh = c.cmd === 'gh' && (/^(view|checks|diff|list|status)$/.test(c.args[1] ?? '') || (c.args[0] === 'api' && !hasWriteFields(c.args)));
   if (MARKER.test(c.text) && !READ_ONLY.has(c.cmd) && !readOnlyGh) {
     return 'Verdict and interrogate lines are posted by the bstack hook when the bstack:reviewer or bstack:adversary agent finishes. Run that agent instead of writing the line yourself.';
   }
+  if (!READ_ONLY.has(c.cmd) && pathArgs(c).some(a => PENDING_PATH.test(a))) return SAVED_VERDICTS;
   if (c.cmd === 'gh') {
     for (const file of bodyFiles(c.args)) {
       const text = deps.readFile(resolvePath(cwd, file));
@@ -90,6 +125,14 @@ function markerRule(c, cwd, deps) {
     }
   }
   return null;
+}
+
+const PENDING_PATH = new RegExp(String.raw`(^|[\\/>=])${PENDING_NAME.source}([\\/]|$)`, 'i');
+const MESSAGE_OPTS = new Set(['-m', '--message', '-b', '--body', '-t', '--title']);
+
+function pathArgs({ cmd, args }) {
+  if (cmd !== 'git' && cmd !== 'gh') return args;
+  return args.filter((a, i) => !MESSAGE_OPTS.has(args[i - 1]) && !/^--(message|body|title)=/.test(a));
 }
 
 function bodyFiles(args) {
@@ -295,13 +338,16 @@ function fileWriteRule(c, agent, root) {
 }
 
 // --- git ------------------------------------------------------------------------------------------
+const CONCLUDES_WITH_COMMIT = /^(merge|cherry-pick|revert|rebase)$/;
+
 function gitRule(c, cwd, deps, line) {
   const { dir, sub, rest } = parseGit(c.args);
   const repo = dir ? resolvePath(cwd, dir) : cwd;
   if (rest.includes('--no-verify') || (sub === 'commit' && rest.some(a => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--')))) {
     return 'Do not skip git hooks (--no-verify / -n). Fix what the hook reports; it is part of the safety net.';
   }
-  if (sub === 'commit') return commentRatchet({ repo: dir ? resolvePath(c.cwd, dir) : c.cwd, rest, ...line }, deps);
+  if (sub === 'commit') return commentRatchet({ command: c, rest, ...line }, deps);
+  if (CONCLUDES_WITH_COMMIT.test(sub) && rest.includes('--continue')) return commentRatchet({ command: c, rest: [], ...line }, deps);
   if (sub === 'push') return pushRule(rest, repo, deps);
   if (sub === 'rebase' && !rest.some(a => /^--(abort|continue|skip|quit|edit-todo|show-current-patch)$/.test(a))) return rebaseRule(repo, deps);
   if (sub === 'pull' && rest.some(a => a === '--rebase' || a === '-r' || a.startsWith('--rebase='))) return rebaseRule(repo, deps);
@@ -419,6 +465,8 @@ function mergeGate(args, cwd, deps) {
   if (pr.state && pr.state !== 'OPEN') return null;
   const sha = pr.headRefOid;
   const short = sha.slice(0, 7);
+  const unposted = postSaved(pr, cwd, deps);
+  if (unposted) return unposted;
 
   const ci = ciState(pr.statusCheckRollup);
   if (!ci.ok) return `CI is not green on ${short}: ${ci.detail}. Watch it with gh pr checks ${pr.url} --watch. Flaky: rerun once. Caused by the change: fix it. Never weaken the check.`;
@@ -441,8 +489,45 @@ function mergeGate(args, cwd, deps) {
   return null;
 }
 
+// Verdicts the hook saved while GitHub did not answer: post the ones for this head, drop older heads,
+// empty entries and entries a verdict of the same kind posted since then has replaced.
+function postSaved(pr, cwd, deps) {
+  const repo = repoOfUrl(pr.url);
+  if (!repo) return null;
+  pr.comments ??= [];
+  for (const { file, entry } of deps.pending.list(repo, String(pr.number))) {
+    const body = String(entry.body ?? '');
+    if (entry.sha !== pr.headRefOid || !(entry.kind in KINDS) || !body.trim() || replaced(entry, pr.comments)) { deps.pending.remove(file); continue; }
+    if (!pr.comments.some(c => String(c.body ?? '').trim() === body.trim())) {
+      try { deps.postComment(cwd, pr.url, body); }
+      catch (e) { return `bstack could not post the ${entry.kind} it saved for ${pr.headRefOid.slice(0, 7)} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
+      pr.comments.push({ body, createdAt: new Date().toISOString() });
+    }
+    deps.pending.remove(file);
+  }
+  return null;
+}
+
+function replaced(entry, comments) {
+  const { tag, line } = KINDS[entry.kind];
+  const savedAt = Date.parse(entry.at ?? '') || 0;
+  return comments.some(c => {
+    const body = String(c.body ?? '');
+    return body.startsWith(tag) && line.exec(body)?.[2] === entry.sha && timeOf(c) > savedAt;
+  });
+}
+
+const runKey = c => `${c.__typename ?? ''}|${c.workflowName ?? ''}|${c.name ?? c.context ?? 'check'}`;
+const NEVER_STARTED = /^0001-01-01/;
+const startTime = c => (!c.startedAt || NEVER_STARTED.test(c.startedAt) ? Infinity : Date.parse(c.startedAt) || Infinity);
+
+const replacedBySuccess = (c, checks) =>
+  c.conclusion === 'CANCELLED' &&
+  checks.some(o => runKey(o) === runKey(c) && o.conclusion === 'SUCCESS' && startTime(o) > startTime(c));
+
 export function ciState(rollup) {
-  const checks = Array.isArray(rollup) ? rollup : [];
+  const all = Array.isArray(rollup) ? rollup : [];
+  const checks = all.filter(c => !replacedBySuccess(c, all));
   if (!checks.length) return { ok: false, detail: 'no checks ran (a missing check is not a pass)' };
   const pending = [];
   const failed = [];
@@ -475,6 +560,7 @@ function mcpRule(tool, input) {
 }
 
 function writeRule(input, deps) {
+  if (PENDING_NAME.test(String(input.file_path ?? input.notebook_path ?? ''))) return SAVED_VERDICTS;
   const text = [input.content, input.new_string, input.new_source, ...(input.edits ?? []).map(e => e.new_string)].filter(Boolean).join('\n');
   if (!MARKER.test(text)) return null;
   const file = String(input.file_path ?? input.notebook_path ?? '');
@@ -483,12 +569,32 @@ function writeRule(input, deps) {
 }
 
 // --- wiring -----------------------------------------------------------------------------------------
+// hooks.json gives the shell guard 300 s: the PR read, the diff and one saved-verdict post at 30 + 60 s each.
+export function retryOnTimeout(run, timeouts = [30000, 60000]) {
+  return (cwd, args) => {
+    try {
+      return run(cwd, args, timeouts[0]);
+    } catch (e) {
+      if (e?.code !== 'ETIMEDOUT') throw e;
+      return run(cwd, args, timeouts[1]);
+    }
+  };
+}
+
+const gh = retryOnTimeout((cwd, args, timeout) => execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout, maxBuffer: 64 << 20 }));
+
 export const realDeps = {
   git: (cwd, args, { env, input, buffer, timeout = 15000 } = {}) => execFileSync('git', ['-C', cwd, ...args], {
     encoding: buffer ? undefined : 'utf8', input, env: env ? { ...process.env, ...env } : undefined, timeout, maxBuffer: 256 << 20,
     stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   }),
-  gh: (cwd, args) => execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 45000, maxBuffer: 64 << 20 }),
+  gh,
+  pending: pendingStore(),
+  postComment: (cwd, url, body) => {
+    const file = path.join(os.tmpdir(), `bstack-saved-verdict-${process.pid}-${Date.now()}.md`);
+    fs.writeFileSync(file, body, 'utf8');
+    try { gh(cwd, ['pr', 'comment', url, '--body-file', file]); } finally { fs.rmSync(file, { force: true }); }
+  },
   exists: file => fs.existsSync(file),
   readFile: file => { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } },
   insideBstackSource: file => {

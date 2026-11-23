@@ -83,6 +83,7 @@ test('quotes, substitutions and ref syntax keep their braces and parentheses', (
 });
 
 test('git global options are skipped', () => {
-  assert.deepEqual(parseGit(['-C', 'x', '-c', 'a=b', 'push', 'origin', 'main']), { dir: 'x', aliases: false, sub: 'push', rest: ['origin', 'main'] });
-  assert.deepEqual(parseGit(['-C', 'x', '-C', '..', '-C', '/abs', '-C', 'y', '-c', 'alias.z=reset', 'z']), { dir: '/abs/y', aliases: true, sub: 'z', rest: [] });
+  assert.deepEqual(parseGit(['-C', 'x', '-c', 'a=b', 'push', 'origin', 'main']), { dir: 'x', gitDir: null, workTree: null, aliases: false, sub: 'push', rest: ['origin', 'main'] });
+  assert.deepEqual(parseGit(['-C', 'x', '-C', '..', '-C', '/abs', '-C', 'y', '-c', 'alias.z=reset', 'z']), { dir: '/abs/y', gitDir: null, workTree: null, aliases: true, sub: 'z', rest: [] });
+  assert.deepEqual(parseGit(['--git-dir=g', '--work-tree', 'w', 'commit']), { dir: null, gitDir: 'g', workTree: 'w', aliases: false, sub: 'commit', rest: [] });
 });

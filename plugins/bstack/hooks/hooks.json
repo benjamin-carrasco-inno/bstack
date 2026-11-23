@@ -19,7 +19,7 @@
       {
         "matcher": "Bash|PowerShell",
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/guard.mjs"], "timeout": 90, "onFailure": "block" }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/guard.mjs"], "timeout": 300, "onFailure": "block" }
         ]
       },
       {
@@ -39,7 +39,7 @@
       {
         "matcher": "^bstack:(reviewer|adversary)$",
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/verdict.mjs"], "timeout": 90 }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/verdict.mjs"], "timeout": 210 }
         ]
       }
     ]

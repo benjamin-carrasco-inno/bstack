@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { commentArgs, handle, kindOf, readSettled } from '../plugins/bstack/scripts/verdict.mjs';
-import { parseReport, latestFor } from '../plugins/bstack/scripts/lib/verdicts.mjs';
+import { commentArgs, deliver, handle, kindOf, readSettled, retrying, transient } from '../plugins/bstack/scripts/verdict.mjs';
+import { decide } from '../plugins/bstack/scripts/guard.mjs';
+import { commentBody, parseReport, latestFor } from '../plugins/bstack/scripts/lib/verdicts.mjs';
+import { pendingStore } from '../plugins/bstack/scripts/lib/pending.mjs';
 
 const SHA = 'c'.repeat(40);
 
@@ -137,6 +139,141 @@ test('a hand-back written after the hook starts is still read and posted', () =>
   const input = { agent_type: 'bstack:reviewer', stop_hook_active: false, agent_transcript_path: file };
   const out = handle(input, gh(SHA), f => readSettled(f, { pause }));
   assert.equal(out.post?.pr, 'https://github.com/o/r/pull/7');
+});
+
+const timedOut = () => Object.assign(new Error('spawnSync gh ETIMEDOUT'), { code: 'ETIMEDOUT' });
+
+function outage(ms) {
+  const clock = { now: 0, calls: [] };
+  clock.gh = (cwd, args) => {
+    if (clock.now < ms) { clock.now += 25000; throw timedOut(); }
+    clock.calls.push(args);
+    return args[1] === 'view' ? JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, comments: [] }) : '';
+  };
+  clock.pause = wait => { clock.now += wait; };
+  return clock;
+}
+
+const reviewed = () => ({
+  agent_type: 'bstack:reviewer',
+  cwd: '/repo',
+  agent_transcript_path: transcript([prompt('PR 7 in o/r.'), handback(`Works.\nbstack-verdict: PASS pr=7 sha=${SHA}`), delivered]),
+});
+
+test('a verdict is posted after a 30 s gh outage, with no agent rerun', () => {
+  const clock = outage(30000);
+  const out = deliver(reviewed(), { gh: retrying(clock.gh, { pause: clock.pause }), save: () => assert.fail('nothing should be saved') });
+  assert.match(out.systemMessage, /verdict posted/);
+  assert.deepEqual(clock.calls.map(a => a[1]), ['view', 'comment']);
+});
+
+test('a refused connection is retried like a timeout', () => {
+  let calls = 0;
+  const refused = 'Command failed: gh pr view 7\nPost "https://api.github.com/graphql": proxyconnect tcp: dial tcp 127.0.0.1:9: connectex: No connection could be made because the target machine actively refused it.\n';
+  const gh = retrying(() => { if (++calls < 3) throw new Error(refused); return 'ok'; }, { pause: () => {} });
+  assert.equal(gh('/repo', ['pr', 'view', '7']), 'ok');
+  assert.equal(calls, 3);
+});
+
+test('retries stop at once on an error that is not transient', () => {
+  let calls = 0;
+  const gh = retrying(() => { calls++; throw new Error('GraphQL: Could not resolve to a PullRequest with the number of 70.'); }, { pause: () => {} });
+  assert.throws(() => gh('/repo', ['pr', 'view', '70']));
+  assert.equal(calls, 1);
+});
+
+test('a repo name in the failed command line does not make the error transient', () => {
+  for (const repo of ['acme/network-tools', 'acme/timeout-service', 'acme/eof']) {
+    const e = new Error(`Command failed: gh pr view 999999 -R ${repo} --json number\nGraphQL: Could not resolve to a Repository with the name '${repo}'. (repository)\n`);
+    assert.equal(transient(e), false, repo);
+  }
+  assert.equal(transient(new Error('Command failed: gh pr view 7 -R acme/eof\nerror connecting to api.github.com\n')), true);
+});
+
+test('a connection the remote end resets is transient on Windows and POSIX', () => {
+  for (const reason of ['wsarecv: An existing connection was forcibly closed by the remote host.', 'write: broken pipe', 'read: connection reset by peer']) {
+    assert.equal(transient(new Error(`Command failed: gh pr view 5 -R o/r\nPost "https://api.github.com/graphql": read tcp 127.0.0.1:63016->127.0.0.1:18082: ${reason}\n`)), true, reason);
+  }
+});
+
+test('a verdict that cannot be posted is saved by repo, PR and SHA, and the guard posts it at the next merge', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-pending-'));
+  const store = pendingStore(dir);
+  const clock = outage(Infinity);
+  const out = deliver(reviewed(), { gh: retrying(clock.gh, { pause: clock.pause }), save: store.save });
+  assert.match(out.systemMessage, /saved/);
+  const [saved] = store.list('o/r', '7');
+  assert.equal(saved.entry.sha, SHA);
+
+  const posted = [];
+  const deps = {
+    gh: (_cwd, args) => {
+      if (args[1] === 'view') return JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, state: 'OPEN', statusCheckRollup: [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }], comments: [] });
+      if (args[1] === 'diff') return 'diff --git a/app/main.py b/app/main.py\n--- a/app/main.py\n+++ b/app/main.py\n+x = 1\n';
+      throw new Error(`unexpected gh ${args.join(' ')}`);
+    },
+    postComment: (_cwd, url, body) => posted.push({ url, body }),
+    pending: store,
+    readFile: () => null,
+    insideBstackSource: () => false,
+  };
+  assert.equal(decide({ tool_name: 'Bash', tool_input: { command: 'gh pr merge 7 -R o/r --squash' }, cwd: '/repo' }, deps), null);
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].url, 'https://github.com/o/r/pull/7');
+  assert.deepEqual(store.list('o/r', '7'), []);
+});
+
+test('a PR the hook cannot read during an outage is saved under the repo the report names', () => {
+  const saved = [];
+  const clock = outage(Infinity);
+  deliver(reviewed(), { gh: retrying(clock.gh, { pause: clock.pause }), save: e => saved.push(e) });
+  assert.equal(saved.length, 1);
+  assert.deepEqual([saved[0].repo, saved[0].pr, saved[0].sha, saved[0].kind], ['o/r', '7', SHA, 'verdict']);
+  assert.equal(latestFor('verdict', [{ body: saved[0].body }], SHA).result, 'PASS');
+});
+
+test('a saved verdict keeps the time it was judged, so posting it late does not make it newest', () => {
+  const saved = [];
+  const clock = outage(Infinity);
+  deliver(reviewed(), { gh: retrying(clock.gh, { pause: clock.pause }), save: e => saved.push(e), now: () => '2026-11-22T09:00:00.000Z' });
+  assert.equal(saved[0].at, '2026-11-22T09:00:00.000Z');
+  const laterFail = { body: commentBody('verdict', 'FAIL', SHA, 'found a bug'), createdAt: '2026-11-22T10:00:00Z' };
+  const latePosted = { body: saved[0].body, createdAt: '2026-11-22T12:00:00Z' };
+  assert.equal(latestFor('verdict', [laterFail, latePosted], SHA).result, 'FAIL');
+  const earlierFail = { body: commentBody('verdict', 'FAIL', SHA, 'found a bug'), createdAt: '2026-11-22T08:00:00Z' };
+  assert.equal(latestFor('verdict', [earlierFail, latePosted], SHA).result, 'PASS');
+});
+
+const NO_DNS = 'error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com';
+const GRAPHQL_EOF = 'Post "https://api.github.com/graphql": EOF';
+
+test('DNS and dropped-connection failures from gh are retried', () => {
+  for (const message of [NO_DNS, GRAPHQL_EOF]) {
+    let calls = 0;
+    const gh = retrying(() => { if (++calls < 3) throw new Error(`Command failed: gh pr view 7\n${message}\n`); return 'ok'; }, { pause: () => {} });
+    assert.equal(gh('/repo', ['pr', 'view', '7']), 'ok', message);
+  }
+});
+
+test('a PR read that fails on DNS saves the verdict instead of asking the agent to check the PR number', () => {
+  const saved = [];
+  const out = deliver(reviewed(), { gh: () => { throw new Error(`Command failed: gh pr view 7\n${NO_DNS}\n`); }, save: e => saved.push(e) });
+  assert.equal(saved.length, 1);
+  assert.match(out.systemMessage, /saved/);
+});
+
+test('a comment post that fails in any way after the PR read saves the verdict', () => {
+  for (const message of [NO_DNS, GRAPHQL_EOF, 'GraphQL: Something went wrong while executing your query.']) {
+    const saved = [];
+    const gh = (_cwd, args) => {
+      if (args[1] === 'view') return JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, comments: [] });
+      throw new Error(`Command failed: gh pr comment\n${message}\n`);
+    };
+    const out = deliver(reviewed(), { gh, save: e => saved.push(e) });
+    assert.equal(saved.length, 1, message);
+    assert.deepEqual([saved[0].repo, saved[0].pr, saved[0].sha], ['o/r', '7', SHA]);
+    assert.match(out.systemMessage, /saved/);
+  }
 });
 
 test('a transcript that stops growing without a hand-back is read once it is quiet', () => {

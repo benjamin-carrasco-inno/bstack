@@ -6,9 +6,6 @@
 4. **Build in small verifiable steps.** After each step something runs: a test, a request, a page. Commit when a step is proven.
 5. **Tests** for the behaviour the user will rely on, at the boundary (HTTP route, CLI, page), including one hostile input (empty, too large, wrong type, someone else's id).
 6. **Prove it on the running app** per `bstack:verify`, on fixture data, including side effects (rows written, files created, calls made to mocks).
-7. **Subtract**: remove options nobody asked for, unused parameters, speculative hooks, and comments that narrate.
-8. **Ship** ([ship](ship.md)).
+7. **Ship** ([ship](ship.md)).
 
 **Gate to ship:** proof on the running app plus tests that fail without the feature.
-
-Scope creep goes into the PR's Scope section as "not done", or into its own PR. Never mixed in.

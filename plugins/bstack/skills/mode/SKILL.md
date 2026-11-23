@@ -5,8 +5,6 @@ description: The engineering method for every code task (bug fix, feature, refac
 
 # bstack mode
 
-The always-on rules arrived at session start. This file routes the work; the playbook holds the gates.
-
 ## First reply in a code task
 
 Three lines, then start:
@@ -30,7 +28,7 @@ Three lines, then start:
 | Review or clean up a whole repo | the `bstack:audit` skill |
 | Incoming issues to sort | the `bstack:triage` skill |
 
-When several fit, the riskiest wins. Every route that changes code ends in ship, except a `plan:prototype` branch, which is deleted unmerged when its ticket closes.
+When several fit, the riskiest wins. Every route that changes code ends in ship, except a `plan:prototype` branch, which is deleted unmerged when its ticket closes. A change to CI workflows also follows [ci](ci.md).
 
 ## Risk tier
 
@@ -46,7 +44,6 @@ A repo can raise paths to tier 2 with globs in `.github/risk-paths.txt`. Add one
 
 Weekly quota is real. Spend where risk is.
 - Main session: the user's choice (default Opus, medium). Raise to high for tier 2 work, not by default. Never xhigh or max by default.
-- `bstack:reviewer` runs Sonnet and `bstack:adversary` runs Opus (Fable for large architecture work, see `bstack:interrogate`); their frontmatter sets it.
 - Mechanical work (polling CI, bulk renames, reformatting): a Haiku subagent.
 - Fable for implementation only when the user names it, or after Opus failed twice on the same task.
 
@@ -54,7 +51,6 @@ Weekly quota is real. Spend where risk is.
 
 - Implementation rounds go to `bstack:worker`, fresh each round, with the goal, the files, and the check that proves it.
 - Big read-only searches go to Explore. Parallel work in one repo uses one worktree per agent.
-- The author of a change never judges it.
 
 ## Gates
 

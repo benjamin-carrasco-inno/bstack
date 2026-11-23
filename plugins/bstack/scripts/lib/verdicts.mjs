@@ -29,20 +29,25 @@ export function parseReport(kind, text) {
   return { result, pr: last[2], sha: last[3].toLowerCase(), body };
 }
 
-export function commentBody(kind, result, sha, report) {
+const JUDGED_AT = /^<!-- bstack-judged-at (\S+) -->$/;
+
+export function commentBody(kind, result, sha, report, judgedAt) {
   const line = kind === 'verdict'
     ? `bstack-verdict: ${result} sha=${sha}`
     : `bstack-interrogate: confirmed=${result} sha=${sha}`;
   const text = String(report ?? '').slice(0, 60000);
-  return `${KINDS[kind].tag}\n${line}\n\n${text}\n`;
+  const stamp = judgedAt ? `<!-- bstack-judged-at ${judgedAt} -->\n` : '';
+  return `${KINDS[kind].tag}\n${line}\n${stamp}\n${text}\n`;
 }
+
+export const timeOf = c => Date.parse(JUDGED_AT.exec(String(c.body ?? '').split('\n')[2] ?? '')?.[1] ?? c.createdAt ?? 0) || 0;
 
 // The newest result of a kind for exactly this head SHA, from `gh pr view --json comments`.
 export function latestFor(kind, comments, sha) {
   const { tag, line } = KINDS[kind];
   const hits = (comments ?? [])
     .filter(c => String(c.body ?? '').startsWith(tag))
-    .map(c => ({ at: Date.parse(c.createdAt ?? 0) || 0, m: line.exec(String(c.body)) }))
+    .map(c => ({ at: timeOf(c), m: line.exec(String(c.body)) }))
     .filter(h => h.m && h.m[2] === sha)
     .sort((a, b) => a.at - b.at);
   if (!hits.length) return null;

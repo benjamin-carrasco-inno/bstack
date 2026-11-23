@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decide, ciState, realDeps } from '../plugins/bstack/scripts/guard.mjs';
+import { decide, ciState, realDeps, retryOnTimeout } from '../plugins/bstack/scripts/guard.mjs';
 import { commentBody } from '../plugins/bstack/scripts/lib/verdicts.mjs';
 
 const SHA = 'a'.repeat(40);
@@ -32,6 +32,8 @@ function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, fil
     },
     readFile: f => files[f.replace(/\\/g, '/').split('/').pop()] ?? null,
     insideBstackSource: f => f.includes('bstack-src'),
+    pending: { list: () => [], remove: () => {} },
+    postComment: () => { throw new Error('unexpected comment'); },
   };
 }
 
@@ -491,6 +493,146 @@ test('ciState treats skipped-only and missing checks as not green', () => {
   assert.equal(ciState(GREEN).ok, true);
 });
 
+const run = (name, conclusion, startedAt, status = 'COMPLETED') => ({ __typename: 'CheckRun', name, workflowName: name, status, conclusion, startedAt });
+
+test('ciState judges only the newest run of each check on the head SHA', () => {
+  const superseded = [
+    run('standards', 'CANCELLED', '2026-11-23T10:00:00Z'),
+    run('check', 'SUCCESS', '2026-11-23T10:00:01Z'),
+    run('standards', 'SUCCESS', '2026-11-23T10:00:05Z'),
+    run('standards', 'SUCCESS', '2026-11-23T10:02:00Z'),
+  ];
+  assert.equal(ciState(superseded).ok, true);
+  allowed(shell('gh pr merge 5 --squash'), deps({ pr: { statusCheckRollup: superseded, comments: [verdict('PASS')] } }));
+  assert.match(ciState([run('standards', 'SUCCESS', '2026-11-23T10:00:00Z'), run('standards', 'FAILURE', '2026-11-23T10:01:00Z')]).detail, /failed: standards/);
+  assert.match(ciState([run('standards', 'SUCCESS', '2026-11-23T10:00:00Z'), run('standards', 'CANCELLED', '2026-11-23T10:01:00Z')]).detail, /failed: standards/);
+  assert.match(ciState([run('standards', 'CANCELLED', '2026-11-23T10:00:00Z'), run('standards', null, '2026-11-23T10:01:00Z', 'IN_PROGRESS')]).detail, /failed: standards/);
+  assert.match(ciState([run('lint', 'SUCCESS', '2026-11-23T10:01:00Z'), run('standards', 'CANCELLED', '2026-11-23T10:00:00Z')]).detail, /failed: standards/);
+});
+
+test('ciState keeps an older failure when a newer run of the check is skipped or neutral', () => {
+  for (const later of ['SKIPPED', 'NEUTRAL']) {
+    const rollup = [run('test', 'FAILURE', '2026-11-23T10:00:00Z'), run('test', later, '2026-11-23T10:01:00Z')];
+    assert.match(ciState(rollup).detail, /failed: test/, later);
+  }
+});
+
+test('ciState keeps a newer queued run pending even after an older success', () => {
+  for (const startedAt of [null, '0001-01-01T00:00:00Z']) {
+    const rollup = [run('test', 'SUCCESS', '2026-11-23T10:00:00Z'), run('test', null, startedAt, 'QUEUED')];
+    assert.match(ciState(rollup).detail, /still running: test/, String(startedAt));
+  }
+});
+
+test('ciState drops a cancelled run only for a strictly newer success of the same check', () => {
+  assert.match(ciState([run('test', 'CANCELLED', '2026-11-23T10:00:00Z'), run('test', 'SUCCESS', '2026-11-23T10:00:00Z')]).detail, /failed: test/);
+  assert.match(ciState([run('test', 'CANCELLED', null), run('test', 'SUCCESS', '2026-11-23T10:00:00Z')]).detail, /failed: test/);
+  assert.match(ciState([run('test', 'CANCELLED', '2026-11-23T10:00:00Z'), run('test', 'FAILURE', '2026-11-23T10:01:00Z')]).detail, /failed: test/);
+  assert.equal(ciState([run('test', 'CANCELLED', '2026-11-23T10:00:00Z'), run('test', 'SUCCESS', '2026-11-23T10:01:00Z')]).ok, true);
+});
+
+function withPending(entries, { post = () => {}, pr = {} } = {}) {
+  const removed = [];
+  const posted = [];
+  const d = deps({ pr });
+  d.pending = { list: (repo, number) => (repo === 'o/r' && number === '5' ? entries.map((entry, i) => ({ file: `f${i}`, entry })) : []), remove: f => removed.push(f) };
+  d.postComment = (cwd, url, body) => { post(); posted.push({ url, body }); };
+  return { d, removed, posted };
+}
+const saved = (sha = SHA, kind = 'verdict') => ({ repo: 'o/r', pr: '5', sha, kind, body: commentBody(kind, 'PASS', sha, 'report') });
+
+test('a verdict saved during an outage is posted by the merge gate and unblocks the merge', () => {
+  const { d, removed, posted } = withPending([saved()]);
+  allowed(shell('gh pr merge 5 --squash'), d);
+  assert.deepEqual(posted.map(p => p.url), ['https://github.com/o/r/pull/5']);
+  assert.deepEqual(removed, ['f0']);
+});
+
+test('a saved verdict for an older head is dropped, not posted, and does not unblock', () => {
+  const { d, removed, posted } = withPending([saved(OLD)]);
+  blocked(shell('gh pr merge 5 --squash'), d);
+  assert.deepEqual(posted, []);
+  assert.deepEqual(removed, ['f0']);
+});
+
+test('a saved verdict already on the PR is not posted twice', () => {
+  const { d, removed, posted } = withPending([saved()], { pr: { comments: [{ body: saved().body, createdAt: '2026-11-22T10:00:00Z' }] } });
+  allowed(shell('gh pr merge 5 --squash'), d);
+  assert.deepEqual(posted, []);
+  assert.deepEqual(removed, ['f0']);
+});
+
+test('a saved verdict that still cannot be posted keeps the gate closed and is kept', () => {
+  const { d, removed } = withPending([saved()], { post: () => { throw new Error('spawnSync gh ETIMEDOUT'); } });
+  assert.match(decide(shell('gh pr merge 5 --squash'), d) ?? '', /could not post/i);
+  assert.deepEqual(removed, []);
+});
+
+test('agents cannot write saved verdicts', () => {
+  const dir = path.join(os.homedir(), '.claude', 'bstack', 'pending-verdicts');
+  blocked({ tool_name: 'Write', tool_input: { file_path: path.join(dir, 'o_r__5__x__verdict.json'), content: '{"body":"bstack\\u002dverdict"}' } });
+  blocked(ps(`Set-Content "${dir}\\o_r__5.json" '{}'`));
+  blocked(shell('cp forged.json ~/.claude/bstack/pending-verdicts/'));
+  allowed(shell('cat ~/.claude/bstack/pending-verdicts/o_r__5.json'));
+  blocked(shell('echo {} > ~/.claude/bstack/pending-verdicts/o_r__5.json'));
+  blocked(ps(`$d = "${dir}"; Set-Content "$d\\x.json" '{}'`));
+});
+
+test('commands that only mention saved verdicts in a message are not refused', () => {
+  allowed(shell('git commit -m "fix(guard): keep pending-verdicts through outages"'));
+  allowed(shell('gh pr create --title "pending-verdicts" --body "The hook saves to ~/.claude/bstack/pending-verdicts/ when GitHub is down."'));
+  allowed(shell('git commit --message="docs: pending-verdicts/ layout"'));
+});
+
+const savedAt = (result, at, sha = SHA) => ({ repo: 'o/r', pr: '5', sha, kind: 'verdict', at, body: commentBody('verdict', result, sha, 'report', at) });
+
+test('a saved verdict older than a verdict already posted for the head is dropped, both ways', () => {
+  const olderPass = withPending([savedAt('PASS', '2026-11-22T09:00:00Z')], { pr: { comments: [verdict('FAIL', SHA, '2026-11-22T10:00:00Z')] } });
+  blocked(shell('gh pr merge 5 --squash'), olderPass.d);
+  assert.deepEqual(olderPass.posted, []);
+  assert.deepEqual(olderPass.removed, ['f0']);
+
+  const olderFail = withPending([savedAt('FAIL', '2026-11-22T09:00:00Z')], { pr: { comments: [verdict('PASS', SHA, '2026-11-22T10:00:00Z')] } });
+  allowed(shell('gh pr merge 5 --squash'), olderFail.d);
+  assert.deepEqual(olderFail.posted, []);
+  assert.deepEqual(olderFail.removed, ['f0']);
+});
+
+test('a saved verdict newer than the posted one is posted and decides the merge', () => {
+  const { d, posted } = withPending([savedAt('PASS', '2026-11-22T11:00:00Z')], { pr: { comments: [verdict('FAIL', SHA, '2026-11-22T10:00:00Z')] } });
+  allowed(shell('gh pr merge 5 --squash'), d);
+  assert.equal(posted.length, 1);
+});
+
+test('a saved entry with an empty body is dropped, not posted', () => {
+  const { d, posted, removed } = withPending([{ ...saved(), body: '' }]);
+  blocked(shell('gh pr merge 5 --squash'), d);
+  assert.deepEqual(posted, []);
+  assert.deepEqual(removed, ['f0']);
+});
+
+test('ciState judges every status context, whatever its time', () => {
+  const ctx = (state, createdAt) => ({ __typename: 'StatusContext', context: 'ci/legacy', state, createdAt });
+  assert.match(ciState([ctx('SUCCESS', '2026-11-23T10:05:00Z'), ctx('FAILURE', '2026-11-23T10:00:00Z')]).detail, /failed: ci\/legacy/);
+  assert.match(ciState([ctx('FAILURE', '2026-11-23T10:05:00Z'), ctx('SUCCESS', '2026-11-23T10:00:00Z')]).detail, /failed: ci\/legacy/);
+});
+
+test('a gh call that times out is retried once with a longer timeout, other errors are not', () => {
+  const timeouts = [];
+  const flaky = retryOnTimeout((_cwd, _args, timeout) => {
+    timeouts.push(timeout);
+    if (timeouts.length === 1) throw Object.assign(new Error('spawnSync gh ETIMEDOUT'), { code: 'ETIMEDOUT' });
+    return 'ok';
+  });
+  assert.equal(flaky('/repo', ['pr', 'view']), 'ok');
+  assert.equal(timeouts.length, 2);
+  assert.ok(timeouts[1] > timeouts[0]);
+  let calls = 0;
+  const broken = retryOnTimeout(() => { calls++; throw new Error('HTTP 404'); });
+  assert.throws(() => broken('/repo', ['pr', 'view']));
+  assert.equal(calls, 1);
+});
+
 const GUARD = fileURLToPath(new URL('../plugins/bstack/scripts/guard.mjs', import.meta.url));
 const ONE = 'def total(xs):\n    # sum the list\n    return sum(xs)\n';
 const TWO = 'def total(xs):\n    # sum the list\n    # and return it\n    return sum(xs)\n';
@@ -670,7 +812,7 @@ test('comment ratchet: unstaging earlier in the call is replayed on the temporar
   ];
   for (const [line, tool] of unstaging) assert.equal(repo.run(line, tool), null, line);
   for (const line of ['git reset --hard && git commit -m "feat: b"', 'git restore --staged --worktree app.py && git commit -m "feat: b"', 'git reset --soft HEAD && git commit -m "feat: b"']) {
-    assert.match(repo.run(line) ?? '', /app\.py/, line);
+    assert.match(repo.run(line) ?? '', /in its own call/, line);
   }
   assert.equal(repo.git('rev-parse', 'HEAD'), head);
   assert.equal(repo.staged(), 'app.py\nb.py', 'the guard must not touch the real index');
@@ -831,6 +973,104 @@ test('comment ratchet: a few hundred staged files stay well inside the 90 s hook
   assert.match(reason, /src\/m399\.py: baseline 1, this commit 2/);
   assert.doesNotMatch(reason, /m398/);
   assert.ok(ms < 30000, `took ${ms} ms`);
+});
+
+test('comment ratchet: --git-dir, --work-tree and GIT_DIR point the check at that repo, and an unresolved one is refused', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  const elsewhere = tempDir();
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  const gitDir = `${repo.dir}/.git`;
+  const lines = [
+    [`git --git-dir="${gitDir}" --work-tree="${repo.dir}" commit -m x`, 'Bash'],
+    [`git --git-dir "${gitDir}" --work-tree "${repo.dir}" commit -m x`, 'Bash'],
+    [`GIT_DIR="${gitDir}" GIT_WORK_TREE="${repo.dir}" git commit -m x`, 'Bash'],
+    [`export GIT_DIR="${gitDir}"; git commit -m x`, 'Bash'],
+    [`$env:GIT_DIR = '${gitDir}'; $env:GIT_WORK_TREE='${repo.dir}'; git commit -m x`, 'PowerShell'],
+  ];
+  for (const [line, tool] of lines) assert.match(repo.run(line, tool, elsewhere) ?? '', /app\.py: baseline 1, this commit 2/, line);
+  for (const line of ['git --git-dir="$D" commit -m x', 'GIT_DIR=$D git commit -m x', 'GIT_INDEX_FILE=/tmp/i git commit -m x', 'cd "$D" && git commit -m x', 'git -C "$D" commit -m x']) {
+    assert.match(repo.run(line, 'Bash', elsewhere) ?? '', /which repository/, line);
+  }
+  const clean = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  clean.write('app.py', `${ONE}x = 1\n`);
+  clean.git('add', 'app.py');
+  assert.equal(clean.run(`git --git-dir="${clean.dir}/.git" --work-tree="${clean.dir}" commit -m x`, 'Bash', elsewhere), null);
+});
+
+test('comment ratchet: a command before the commit that may change files or the index is refused, read-only and replayed ones are not', () => {
+  const repo = fixture({ 'app.py': ONE, 'b.py': NONE }, { 'app.py': 1, 'b.py': 0 });
+  repo.git('checkout', '-qb', 'more');
+  repo.write('app.py', TWO);
+  repo.git('commit', '-qam', 'more comments');
+  repo.git('checkout', '-q', 'main');
+  repo.write('fix.diff', '');
+  const refused = [
+    ["printf '# note\\n' >> app.py && git commit -am x", 'Bash'],
+    ["echo '# note' > b.py; git commit -am x", 'PowerShell'],
+    ['Add-Content b.py "# note"; git commit -am x', 'PowerShell'],
+    ['git checkout more -- app.py && git commit -m x', 'Bash'],
+    ['git mv app.py lib.py && git commit -m x', 'Bash'],
+    ['git stash pop && git commit -m x', 'Bash'],
+    ['git apply --cached fix.diff && git commit -m x', 'Bash'],
+    ['git add -p && git commit -m x', 'Bash'],
+    ['git reset more && git commit -m x', 'Bash'],
+    ['npm run generate && git commit -am x', 'Bash'],
+    ['echo $(touch b.py) && git commit -am x', 'Bash'],
+    ['$env:X = git stash; git commit -am x', 'PowerShell'],
+  ];
+  for (const [line, tool] of refused) assert.match(repo.run(line, tool) ?? '', /in its own call/, line);
+  repo.write('b.py', `${NONE}y = 2\n`);
+  const allowed = [
+    [`git status && git diff --stat && git log --oneline -1 | tail -1 && echo ok && cd "${repo.dir}" && git add -A && git commit -m x`, 'Bash'],
+    ['git add b.py; if ($?) { git commit -m x }', 'PowerShell'],
+    ['git rm -q app.py && git commit -m x', 'Bash'],
+    ['git status 2>&1 > /dev/null && git commit -am x', 'Bash'],
+  ];
+  for (const [line, tool] of allowed) assert.equal(repo.run(line, tool), null, line);
+  const plain = fixture({ 'app.py': ONE });
+  assert.equal(plain.run('npm test && git commit -am x'), null, 'a repo without a baseline is not affected');
+});
+
+test('comment ratchet: a cd inside bash -c or pwsh -Command does not move the commands after it', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  const elsewhere = tempDir();
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  assert.match(repo.run(`bash -c "cd '${elsewhere}' && git status"; git commit -m x`) ?? '', /app\.py: baseline 1/);
+  assert.match(repo.run(`pwsh -Command "Set-Location '${elsewhere}'"; git commit -m x`, 'PowerShell') ?? '', /app\.py: baseline 1/);
+  assert.match(repo.run(`bash -c "cd '${repo.dir}' && git commit -m x"`, 'Bash', elsewhere) ?? '', /app\.py: baseline 1/);
+});
+
+test('comment ratchet: an octopus merge allows comments from every merged head', () => {
+  const repo = fixture({ 'a.py': NONE, 'b.py': NONE }, { 'a.py': 0, 'b.py': 0 });
+  for (const side of ['a', 'b']) {
+    repo.git('switch', '-qc', side, 'main');
+    repo.write(`${side}.py`, ONE);
+    repo.git('commit', '-qam', `human: comment ${side}`);
+  }
+  repo.git('switch', '-q', 'main');
+  repo.git('merge', '--no-commit', '--no-ff', 'a', 'b');
+  assert.equal(repo.run('git commit --no-edit'), null);
+});
+
+test('comment ratchet: merge, cherry-pick, revert and rebase --continue are checked like git commit', () => {
+  const starts = { merge: () => ['merge', 'main'], 'cherry-pick': theirs => ['cherry-pick', theirs], rebase: () => ['rebase', 'main'] };
+  for (const [sub, start] of Object.entries(starts)) {
+    const repo = conflicted(start);
+    assert.equal(repo.run(`git add c.py && git ${sub} --continue`), null, sub);
+    repo.write('c.py', '# feature note\nc = 3\n');
+    assert.match(repo.run(`git add c.py && git ${sub} --continue`) ?? '', /c\.py: baseline 0, this commit 1/, sub);
+  }
+  const repo = fixture({ 'app.py': NONE, 'c.py': 'c = 0\n' }, { 'app.py': 0, 'c.py': 0 });
+  repo.write('c.py', 'c = 1\n');
+  repo.git('commit', '-qam', 'c1');
+  const target = repo.git('rev-parse', 'HEAD').trim();
+  repo.write('c.py', 'c = 2\n');
+  repo.git('commit', '-qam', 'c2');
+  assert.throws(() => execFileSync('git', ['-C', repo.dir, 'revert', '--no-edit', target], { stdio: 'ignore' }));
+  repo.write('c.py', '# note\nc = 0\n');
+  assert.match(repo.run('git add c.py && git revert --continue') ?? '', /c\.py: baseline 0, this commit 1/);
 });
 
 test('comment ratchet: interactive adds are not replayed, so no editor runs inside the guard', () => {
