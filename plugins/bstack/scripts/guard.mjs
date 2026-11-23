@@ -105,7 +105,7 @@ function changeDir(shell, c, host) {
 
 function setVariables(env, c) {
   if (c.cmd === '') Object.assign(env, c.env);
-  if (c.cmd === 'export' || c.cmd === 'set') {
+  if (c.cmd === 'export' || (c.cmd === 'set' && c.dialect === 'cmd')) {
     for (const set of c.args.map(a => ASSIGNMENT.exec(a)).filter(Boolean)) env[set[1]] = set[2];
   }
   const ps = PS_ENV.exec(c.text);
