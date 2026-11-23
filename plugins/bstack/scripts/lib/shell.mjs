@@ -134,18 +134,23 @@ export function endsInRedirect(segment, dialect = 'posix') {
 
 const HEREDOC_OPEN = /<<[-~]?[ \t]*(['"]?)([\w.-]+)\1/y;
 
-function heredocWords(text) {
+function heredocWords(text, state) {
   const words = [];
-  let quote = null;
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (quote) {
-      if (ch === quote) quote = null;
-      else if (ch === '\\' && quote === '"') i++;
+    if (state.quote) {
+      if (ch === state.quote) state.quote = null;
+      else if (ch === '\\' && state.quote === '"') i++;
       continue;
     }
     if (ch === '\\') { i++; continue; }
-    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '"' || ch === "'") { state.quote = ch; continue; }
+    if (state.parens) {
+      if (ch === '(') state.parens++;
+      else if (ch === ')') state.parens--;
+      continue;
+    }
+    if (ch === '(' && text[i + 1] === '(') { state.parens = 2; i++; continue; }
     if (ch !== '<' || text[i + 1] !== '<') continue;
     if (text[i + 2] === '<') { i += 2; continue; }
     HEREDOC_OPEN.lastIndex = i;
@@ -155,18 +160,26 @@ function heredocWords(text) {
   return words;
 }
 
+function terminatorLine(lines, word, after) {
+  return lines.findIndex((text, k) => k > after && text.replace(/\r$/, '').trim() === word);
+}
+
 export function withoutHeredocBodies(line) {
-  const pending = [];
-  return line.split('\n').map(text => {
-    if (pending.length) {
-      const { word, executed } = pending[0];
-      if (text.replace(/\r$/, '').trim() === word) pending.shift();
-      return executed ? text : '';
+  const lines = line.split('\n');
+  const out = [...lines];
+  const state = { quote: null, parens: 0 };
+  for (let n = 0; n < lines.length; n++) {
+    let end = n;
+    for (const word of heredocWords(lines[n], state)) {
+      end = terminatorLine(lines, word, end);
+      if (end < 0) break;
     }
-    const executed = tokenize(text).some(w => SHELLS.has(programName(w)));
-    pending.push(...heredocWords(text).map(word => ({ word, executed })));
-    return text;
-  }).join('\n');
+    if (end <= n) continue;
+    const executed = tokenize(lines[n]).some(w => SHELLS.has(programName(w)));
+    if (!executed) out.fill('', n + 1, end + 1);
+    n = end;
+  }
+  return out.join('\n');
 }
 
 function programName(word) {
