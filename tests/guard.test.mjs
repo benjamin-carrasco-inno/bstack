@@ -580,6 +580,20 @@ test('no-authoring agents: heredoc bodies are text, not redirects', () => {
   }
 });
 
+test('no-authoring agents: git lines in a heredoc body are text, unless a shell runs them', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    allowed(as("cat > /tmp/fx.sh <<'EOF'\ncd \"$1\"\ngit checkout -q -b feat\nEOF"));
+    allowed(as("cat > /tmp/notes.txt <<'EOF'\ngit stash\nEOF"));
+    allowed(as("cat > /tmp/fx.sh <<'EOF'\ngit -C \"$1\" switch -c feat\nEOF"));
+    allowed(as("cat > /tmp/fx.sh <<'EOF'\ngit -C /some/other/repo reset --hard\nEOF"));
+    allowed(as("cat > /tmp/fx.sh <<'EOF'\ngit -c alias.x=status x\nEOF"));
+
+    blocked(as("bash <<'EOF'\ngit -C /other reset --hard\nEOF"));
+    blocked(as("cat <<'EOF' | sh\ngit stash\nEOF"));
+  }
+});
+
 test('no-authoring agents: Git Bash drive paths /c/... are the Windows drive', () => {
   for (const agent of NO_AUTHORING) {
     const at = command => ({ tool_name: 'Bash', tool_input: { command }, cwd: 'C:\\work\\wt', agent_type: agent });
