@@ -550,6 +550,103 @@ test('comment ratchet: a few hundred staged files stay well inside the 90 s hook
   assert.ok(ms < 30000, `took ${ms} ms`);
 });
 
+test('comment ratchet: --git-dir, --work-tree and GIT_DIR point the check at that repo, and an unresolved one is refused', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  const elsewhere = tempDir();
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  const gitDir = `${repo.dir}/.git`;
+  const lines = [
+    [`git --git-dir="${gitDir}" --work-tree="${repo.dir}" commit -m x`, 'Bash'],
+    [`git --git-dir "${gitDir}" --work-tree "${repo.dir}" commit -m x`, 'Bash'],
+    [`GIT_DIR="${gitDir}" GIT_WORK_TREE="${repo.dir}" git commit -m x`, 'Bash'],
+    [`export GIT_DIR="${gitDir}"; git commit -m x`, 'Bash'],
+    [`$env:GIT_DIR = '${gitDir}'; $env:GIT_WORK_TREE='${repo.dir}'; git commit -m x`, 'PowerShell'],
+  ];
+  for (const [line, tool] of lines) assert.match(repo.run(line, tool, elsewhere) ?? '', /app\.py: baseline 1, this commit 2/, line);
+  for (const line of ['git --git-dir="$D" commit -m x', 'GIT_DIR=$D git commit -m x', 'GIT_INDEX_FILE=/tmp/i git commit -m x', 'cd "$D" && git commit -m x', 'git -C "$D" commit -m x']) {
+    assert.match(repo.run(line, 'Bash', elsewhere) ?? '', /which repository/, line);
+  }
+  const clean = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  clean.write('app.py', `${ONE}x = 1\n`);
+  clean.git('add', 'app.py');
+  assert.equal(clean.run(`git --git-dir="${clean.dir}/.git" --work-tree="${clean.dir}" commit -m x`, 'Bash', elsewhere), null);
+});
+
+test('comment ratchet: a command before the commit that may change files or the index is refused, read-only and replayed ones are not', () => {
+  const repo = fixture({ 'app.py': ONE, 'b.py': NONE }, { 'app.py': 1, 'b.py': 0 });
+  repo.git('checkout', '-qb', 'more');
+  repo.write('app.py', TWO);
+  repo.git('commit', '-qam', 'more comments');
+  repo.git('checkout', '-q', 'main');
+  repo.write('fix.diff', '');
+  const refused = [
+    ["printf '# note\\n' >> app.py && git commit -am x", 'Bash'],
+    ["echo '# note' > b.py; git commit -am x", 'PowerShell'],
+    ['Add-Content b.py "# note"; git commit -am x', 'PowerShell'],
+    ['git checkout more -- app.py && git commit -m x', 'Bash'],
+    ['git mv app.py lib.py && git commit -m x', 'Bash'],
+    ['git stash pop && git commit -m x', 'Bash'],
+    ['git apply --cached fix.diff && git commit -m x', 'Bash'],
+    ['git add -p && git commit -m x', 'Bash'],
+    ['git reset more && git commit -m x', 'Bash'],
+    ['npm run generate && git commit -am x', 'Bash'],
+    ['echo $(touch b.py) && git commit -am x', 'Bash'],
+  ];
+  for (const [line, tool] of refused) assert.match(repo.run(line, tool) ?? '', /in its own call/, line);
+  repo.write('b.py', `${NONE}y = 2\n`);
+  const allowed = [
+    [`git status && git diff --stat && git log --oneline -1 | tail -1 && echo ok && cd "${repo.dir}" && git add -A && git commit -m x`, 'Bash'],
+    ['git add b.py; if ($?) { git commit -m x }', 'PowerShell'],
+    ['git rm -q app.py && git commit -m x', 'Bash'],
+    ['git status 2>&1 > /dev/null && git commit -am x', 'Bash'],
+  ];
+  for (const [line, tool] of allowed) assert.equal(repo.run(line, tool), null, line);
+  const plain = fixture({ 'app.py': ONE });
+  assert.equal(plain.run('npm test && git commit -am x'), null, 'a repo without a baseline is not affected');
+});
+
+test('comment ratchet: a cd inside bash -c or pwsh -Command does not move the commands after it', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  const elsewhere = tempDir();
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  assert.match(repo.run(`bash -c "cd '${elsewhere}' && git status"; git commit -m x`) ?? '', /app\.py: baseline 1/);
+  assert.match(repo.run(`pwsh -Command "Set-Location '${elsewhere}'"; git commit -m x`, 'PowerShell') ?? '', /app\.py: baseline 1/);
+  assert.match(repo.run(`bash -c "cd '${repo.dir}' && git commit -m x"`, 'Bash', elsewhere) ?? '', /app\.py: baseline 1/);
+});
+
+test('comment ratchet: an octopus merge allows comments from every merged head', () => {
+  const repo = fixture({ 'a.py': NONE, 'b.py': NONE }, { 'a.py': 0, 'b.py': 0 });
+  for (const side of ['a', 'b']) {
+    repo.git('switch', '-qc', side, 'main');
+    repo.write(`${side}.py`, ONE);
+    repo.git('commit', '-qam', `human: comment ${side}`);
+  }
+  repo.git('switch', '-q', 'main');
+  repo.git('merge', '--no-commit', '--no-ff', 'a', 'b');
+  assert.equal(repo.run('git commit --no-edit'), null);
+});
+
+test('comment ratchet: merge, cherry-pick, revert and rebase --continue are checked like git commit', () => {
+  const starts = { merge: () => ['merge', 'main'], 'cherry-pick': theirs => ['cherry-pick', theirs], rebase: () => ['rebase', 'main'] };
+  for (const [sub, start] of Object.entries(starts)) {
+    const repo = conflicted(start);
+    assert.equal(repo.run(`git add c.py && git ${sub} --continue`), null, sub);
+    repo.write('c.py', '# feature note\nc = 3\n');
+    assert.match(repo.run(`git add c.py && git ${sub} --continue`) ?? '', /c\.py: baseline 0, this commit 1/, sub);
+  }
+  const repo = fixture({ 'app.py': NONE, 'c.py': 'c = 0\n' }, { 'app.py': 0, 'c.py': 0 });
+  repo.write('c.py', 'c = 1\n');
+  repo.git('commit', '-qam', 'c1');
+  const target = repo.git('rev-parse', 'HEAD').trim();
+  repo.write('c.py', 'c = 2\n');
+  repo.git('commit', '-qam', 'c2');
+  assert.throws(() => execFileSync('git', ['-C', repo.dir, 'revert', '--no-edit', target], { stdio: 'ignore' }));
+  repo.write('c.py', '# note\nc = 0\n');
+  assert.match(repo.run('git add c.py && git revert --continue') ?? '', /c\.py: baseline 0, this commit 1/);
+});
+
 test('comment ratchet: interactive adds are not replayed, so no editor runs inside the guard', () => {
   const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
   repo.write('app.py', TWO);
