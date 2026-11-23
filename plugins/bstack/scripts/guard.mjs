@@ -331,21 +331,16 @@ function replaced(entry, comments) {
 }
 
 const runKey = c => `${c.__typename ?? ''}|${c.workflowName ?? ''}|${c.name ?? c.context ?? 'check'}`;
-const runTime = c => Date.parse(c.startedAt ?? c.completedAt ?? c.createdAt ?? '') || 0;
+const NEVER_STARTED = /^0001-01-01/;
+const startTime = c => (!c.startedAt || NEVER_STARTED.test(c.startedAt) ? Infinity : Date.parse(c.startedAt) || Infinity);
 
-// A re-run or a newer run of a check on the same SHA replaces the older one, so a run cancelled by a
-// newer one does not count.
-function newestRuns(checks) {
-  const newest = new Map();
-  for (const c of checks) {
-    const seen = newest.get(runKey(c));
-    if (!seen || runTime(c) >= runTime(seen)) newest.set(runKey(c), c);
-  }
-  return [...newest.values()];
-}
+const replacedBySuccess = (c, checks) =>
+  c.conclusion === 'CANCELLED' &&
+  checks.some(o => runKey(o) === runKey(c) && o.conclusion === 'SUCCESS' && startTime(o) > startTime(c));
 
 export function ciState(rollup) {
-  const checks = newestRuns(Array.isArray(rollup) ? rollup : []);
+  const all = Array.isArray(rollup) ? rollup : [];
+  const checks = all.filter(c => !replacedBySuccess(c, all));
   if (!checks.length) return { ok: false, detail: 'no checks ran (a missing check is not a pass)' };
   const pending = [];
   const failed = [];

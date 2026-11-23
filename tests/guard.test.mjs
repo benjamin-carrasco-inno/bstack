@@ -223,7 +223,7 @@ test('ciState judges only the newest run of each check on the head SHA', () => {
   allowed(shell('gh pr merge 5 --squash'), deps({ pr: { statusCheckRollup: superseded, comments: [verdict('PASS')] } }));
   assert.match(ciState([run('standards', 'SUCCESS', '2026-11-23T10:00:00Z'), run('standards', 'FAILURE', '2026-11-23T10:01:00Z')]).detail, /failed: standards/);
   assert.match(ciState([run('standards', 'SUCCESS', '2026-11-23T10:00:00Z'), run('standards', 'CANCELLED', '2026-11-23T10:01:00Z')]).detail, /failed: standards/);
-  assert.match(ciState([run('standards', 'CANCELLED', '2026-11-23T10:00:00Z'), run('standards', null, '2026-11-23T10:01:00Z', 'IN_PROGRESS')]).detail, /still running: standards/);
+  assert.match(ciState([run('standards', 'CANCELLED', '2026-11-23T10:00:00Z'), run('standards', null, '2026-11-23T10:01:00Z', 'IN_PROGRESS')]).detail, /failed: standards/);
   assert.match(ciState([run('lint', 'SUCCESS', '2026-11-23T10:01:00Z'), run('standards', 'CANCELLED', '2026-11-23T10:00:00Z')]).detail, /failed: standards/);
 });
 
