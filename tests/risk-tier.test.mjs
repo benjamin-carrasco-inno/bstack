@@ -128,6 +128,31 @@ test('a .sql file outside a test fixture keeps the path rule', () => {
   assert.equal(tier(file('tests/seed.sql', { created: true, add: ['SELECT 1;'] })), 2);
 });
 
+const renamed = (from, to, lines, { headers = false } = {}) =>
+  [`diff --git a/${from} b/${to}`, ...(headers ? ['similarity index 95%', `rename from ${from}`, `rename to ${to}`] : []),
+    `--- a/${from}`, `+++ b/${to}`, '@@ -18,3 +18,4 @@', ...lines].join('\n');
+
+test('a schema file renamed into a test fixture dir keeps tier 2', () => {
+  for (const headers of [false, true]) {
+    const migration = riskTier(renamed('migrations/0005_users.sql', 'tests/fixtures/0005_users.sql',
+      [' CREATE TABLE t18 (id int);', '+-- fixture copy'], { headers }));
+    assert.equal(migration.tier, 2, `migration, headers=${headers}`);
+    assert.ok(migration.reasons.includes('schema or migration file: migrations/0005_users.sql'), migration.reasons.join());
+    assert.equal(tier(renamed('db/schema.sql', 'tests/fixtures/schema.sql', ["+INSERT INTO t VALUES (1);"], { headers })), 2, `schema, headers=${headers}`);
+  }
+});
+
+test('a rename within test fixtures keeps the fixture exemptions', () => {
+  for (const headers of [false, true]) {
+    assert.equal(tier(renamed('tests/fixtures/a/seed.sql', 'tests/fixtures/b/seed.sql', ["+INSERT INTO t VALUES (1);"], { headers })), 1);
+    assert.equal(tier(renamed('tests/fixtures/a.js', 'tests/fixtures/b.js', ['+// eslint-disable-next-line'], { headers })), 1);
+  }
+});
+
+test('a source file renamed into a test dir loses no suppression check', () => {
+  assert.equal(tier(renamed('src/a.js', 'tests/fixtures/a.js', ['+// eslint-disable-next-line'], { headers: true })), 2);
+});
+
 test('adding tests stays tier 1', () => {
   assert.equal(tier(file('tests/test_api.py', { created: true, add: ['def test_c():', '    assert c()'] })), 1);
 });
