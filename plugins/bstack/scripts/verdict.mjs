@@ -141,7 +141,8 @@ export function handle(input, gh, read = readTranscript) {
 export const commentArgs = (post, file) => ['pr', 'comment', post.pr, ...repoArgs(post.repo), '--body-file', file];
 
 const TRANSIENT = /ETIMEDOUT|timed? ?out|timeout|dial tcp|connectex|connection (reset|refused)|network|no such host|\bEOF\b|TLS handshake|HTTP 50[0234]|error connecting to|check your internet connection|githubstatus\.com/i;
-export const transient = e => e?.code === 'ETIMEDOUT' || TRANSIENT.test(String(e?.message ?? e));
+const errorOutput = e => String(e?.message ?? e).replace(/^Command failed:[^\n]*\n?/, '').replace(/[\w.-]+\/[\w.-]+/g, '');
+export const transient = e => e?.code === 'ETIMEDOUT' || TRANSIENT.test(errorOutput(e));
 
 // Three tries over about 60 s: a 25 s gh timeout, then waits of 5 s and 15 s. hooks.json allows 210 s
 // for the hook, enough for the PR read and the post to each use all three.

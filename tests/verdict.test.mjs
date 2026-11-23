@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { commentArgs, deliver, handle, kindOf, readSettled, retrying } from '../plugins/bstack/scripts/verdict.mjs';
+import { commentArgs, deliver, handle, kindOf, readSettled, retrying, transient } from '../plugins/bstack/scripts/verdict.mjs';
 import { decide } from '../plugins/bstack/scripts/guard.mjs';
 import { commentBody, parseReport, latestFor } from '../plugins/bstack/scripts/lib/verdicts.mjs';
 import { pendingStore } from '../plugins/bstack/scripts/lib/pending.mjs';
@@ -180,6 +180,14 @@ test('retries stop at once on an error that is not transient', () => {
   const gh = retrying(() => { calls++; throw new Error('GraphQL: Could not resolve to a PullRequest with the number of 70.'); }, { pause: () => {} });
   assert.throws(() => gh('/repo', ['pr', 'view', '70']));
   assert.equal(calls, 1);
+});
+
+test('a repo name in the failed command line does not make the error transient', () => {
+  for (const repo of ['acme/network-tools', 'acme/timeout-service', 'acme/eof']) {
+    const e = new Error(`Command failed: gh pr view 999999 -R ${repo} --json number\nGraphQL: Could not resolve to a Repository with the name '${repo}'. (repository)\n`);
+    assert.equal(transient(e), false, repo);
+  }
+  assert.equal(transient(new Error('Command failed: gh pr view 7 -R acme/eof\nerror connecting to api.github.com\n')), true);
 });
 
 test('a verdict that cannot be posted is saved by repo, PR and SHA, and the guard posts it at the next merge', () => {
