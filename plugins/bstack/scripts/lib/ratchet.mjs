@@ -13,7 +13,7 @@ const VALUE_SHORTS = 'mFCct';
 const ATTACHED_SHORTS = 'Su';
 const ZERO = /^0+$/;
 const REGULAR = /^100(644|755)$/;
-const REDIRECTION = /^[0-9&*]?(?:>>?|<<-?|<>|<)&?(.*)$/s;
+const REDIRECTION = /^[0-9&*]?(?:>[>|]?|<<-?|<>|<)&?(.*)$/s;
 
 function redirectionLength(words, i) {
   const redirect = REDIRECTION.exec(words[i]);
