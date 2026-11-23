@@ -660,6 +660,56 @@ function overBaselineAt(dir) {
   };
 }
 
+function pushedAt(dir) {
+  return {
+    ...deps(),
+    git: (cwd, args) => {
+      if (cwd !== dir) throw new Error(`not a git repository: ${cwd}`);
+      return args.includes('@{u}') ? 'origin/feat/x' : 'feat/x';
+    },
+  };
+}
+
+const LINUX_HOST = { platform: 'linux', env: {}, tmpdir: () => '/tmp' };
+const GIT_BASH_DRIVE_PATH = /^\/([a-z])(\/.*)?$/i;
+
+function resolvedOnMain(host, cwd, p, tool) {
+  if (host.platform !== 'win32') return path.posix.resolve(cwd, p);
+  const drive = tool === 'Bash' && GIT_BASH_DRIVE_PATH.exec(p);
+  return drive ? path.win32.resolve(`${drive[1].toUpperCase()}:/${drive[2] ?? ''}`) : path.win32.resolve(cwd, p);
+}
+
+const HOST_PATH_CASES = [
+  { host: LINUX_HOST, cwd: '/home/u/repo', tools: ['Bash', 'PowerShell'], paths: ['//home/u/wt', '/home/u/wt', '../wt'] },
+  { host: GIT_BASH_HOST, cwd: 'C:\\repo', tools: ['Bash'], paths: ['C:\\wt', '\\\\srv\\share\\wt', '../wt', '/c/wt'] },
+  { host: GIT_BASH_HOST, cwd: 'C:\\repo', tools: ['PowerShell'], paths: ['C:\\wt', '\\\\srv\\share\\wt', '../wt', '/wt'] },
+];
+const FULLY_ABSOLUTE = /^([a-z]:[\\/]|\\\\)|^\/(?!\/)/i;
+
+for (const { host, cwd, tools, paths } of HOST_PATH_CASES) {
+  for (const tool of tools) {
+    for (const p of paths) {
+      const label = `${host.platform} ${tool} ${p}`;
+      test(`main session rules resolve ${label} the way the host resolves it`, () => {
+        const at = command => ({ tool_name: tool, tool_input: { command }, cwd });
+        const on = d => onHost(host, d);
+        const dir = resolvedOnMain(host, cwd, p, tool);
+        const file = resolvedOnMain(host, cwd, `${p}/v.md`, tool);
+        assert.ok(decide(at(`git -C '${p}' push`), on(onMainAt(dir))), `push ${label}`);
+        assert.equal(decide(at(`git -C '${p}' push`), on(onMainAt(`${dir}-other`))), null, `push elsewhere ${label}`);
+        assert.ok(decide(at(`git -C '${p}' rebase origin/main`), on(pushedAt(dir))), `rebase ${label}`);
+        const verdictAt = { ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : null) };
+        assert.ok(decide(at(`gh pr comment 5 --body-file '${p}/v.md'`), on(verdictAt)), `body-file ${label}`);
+        assert.match(decide(at(`cd '${p}'; git commit -m x`), on(overBaselineAt(dir))) ?? '', OVER_BASELINE, `cd ${label}`);
+        const afterUnknown = decide(at(`cd $X; cd '${p}'; git commit -m x`), on(overBaselineAt(dir))) ?? '';
+        const absolute = host.platform === 'win32' ? FULLY_ABSOLUTE.test(p) && (tool === 'Bash' || !/^\/(?!\/)/.test(p)) : p.startsWith('/');
+        assert.match(afterUnknown, absolute ? OVER_BASELINE : /cannot tell which repository/, `cd after unknown ${label}`);
+        assert.match(decide(at(`git -C '${p}' commit -m x`), on(overBaselineAt(dir))) ?? '', OVER_BASELINE, `-C ${label}`);
+      });
+    }
+  }
+}
+
 test('PowerShell reads /x as the root of the current drive, not as a Git Bash path', () => {
   blocked(psAt('git -C /c/proj push'), onMainAt('C:\\c\\proj'));
   allowed(psAt('git -C /c/proj push'), onMainAt('C:\\proj'));
