@@ -53,8 +53,16 @@ test('markdown that names a suppression token is not a suppression', () => {
   assert.equal(tier(file('docs/guide.md', { add: ['Never add `type: ignore`.'] })), 0);
 });
 
+test('prose in non-source files that names a suppression token is not a suppression', () => {
+  assert.equal(tier(file('docs/guide.rst', { add: ['Never add ``type: ignore``.'] })), 0);
+  assert.equal(tier(file('plugins/bstack/skills/x/notes.txt', { add: ['Never add `# noqa`.'] })), 1);
+});
+
 test('a suppression in a source file is tier 2', () => {
   assert.equal(tier(file('src/app.js', { add: ['// eslint-disable-next-line no-console'] })), 2);
+  assert.equal(tier(file('src/app.py', { add: ['x = f()  # noqa: E501'] })), 2);
+  assert.equal(tier(file('src/app.ts', { add: ['// @ts-expect-error legacy'] })), 2);
+  assert.equal(tier(file('src/lib.rs', { add: ['#[allow(dead_code)]'] })), 2);
 });
 
 test('adding tests stays tier 1', () => {
