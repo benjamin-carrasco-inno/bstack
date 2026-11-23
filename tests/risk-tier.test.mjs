@@ -101,14 +101,14 @@ test('a data-only .sql test fixture is tier 1, created or modified', () => {
   assert.equal(tier(file('tests/fixtures/comments/sample.sql', { created: true, add: ['-- count rows', 'SELECT id, name', 'FROM t;'] })), 1);
   assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["INSERT INTO t (id, name) VALUES (1, 'a');", 'DELETE FROM t WHERE id = 2;'] })), 1);
   assert.equal(tier(file('tests/fixtures/db/q.sql', { add: ['SELECT a,', '  b', 'FROM t;'], del: ['SELECT a FROM t;'] })), 1);
-  assert.equal(tier(file('pkg/testdata/test/seed.sql', { deleted: true, del: ['SELECT 1;'] })), 1);
+  assert.equal(tier(file('pkg/test/testdata/seed.sql', { created: true, add: ['SELECT 1;'] })), 1);
 });
 
 test('a schema statement in a .sql test fixture is tier 2', () => {
   for (const s of ['CREATE TABLE t (id int);', 'DROP TABLE t;', 'ALTER TABLE t ADD COLUMN x int;']) {
     assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: [s] })), 2, s);
     assert.equal(tier(file('tests/fixtures/db/seed.sql', { add: ['SELECT 1;', s] })), 2, s);
-    assert.equal(tier(file('tests/fixtures/db/seed.sql', { deleted: true, del: [s] })), 2, s);
+    assert.equal(tier(file('tests/fixtures/db/seed.sql', { del: [s] })), 2, s);
   }
   assert.deepEqual(riskTier(file('tests/fixtures/db/seed.sql', { add: ['DROP TABLE t;'] })).reasons,
     ['SQL schema statement: tests/fixtures/db/seed.sql']);
