@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ASSIGNMENT, UNRESOLVED, commandsIn, parseGit, redirectTargets, tokenize } from './lib/shell.mjs';
+import { ASSIGNMENT, UNRESOLVED, commandsIn, endsInRedirect, parseGit, redirectTargets, tokenize, withoutHeredocBodies } from './lib/shell.mjs';
 import { KINDS, MARKER, latestFor, timeOf } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
@@ -28,12 +28,14 @@ export function decide(input, deps) {
   if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(tool)) return writeRule(input.tool_input ?? {}, deps);
   if (tool !== 'Bash' && tool !== 'PowerShell') return null;
   const line = String(input.tool_input?.command ?? '');
-  const commands = located(commandsIn(line, 0, tool === 'PowerShell' ? 'powershell' : 'posix'), cwd);
+  const dialect = tool === 'PowerShell' ? 'powershell' : 'posix';
+  const root = resolvePath(cwd);
+  const commands = located(commandsIn(line, 0, dialect), cwd);
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent, resolvePath(cwd)) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
+    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent, root) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
     if (reason) return reason;
   }
-  return null;
+  return agentWritesRule(line, dialect, cwd, agent, root);
 }
 
 const DIR_MOVES = {
@@ -154,7 +156,17 @@ function agentRule(c, agent, root) {
   if (/^(commit|push|merge|rebase|tag|cherry-pick|am|revert)$/.test(git) || /^pr (merge|comment|review|edit|close|create|ready)|^issue (comment|create|edit|close|reopen|delete|transfer|lock|unlock|pin|unpin|develop)|^label (create|edit|delete|clone)|^api /.test(gh) && !(gh.startsWith('api ') && !hasWriteFields(c.args))) {
     return `The ${agent} agent judges and reproduces; it does not commit, push or post. Report the finding in your final message; the hook posts it.`;
   }
-  return treeRewriteRule(c, agent, root) ?? fileWriteRule(c, agent, root);
+  return treeRewriteRule(c, agent, root);
+}
+
+function agentWritesRule(line, dialect, cwd, agent, root) {
+  if (!NO_AUTHORING_AGENTS.test(agent)) return null;
+  const commands = located(commandsIn(withoutHeredocBodies(line), 0, dialect), cwd);
+  for (const [k, c] of commands.entries()) {
+    const reason = fileWriteRule(c, agent, root, commands[k + 1]);
+    if (reason) return reason;
+  }
+  return null;
 }
 
 const TREE_REWRITING_GIT = {
@@ -326,8 +338,9 @@ function owns(root, target) {
   return [root, resolvePath(os.tmpdir())].some(dir => contains(dir, target));
 }
 
-function fileWriteRule(c, agent, root) {
-  const words = [...redirectTargets(c.text), ...dotnetWriteTargets(c.text), ...(FILE_WRITERS[c.cmd]?.(c.args, c.dialect) ?? [])];
+function fileWriteRule(c, agent, root, next) {
+  const clobbered = next && endsInRedirect(c.text, c.dialect) ? tokenize(next.text).slice(0, 1) : [];
+  const words = [...redirectTargets(c.text), ...clobbered,...dotnetWriteTargets(c.text), ...(FILE_WRITERS[c.cmd]?.(c.args, c.dialect) ?? [])];
   for (const word of words) {
     const target = writeTarget(word, knownCwd(c));
     if (target === null) continue;

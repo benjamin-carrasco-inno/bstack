@@ -833,7 +833,7 @@ test('comment ratchet: an escaped > before | still pipes into git commit', () =>
   const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
   repo.write('app.py', TWO);
   repo.git('add', 'app.py');
-  assert.match(repo.run('echo \\>|git commit -m x') ?? '', /app\.py/);
+  assert.match(repo.run('echo \\>|git commit -m x') ?? '', /cannot see what `echo \\>` changes first/);
 });
 
 test('comment ratchet: checks the repo that a cd earlier in the call moves to', () => {

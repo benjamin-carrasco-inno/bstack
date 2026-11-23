@@ -55,7 +55,6 @@ export function splitSegments(line) {
       continue;
     }
     if (ch === '\n' || ch === '\r' || ch === ';') { segments.push(cur); cur = ''; continue; }
-    if (ch === '|' && line[i - 1] === '>') { cur += ch; continue; }
     if (ch === '|') { if (line[i + 1] === '|') i++; segments.push(cur); cur = ''; continue; }
     if (ch === '&') {
       const prev = line[i - 1];
@@ -116,6 +115,51 @@ export function redirectTargets(segment) {
     if (word) targets.push(word);
   }
   return targets;
+}
+
+const ESCAPE = { posix: '\\', powershell: '`', cmd: '^' };
+const TRAILING_REDIRECT = /(.?)\d*>>?$/s;
+
+export function endsInRedirect(segment, dialect = 'posix') {
+  const m = TRAILING_REDIRECT.exec(segment.trimEnd());
+  return Boolean(m) && m[1] !== ESCAPE[dialect];
+}
+
+const HEREDOC_OPEN = /<<[-~]?[ \t]*(['"]?)([\w.-]+)\1/y;
+
+function heredocWords(text) {
+  const words = [];
+  let quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else if (ch === '\\' && quote === '"') i++;
+      continue;
+    }
+    if (ch === '\\') { i++; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch !== '<' || text[i + 1] !== '<') continue;
+    if (text[i + 2] === '<') { i += 2; continue; }
+    HEREDOC_OPEN.lastIndex = i;
+    const m = HEREDOC_OPEN.exec(text);
+    if (m) { words.push(m[2]); i = HEREDOC_OPEN.lastIndex - 1; }
+  }
+  return words;
+}
+
+export function withoutHeredocBodies(line) {
+  const pending = [];
+  return line.split('\n').map(text => {
+    if (pending.length) {
+      const { word, executed } = pending[0];
+      if (text.replace(/\r$/, '').trim() === word) pending.shift();
+      return executed ? text : '';
+    }
+    const executed = tokenize(text).some(w => SHELLS.has(programName(w)));
+    pending.push(...heredocWords(text).map(word => ({ word, executed })));
+    return text;
+  }).join('\n');
 }
 
 function programName(word) {
