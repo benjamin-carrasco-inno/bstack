@@ -371,14 +371,26 @@ test('no-authoring agents: a cd into the temp dir by /tmp or a temp variable sta
     allowed(as('cd /tmp && echo x > f.txt'), host);
     allowed(as('cd /tmp/x && node x.mjs > out.txt'), host);
     allowed(as("bash -c 'cd /tmp && git clone https://example.invalid/r && cd r && git checkout x'"), host);
-    allowed(as('cd $TMPDIR && echo x > f.txt'), host);
-    allowed(as('cd "${TMPDIR}/x" && git checkout HEAD~1'), host);
+    allowed(as('cd $TEMP && echo x > f.txt'), host);
+    allowed(as('cd "${TMP}/x" && git checkout HEAD~1'), host);
     allowed(psAs('cd $env:TEMP; echo x > f.txt'), host);
     allowed(psAs('Set-Location $env:TMP/x; git checkout HEAD~1'), host);
 
     blocked(as('cd /tmpx && echo x > f.txt'), host);
     blocked(as('cd /tmp/../checkout && echo x > f.txt'), host);
-    blocked(as('cd $TMPDIR/$X && echo x > f.txt'), host);
+    blocked(as('cd $TEMP/$X && echo x > f.txt'), host);
+  }
+});
+
+test('no-authoring agents under Git Bash: an unset $TMPDIR is empty, not the temp dir', () => {
+  const withTmpdir = onHost({ ...GIT_BASH_HOST, env: { TMPDIR: 'C:\\Temp' } });
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('cd $TMPDIR/c/repo && git -C . reset --hard'), onHost(GIT_BASH_HOST));
+    blocked(as('cd $TMPDIR && rm -rf repo/plugins'), onHost(GIT_BASH_HOST));
+    blocked(as('cd $TMPDIR && echo x > f.txt'), onHost(GIT_BASH_HOST));
+    allowed(as('cd $TMPDIR && echo x > f.txt'), withTmpdir);
+    allowed(as('cd "${TMPDIR}/x" && git checkout HEAD~1'), withTmpdir);
   }
 });
 
@@ -649,15 +661,21 @@ test('PowerShell reads /x as the root of the current drive, not as a Git Bash pa
   blocked(psAt('cmd /c git -C /c/proj push'), onMainAt('C:\\c\\proj'));
 });
 
-test('Bash keeps the Git Bash meaning of /c/..., /tmp and $TMPDIR', () => {
+test('Bash keeps the Git Bash meaning of /c/..., /tmp, $TEMP and $TMP', () => {
   blocked(bashAt('git -C /c/proj push'), onMainAt('C:\\proj'));
   allowed(bashAt('git -C /c/proj push'), onMainAt('C:\\c\\proj'));
-  for (const command of ['cd /tmp/rat; git commit -m x', 'cd $TMPDIR/rat; git commit -m x', 'pushd ${TEMP}/rat; git commit -m x']) {
+  for (const command of ['cd /tmp/rat; git commit -m x', 'cd $TMP/rat; git commit -m x', 'pushd ${TEMP}/rat; git commit -m x']) {
     assert.match(decide(bashAt(command), onHost(GIT_BASH_HOST, overBaselineAt('C:\\Temp\\rat'))) ?? '', OVER_BASELINE, command);
   }
   const verdictAt = file => ({ ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : null) });
   blocked(bashAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\x\\v.md'));
   blocked(psAt("bash -c 'git -C /c/proj push'"), onMainAt('C:\\proj'));
+});
+
+test('Git Bash leaves $TMPDIR empty unless the environment sets it, so $TMPDIR/c/x is /c/x', () => {
+  assert.match(decide(bashAt('cd $TMPDIR/c/rat; git commit -m x'), onHost(GIT_BASH_HOST, overBaselineAt('C:\\rat'))) ?? '', /cannot tell which repository/);
+  const withTmpdir = { ...GIT_BASH_HOST, env: { TMPDIR: 'C:\\Temp' } };
+  assert.match(decide(bashAt('cd $TMPDIR/rat; git commit -m x'), onHost(withTmpdir, overBaselineAt('C:\\Temp\\rat'))) ?? '', OVER_BASELINE);
 });
 
 test('on a POSIX host /tmp is /tmp, and a temp variable is the environment value or unresolved', () => {
@@ -708,7 +726,7 @@ test('no-authoring agents: a temp variable assigned earlier in the line is not t
 test('set assigns a variable only in cmd; in bash it sets positional parameters', () => {
   for (const agent of NO_AUTHORING) {
     const as = command => bashAt(command, { agent_type: agent });
-    allowed(as('set TMPDIR=/c/other/checkout; cd $TMPDIR && echo x > f.txt'), onHost(GIT_BASH_HOST));
+    allowed(as('set TEMP=/c/other/checkout; cd $TEMP && echo x > f.txt'), onHost(GIT_BASH_HOST));
     blocked(as('cmd /c "set GIT_DIR=C:/checkout/.git && git reset --hard"'));
   }
 });
