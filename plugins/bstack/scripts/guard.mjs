@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { commandsIn, parseGit, redirectTargets } from './lib/shell.mjs';
 import { MARKER, latestFor } from './lib/verdicts.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
+import { contains, resolvePath } from './lib/paths.mjs';
 import { riskTier, readRiskPaths } from './risk-tier.mjs';
 
 const DEFAULT_BRANCH = /^(main|master)$/;
@@ -28,7 +29,7 @@ export function decide(input, deps) {
   const line = String(input.tool_input?.command ?? '');
   const commands = located(commandsIn(line), cwd);
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent, path.resolve(cwd)) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
+    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent, resolvePath(cwd)) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
     if (reason) return reason;
   }
   return null;
@@ -68,7 +69,7 @@ function dirTarget(args) {
 
 function resolvedDir(target, here) {
   if (target === undefined || target.includes('$')) return here;
-  return path.resolve(here, target.replace(HOME, os.homedir()));
+  return resolvePath(here, target.replace(HOME, os.homedir()));
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
@@ -79,7 +80,7 @@ function markerRule(c, cwd, deps) {
   }
   if (c.cmd === 'gh') {
     for (const file of bodyFiles(c.args)) {
-      const text = deps.readFile(path.resolve(cwd, file));
+      const text = deps.readFile(resolvePath(cwd, file));
       if (text && MARKER.test(text)) return `The body file ${file} contains a bstack verdict line. Verdicts are posted only by the bstack hook.`;
     }
   }
@@ -186,14 +187,11 @@ function writeTarget(word, cwd) {
   if (NULL_SINK.test(word)) return null;
   const expanded = word.replace(TEMP_VARIABLE, os.tmpdir()).replace(POSIX_TEMP, os.tmpdir()).replace(HOME, os.homedir());
   if (expanded.includes('$')) return undefined;
-  return path.resolve(cwd, expanded);
+  return resolvePath(cwd, expanded);
 }
 
 function owns(root, target) {
-  return [root, os.tmpdir()].some(dir => {
-    const rel = path.relative(path.resolve(dir), target);
-    return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
-  });
+  return [root, resolvePath(os.tmpdir())].some(dir => contains(dir, target));
 }
 
 function fileWriteRule(c, agent, root) {
@@ -210,11 +208,11 @@ function fileWriteRule(c, agent, root) {
 // --- git ------------------------------------------------------------------------------------------
 function gitRule(c, cwd, deps, line) {
   const { dir, sub, rest } = parseGit(c.args);
-  const repo = dir ? path.resolve(cwd, dir) : cwd;
+  const repo = dir ? resolvePath(cwd, dir) : cwd;
   if (rest.includes('--no-verify') || (sub === 'commit' && rest.some(a => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--')))) {
     return 'Do not skip git hooks (--no-verify / -n). Fix what the hook reports; it is part of the safety net.';
   }
-  if (sub === 'commit') return commentRatchet({ repo: dir ? path.resolve(c.cwd, dir) : c.cwd, rest, ...line }, deps);
+  if (sub === 'commit') return commentRatchet({ repo: dir ? resolvePath(c.cwd, dir) : c.cwd, rest, ...line }, deps);
   if (sub === 'push') return pushRule(rest, repo, deps);
   if (sub === 'rebase' && !rest.some(a => /^--(abort|continue|skip|quit|edit-todo|show-current-patch)$/.test(a))) return rebaseRule(repo, deps);
   if (sub === 'pull' && rest.some(a => a === '--rebase' || a === '-r' || a.startsWith('--rebase='))) return rebaseRule(repo, deps);
