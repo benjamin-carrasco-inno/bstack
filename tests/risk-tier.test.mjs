@@ -75,6 +75,36 @@ test('a suppression in a source file is tier 2', () => {
   assert.equal(tier(file('src/lib.rs', { add: ['#[allow(dead_code)]'] })), 2);
 });
 
+test('suppression tokens in fixture files are not suppressions', () => {
+  assert.equal(tier(file('tests/fixtures/comments/sample.js', { created: true, add: ['// eslint-disable-next-line no-console'] })), 1);
+  assert.equal(tier(file('fixtures/a.py', { add: ['import os  # noqa: F401'] })), 1);
+  assert.equal(tier(file('src/__fixtures__/a.ts', { add: ['// @ts-ignore'] })), 1);
+  assert.equal(tier(file('pkg/testdata/a.rs', { add: ['#[allow(dead_code)]'] })), 1);
+});
+
+test('suppression tokens inside string or regex literals are not suppressions', () => {
+  assert.equal(tier(file('tests/risk.test.mjs', { add: ["  assert.equal(tier(file('src/app.js', { add: ['// eslint-disable-next-line no-console'] })), 2);"] })), 1);
+  assert.equal(tier(file('src/scan.mjs', { add: ['const RE = /eslint-disable|@ts-ignore/;'] })), 1);
+  assert.equal(tier(file('tests/test_scan.py', { add: ['    assert count("x = 1  # noqa") == 1'] })), 1);
+  assert.equal(tier(file('src/a.rs', { add: ['let s = "#[allow(dead_code)]";'] })), 1);
+});
+
+test('real suppressions in comments stay tier 2 next to literals', () => {
+  assert.equal(tier(file('src/a.js', { add: ['// eslint-disable-next-line'] })), 2);
+  assert.equal(tier(file('src/a.py', { add: ['x = f()  # noqa'] })), 2);
+  assert.equal(tier(file('src/a.js', { add: ['const s = "x"; // eslint-disable-line'] })), 2);
+  assert.equal(tier(file('src/a.js', { add: [' * eslint-disable no-console'] })), 2);
+  assert.equal(tier(file('src/a.js', { add: ['eslint-disable no-console'] })), 2);
+  assert.equal(tier(file('src/a.ts', { add: ['const s = `', '// @ts-ignore'] })), 2);
+});
+
+test('a data-only .sql fixture is not a schema file', () => {
+  assert.equal(tier(file('tests/fixtures/comments/sample.sql', { created: true, add: ['-- count rows', 'SELECT id, name', 'FROM t;'] })), 1);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { add: ['CREATE TABLE t (id int);'] })), 2);
+  assert.equal(tier(file('db/migrations/001_init.sql', { add: ['SELECT 1;'] })), 2);
+  assert.equal(tier(file('app/queries.sql', { add: ['SELECT 1;'] })), 2);
+});
+
 test('adding tests stays tier 1', () => {
   assert.equal(tier(file('tests/test_api.py', { created: true, add: ['def test_c():', '    assert c()'] })), 1);
 });
