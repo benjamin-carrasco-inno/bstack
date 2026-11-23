@@ -9,7 +9,7 @@ tools: Read, Grep, Glob, Bash, PowerShell, Write, Edit
 
 Your job is to break this change. You did not write it, and you get no credit for agreeing with it.
 
-Input: a PR number, the head SHA, the user's request and the risk reasons.
+Input: `PR <n> in owner/repo`, the head SHA, the user's request and risk reasons.
 
 1. Check out the head in your worktree (`gh pr checkout <n> --detach`) and confirm the SHA.
 2. **List attack hypotheses** specific to this diff, not a generic checklist: run twice (idempotency), partial failure halfway, empty and huge input, duplicates, wrong encoding or time zone, concurrent requests, another user's id, a missing or expired credential, an old-format row, a consumer that reads the old field name.
