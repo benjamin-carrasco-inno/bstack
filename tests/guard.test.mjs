@@ -342,6 +342,42 @@ test('no-authoring agents: GIT_DIR and GIT_WORK_TREE count as a checkout outside
   allowed(shell('GIT_DIR=/checkout/.git git reset --hard'));
 });
 
+test('no-authoring agents: only a real GIT_DIR or GIT_WORK_TREE assignment redirects git, and only where it applies', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(as('export GIT_DIR=/checkout/.git; git log; git checkout HEAD~1'));
+    blocked(as('GIT_WORK_TREE=/checkout; git restore a.mjs'));
+    blocked(as('cmd /c "set GIT_DIR=C:/checkout/.git && git reset --hard"'));
+    blocked(psAs("$env:GIT_DIR = 'C:/checkout/.git'; git status; git checkout HEAD~1"));
+
+    allowed(as('git grep -n GIT_DIR; git checkout HEAD~1 -- tests/guard.test.mjs'));
+    allowed(as('GIT_DIR=x git log; git checkout -b tmp'));
+    allowed(as('echo GIT_WORK_TREE && git restore a.mjs'));
+    allowed(as("bash -c 'export GIT_DIR=/checkout/.git; git log'; git reset --hard"));
+    allowed(psAs('Select-String GIT_DIR README.md; git checkout -b tmp'));
+  }
+});
+
+test('no-authoring agents: a cd into the temp dir by /tmp or a temp variable stays inside the temp dir', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    allowed(as('cd /tmp/x && git checkout HEAD~1'));
+    allowed(as('cd /tmp && echo x > f.txt'));
+    allowed(as('cd /tmp/x && node x.mjs > out.txt'));
+    allowed(as("bash -c 'cd /tmp && git clone https://example.invalid/r && cd r && git checkout x'"));
+    allowed(as('cd $TMPDIR && echo x > f.txt'));
+    allowed(as('cd "${TMPDIR}/x" && git checkout HEAD~1'));
+    allowed(psAs('cd $env:TEMP; echo x > f.txt'));
+    allowed(psAs('Set-Location $env:TMP/x; git checkout HEAD~1'));
+
+    blocked(as('cd /tmpx && echo x > f.txt'));
+    blocked(as('cd /tmp/../checkout && echo x > f.txt'));
+    blocked(as('cd $TMPDIR/$X && echo x > f.txt'));
+  }
+});
+
 test('no-authoring agents: repeated -C options combine like git does', () => {
   for (const agent of NO_AUTHORING) {
     const as = asAgent(agent);
@@ -1167,4 +1203,26 @@ test('comment ratchet: interactive adds are not replayed, so no editor runs insi
   } finally {
     if (saved === undefined) delete process.env.GIT_EDITOR; else process.env.GIT_EDITOR = saved;
   }
+});
+
+test('an empty -C is ignored and an unresolved -C fails closed, for push, rebase and the comment ratchet', () => {
+  const repo = fixture({ 'sub/app.py': NONE }, { 'sub/app.py': 0 });
+  repo.git('remote', 'add', 'origin', 'https://example.invalid/r');
+  repo.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  repo.git('branch', '--set-upstream-to=origin/main');
+  repo.write('sub/app.py', ONE);
+  repo.git('add', '-A');
+  const opaque = ['$X', '"${X}"', '%X%', '`pwd`', '"$(pwd)"'];
+  for (const command of [
+    'git -C "" -C sub push origin HEAD', "git -C '' -C sub push", 'git -C sub -C "" push',
+    ...opaque.map(x => `git -C ${x} -C sub push`), ...opaque.map(x => `git -C ${x} push origin HEAD`),
+    'git -C "" -C sub rebase origin/main', 'git -C $X -C sub rebase origin/main', 'git -C %X% pull --rebase',
+  ]) assert.ok(repo.run(command), `expected block: ${command}`);
+  for (const command of ['git -C "" -C sub commit -m "feat: x"', "git -C '' commit -m \"feat: x\""]) {
+    assert.match(repo.run(command) ?? '', /sub\/app\.py: baseline 0, this commit 1/, command);
+  }
+  for (const x of opaque) assert.match(repo.run(`git -C ${x} -C sub commit -m "feat: x"`) ?? '', /cannot tell which repository/, x);
+  assert.equal(repo.run('git -C "" -C sub push origin feat/x'), null);
+  assert.equal(repo.run('git -C $X push origin feat/x'), null);
+  assert.equal(repo.run('git -C $X -C /elsewhere push origin HEAD'), null);
 });
