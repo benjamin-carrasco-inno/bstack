@@ -263,7 +263,7 @@ test('no-authoring agents leave checkouts outside their own cwd untouched', () =
     allowed(psAs('node --test 2>$null'));
     allowed(psAs('Set-Content src/a.mjs x'));
     allowed({ ...psAs(`Set-Content "${tmp}" x`), cwd: path.resolve('/repo') });
-    allowed(psAs('Set-Content $env:TEMP/repro.txt x'));
+    allowed(psAs('Set-Content $env:TEMP/repro.txt x'), onHost(GIT_BASH_HOST));
     allowed(psAs('Copy-Item -Path C:/checkout/src/a.mjs -Destination ./a.mjs'));
     allowed(psAs("Set-Content out.txt -Value @'\nx > C:/checkout/a.mjs\n'@"));
   }
