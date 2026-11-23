@@ -46,18 +46,24 @@ const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
 
 const MULTILINE_DELIMITER = new Map([[SYNTAX.js, /`/], [SYNTAX.py, /"""|'''/]]);
 const SQL_BLANK_OR_COMMENT = /^\s*(--|$)/;
+const SQL_META_COMMAND = /^\s*\\/;
+const SQL_STRING = /'(?:[^']|'')*'/g;
 const SQL_DATA_START = /^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|VALUES)\b/i;
-const SQL_NOT_DATA = /\b(CREATE|ALTER|DROP|GRANT|REVOKE|TRUNCATE|RENAME)\b|\bCOMMENT\s+ON\b|^\s*\\/i;
+const SQL_NOT_DATA = [
+  /\b(CREATE|ALTER|DROP|GRANT|REVOKE|TRUNCATE|RENAME)\b|\bCOMMENT\s+ON\b/i,
+  /\bINTO\b/i,
+  /\b(pg_catalog|information_schema|sqlite_master|sqlite_schema)\b|\b(sys|mysql)["`\]]?\s*\./i,
+];
+const SQL_INSERT_INTO = /\bINSERT\s+(OR\s+\w+\s+|IGNORE\s+)?INTO\b/gi;
 
 function isSqlData(lines) {
-  let inStatement = false;
-  return lines.every(line => {
-    if (SQL_BLANK_OR_COMMENT.test(line)) return true;
-    if (SQL_NOT_DATA.test(line)) return false;
-    if (SQL_DATA_START.test(line)) inStatement = true;
-    else if (!inStatement) return false;
-    if (line.includes(';')) inStatement = false;
-    return true;
+  const code = lines.filter(line => !SQL_BLANK_OR_COMMENT.test(line));
+  if (code.some(line => SQL_META_COMMAND.test(line))) return false;
+  const text = code.join('\n').replace(SQL_STRING, '?');
+  if (text.includes("'")) return false;
+  return text.split(';').filter(s => s.trim()).every(statement => {
+    const body = statement.replace(SQL_INSERT_INTO, 'INSERT');
+    return SQL_DATA_START.test(statement) && !SQL_NOT_DATA.some(re => re.test(body));
   });
 }
 
@@ -65,7 +71,8 @@ function suppresses(line, syntax) {
   const tokens = [...line.matchAll(new RegExp(SUPPRESSION, 'g'))].map(m => m.index);
   if (!tokens.length || !syntax || MULTILINE_DELIMITER.get(syntax)?.test(line)) return tokens.length > 0;
   const literals = literalSpans(line, syntax);
-  return tokens.some(at => !literals.some(([from, to]) => from <= at && at < to));
+  if (literals.some(l => !l.closed)) return true;
+  return tokens.some(at => !literals.some(({ from, to }) => from <= at && at < to));
 }
 
 export function parseDiff(diff) {
