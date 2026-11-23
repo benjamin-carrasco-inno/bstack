@@ -48,6 +48,15 @@ test('weakened checks are tier 2', () => {
   assert.equal(tier(file('.github/workflows/ci.yml', { add: ['        continue-on-error: true'] })), 2);
 });
 
+test('markdown that names a suppression token is not a suppression', () => {
+  assert.equal(tier(file('plugins/bstack/agents/comment-critic.md', { add: ['Look for `eslint-disable`, `# noqa` and `@ts-ignore`.'] })), 1);
+  assert.equal(tier(file('docs/guide.md', { add: ['Never add `type: ignore`.'] })), 0);
+});
+
+test('a suppression in a source file is tier 2', () => {
+  assert.equal(tier(file('src/app.js', { add: ['// eslint-disable-next-line no-console'] })), 2);
+});
+
 test('adding tests stays tier 1', () => {
   assert.equal(tier(file('tests/test_api.py', { created: true, add: ['def test_c():', '    assert c()'] })), 1);
 });
