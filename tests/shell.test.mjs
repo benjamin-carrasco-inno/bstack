@@ -1,12 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { splitSegments, tokenize, commandsIn, parseGit } from '../plugins/bstack/scripts/lib/shell.mjs';
+import { splitSegments, tokenize, commandsIn, parseGit, redirectTargets } from '../plugins/bstack/scripts/lib/shell.mjs';
 
 test('segments split on operators outside quotes', () => {
   assert.deepEqual(splitSegments('a && b || c; d | e'), ['a', 'b', 'c', 'd', 'e']);
   assert.deepEqual(splitSegments('echo "a; b" && c'), ['echo "a; b"', 'c']);
   assert.deepEqual(splitSegments('cmd 2>&1 | tee x'), ['cmd 2>&1', 'tee x']);
   assert.deepEqual(splitSegments('& git status'), ['git status']);
+});
+
+test('a clobber redirect >| is a redirect, not a pipe', () => {
+  assert.deepEqual(splitSegments('echo x >| a.txt | tee b'), ['echo x >| a.txt', 'tee b']);
+  assert.deepEqual(redirectTargets('echo x >| a.txt'), ['a.txt']);
 });
 
 test('tokens drop quotes', () => {

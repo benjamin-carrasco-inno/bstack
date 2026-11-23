@@ -268,6 +268,58 @@ test('no-authoring agents leave checkouts outside their own cwd untouched', () =
   allowed(ps('Set-Content C:/checkout/src/a.mjs x'));
 });
 
+test('no-authoring agents: clobber redirects, dd, truncate, ln and .NET file writes stay inside their cwd', () => {
+  for (const agent of ['bstack:comment-critic', 'bstack:reviewer', 'bstack:adversary']) {
+    const as = command => ({ ...shell(command), agent_type: agent });
+    const psAs = command => ({ ...ps(command), agent_type: agent });
+    blocked(as('echo x >| /checkout/a.mjs'));
+    blocked(as('dd if=/dev/zero of=/checkout/a.mjs bs=1 count=1'));
+    blocked(as('truncate -s 0 /checkout/a.mjs'));
+    blocked(as('truncate -c /checkout/a.mjs -s 0'));
+    blocked(as('ln -sf ./evil.mjs /checkout/src/a.mjs'));
+    blocked(as('ln -s ./evil.mjs -t /checkout/src'));
+    blocked(as('ln -s ./evil.mjs --target-directory=/checkout/src'));
+    blocked(psAs("[IO.File]::WriteAllText('C:/checkout/a.mjs', 'x')"));
+    blocked(psAs('[System.IO.File]::AppendAllText("C:/checkout/a.mjs", "x")'));
+    blocked(psAs('$null = [System.IO.File]::WriteAllBytes($p, $b)'));
+
+    allowed(as('echo x >| out.txt'));
+    allowed(as('dd if=/checkout/a.mjs of=./copy.mjs'));
+    allowed(as('truncate -s 0 out.txt'));
+    allowed(as('ln -s /checkout/src/a.mjs ./a.mjs'));
+    allowed(as('ln -s /checkout/src/a.mjs'));
+    allowed(psAs("[IO.File]::WriteAllText('C:/repo/a.mjs', 'x')"));
+    allowed(psAs("[IO.File]::ReadAllText('C:/checkout/a.mjs')"));
+  }
+});
+
+test('no-authoring agents do not switch, add, move or remove worktrees outside their cwd', () => {
+  for (const agent of ['bstack:comment-critic', 'bstack:reviewer', 'bstack:adversary']) {
+    const as = command => ({ ...shell(command), agent_type: agent });
+    blocked(as('git -C /checkout switch main'));
+    blocked(as('git -C /checkout checkout main'));
+    blocked(as('git -C /checkout checkout -b x'));
+    blocked(as('cd /checkout && git switch -c x'));
+    blocked(as('git worktree remove /checkout'));
+    blocked(as('git worktree remove --force /checkout'));
+    blocked(as('git worktree move /checkout ./moved'));
+    blocked(as('git worktree add /checkout/wt main'));
+    blocked(as('git -C /checkout worktree prune'));
+    blocked(as('git -C /checkout worktree add /tmp/wt'));
+
+    allowed(as('git switch main'));
+    allowed(as('git checkout -b repro'));
+    allowed(as('git checkout --detach origin/main'));
+    allowed(as('git worktree list'));
+    allowed(as('git -C /checkout worktree list'));
+    allowed(as('git worktree add /tmp/wt main'));
+    allowed(as('git worktree add -b repro ./wt main'));
+    allowed(as('git worktree remove /tmp/wt'));
+  }
+  allowed(shell('git -C /checkout switch main'));
+  allowed(shell('git worktree remove /checkout'));
+});
+
 test('ciState treats skipped-only and missing checks as not green', () => {
   assert.equal(ciState([]).ok, false);
   assert.equal(ciState([{ __typename: 'CheckRun', name: 'a', status: 'COMPLETED', conclusion: 'SKIPPED' }]).ok, false);
