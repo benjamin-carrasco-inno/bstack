@@ -97,104 +97,35 @@ test('a suppression token in a string in non-test source is tier 2, the accepted
   assert.equal(tier(file('src/a.py', { add: ['x = "# noqa"'] })), 2);
 });
 
-test('a data-only .sql fixture is not a schema file', () => {
+test('a data-only .sql test fixture is tier 1, created or modified', () => {
   assert.equal(tier(file('tests/fixtures/comments/sample.sql', { created: true, add: ['-- count rows', 'SELECT id, name', 'FROM t;'] })), 1);
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { add: ['CREATE TABLE t (id int);'] })), 2);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["INSERT INTO t (id, name) VALUES (1, 'a');", 'DELETE FROM t WHERE id = 2;'] })), 1);
+  assert.equal(tier(file('tests/fixtures/db/q.sql', { add: ['SELECT a,', '  b', 'FROM t;'], del: ['SELECT a FROM t;'] })), 1);
+  assert.equal(tier(file('pkg/testdata/test/seed.sql', { deleted: true, del: ['SELECT 1;'] })), 1);
+});
+
+test('a schema statement in a .sql test fixture is tier 2', () => {
+  for (const s of ['CREATE TABLE t (id int);', 'DROP TABLE t;', 'ALTER TABLE t ADD COLUMN x int;']) {
+    assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: [s] })), 2, s);
+    assert.equal(tier(file('tests/fixtures/db/seed.sql', { add: ['SELECT 1;', s] })), 2, s);
+    assert.equal(tier(file('tests/fixtures/db/seed.sql', { deleted: true, del: [s] })), 2, s);
+  }
+  assert.deepEqual(riskTier(file('tests/fixtures/db/seed.sql', { add: ['DROP TABLE t;'] })).reasons,
+    ['SQL schema statement: tests/fixtures/db/seed.sql']);
+});
+
+test('a .sql test fixture whose diff shows no lines keeps the path rule', () => {
+  const binary = ['diff --git a/tests/fixtures/db/seed.sql b/tests/fixtures/db/seed.sql', 'new file mode 100644',
+    'index 0000000..1234567', 'Binary files /dev/null and b/tests/fixtures/db/seed.sql differ'].join('\n');
+  assert.equal(tier(binary), 2);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true })), 2);
+});
+
+test('a .sql file outside a test fixture keeps the path rule', () => {
   assert.equal(tier(file('db/migrations/001_init.sql', { add: ['SELECT 1;'] })), 2);
   assert.equal(tier(file('app/queries.sql', { add: ['SELECT 1;'] })), 2);
-});
-
-test('a .sql fixture with any schema statement or unrecognised line is a schema file', () => {
-  const statements = [
-    'CREATE UNIQUE INDEX i ON t (id);', 'CREATE SCHEMA s;', 'CREATE OR REPLACE VIEW v AS SELECT 1;',
-    'CREATE MATERIALIZED VIEW v AS SELECT 1;', 'CREATE FUNCTION f() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql;',
-    "CREATE TYPE mood AS ENUM ('a');", 'CREATE SEQUENCE s;', 'CREATE TEMP TABLE t (id int);', 'DROP SCHEMA s;',
-    'CREATE EXTENSION pgcrypto;', "ALTER TYPE mood ADD VALUE 'b';", 'GRANT SELECT ON t TO r;', 'REVOKE SELECT ON t FROM r;',
-    'TRUNCATE t;', "COMMENT ON TABLE t IS 'x';", 'SELECT 1; CREATE TABLE t (id int);',
-  ];
-  for (const s of statements) assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: [s] })), 2, s);
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ['CREATE', 'TABLE t (id int);'] })), 2);
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ['SELECT 1;', '  extra int,'] })), 2);
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ['VACUUM;'] })), 2);
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ['SELECT 1', '\\i schema.sql'] })), 2);
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { deleted: true, del: ['CREATE TABLE t (id int);'] })), 2);
-  assert.equal(tier(file('pkg/testdata/seed.sql', { deleted: true, del: ['SELECT 1;'] })), 1);
-});
-
-test('a .sql fixture of queries and inserts is data', () => {
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: [
-    '-- seed rows', '', 'INSERT INTO t (id, name) VALUES', "  (1, 'a'),", "  (2, 'b');",
-    'WITH r AS (SELECT id FROM t)', 'SELECT t.id', 'FROM t', '  JOIN r ON r.id = t.id', 'WHERE t.id > 0',
-    '  AND t.name IS NOT NULL', 'ORDER BY t.id', 'LIMIT 10;', "UPDATE t SET name = 'c' WHERE id = 1;", 'DELETE FROM t WHERE id = 2;',
-  ] })), 1);
-  assert.equal(tier(file('tests/fixtures/comments/sample.sql', { created: true, add: [
-    '-- Report query.', 'SELECT id, -- trailing', "       'it''s -- not a comment' AS quote,", '       "weird--name"',
-    'FROM items', '/* multi', '   line */', "WHERE note <> '/* not */';",
-  ] })), 1);
-});
-
-test('a modified .sql fixture is a schema file, since the diff hides the statement around its lines', () => {
-  const sql = lines => ['diff --git a/tests/fixtures/db/q.sql b/tests/fixtures/db/q.sql', '--- a/tests/fixtures/db/q.sql',
-    '+++ b/tests/fixtures/db/q.sql', ...lines].join('\n');
-  assert.equal(tier(file('tests/fixtures/db/schema.sql', { add: ['  extra int,'] })), 2);
-  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', ' CREATE TABLE t (', '+  extra int,'])), 2);
-  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', ' CREATE VIEW v AS', '+SELECT a, b FROM t;'])), 2);
-  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', ' CREATE INDEX i ON t', '+(a, b);'])), 2);
-  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', '+SELECT a,', '+  b', '+FROM t;'])), 2);
-});
-
-test('a .sql fixture that copies rows or touches the catalog is a schema file', () => {
-  const fixtures = [
-    ['SELECT * INTO users_backup FROM users;'],
-    ['SELECT *', 'INTO users_backup', 'FROM users;'],
-    ["UPDATE pg_catalog.pg_attribute SET attnotnull = false WHERE attname = 'id';"],
-    ['SELECT * FROM information_schema.tables;'],
-    ['DELETE FROM sys.objects;'],
-    ['SELECT name FROM sqlite_master;'],
-    ["UPDATE mysql.user SET host = '%';"],
-  ];
-  for (const add of fixtures) assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add })), 2, add.join(' '));
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ['INSERT INTO t (id) SELECT id FROM s;'] })), 1);
-});
-
-test('DDL words inside sql string literals still make a fixture a schema file', () => {
-  const fixtures = [
-    ["INSERT INTO users (name) VALUES ('Grant');"],
-    ["INSERT INTO notes (body) VALUES ('please comment on this');"],
-    ['INSERT INTO verbs (v) VALUES', "  ('create'), ('drop'), ('rename');"],
-    ["INSERT INTO t (s) VALUES ('it''s CREATE TABLE time');"],
-  ];
-  for (const add of fixtures) assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add })), 2, add.join(' '));
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["INSERT INTO users (name) VALUES ('Ann');"] })), 1);
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["SELECT 'x'; DROP TABLE t;"] })), 2);
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["SELECT 'unterminated; DROP TABLE t;"] })), 2);
-});
-
-test('a .sql fixture with dollar quotes, escape strings or backslashes is a schema file', () => {
-  const fixtures = [
-    ['SELECT $$it\'s$$;', 'DROP TABLE users;', "SELECT $$'$$;"],
-    ["SELECT E'a\\\\' b';", 'DROP TABLE users;', "SELECT E'c\\\\' d';"],
-    ["SELECT format('DROP TABLE %I', 'users') \\gexec"],
-    ["INSERT INTO t (s) VALUES (e'x');"],
-    ['SELECT $1;'],
-  ];
-  for (const add of fixtures) assert.equal(tier(file('tests/fixtures/seed.sql', { created: true, add })), 2, add.join(' '));
-});
-
-test('a .sql fixture with a DDL or side-effect word anywhere, comments and strings included, is a schema file', () => {
-  const fixtures = [
-    ["INSERT INTO users VALUES (1, 'ann'), -- Ann's row", "  (2, 'bo');", 'CREATE TABLE audit (id int);',
-      "INSERT INTO users VALUES (3, 'cy'), -- Cy's row", "  (4, 'di');"],
-    ["SELECT 1 /* it's */;", 'DROP TABLE users;', "SELECT 2 /* that's it */;"],
-    ['SELECT 1 AS "o\'neil";', 'ALTER TABLE users ADD COLUMN x int;', 'SELECT 2 AS "o\'hara";'],
-    ["UPDATE pg_attribute SET attnotnull = false WHERE attname = 'x';"],
-    ["SELECT dblink_exec('dbname=app', 'DROP TABLE users');"],
-    ["SELECT dblink('dbname=app', 'SELECT 1');"],
-    ["SELECT setval('s', 1);"], ['SELECT pg_terminate_backend(1);'], ['SELECT * FROM pg_class;'],
-    ['-- CREATE TABLE t (id int);', 'SELECT 1;'], ["INSERT INTO users (name) VALUES ('Grant');"],
-    ['EXECUTE p;'], ['SELECT 1; CALL p();'],
-  ];
-  for (const add of fixtures) assert.equal(tier(file('tests/fixtures/seed.sql', { created: true, add })), 2, add.join(' '));
+  assert.equal(tier(file('fixtures/seed.sql', { created: true, add: ['SELECT 1;'] })), 2);
+  assert.equal(tier(file('tests/seed.sql', { created: true, add: ['SELECT 1;'] })), 2);
 });
 
 test('adding tests stays tier 1', () => {
