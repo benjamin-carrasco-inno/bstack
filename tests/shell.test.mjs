@@ -1,12 +1,53 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { splitSegments, tokenize, commandsIn, parseGit } from '../plugins/bstack/scripts/lib/shell.mjs';
+import { splitSegments, tokenize, commandsIn, parseGit, redirectTargets, endsInRedirect, withoutHeredocBodies } from '../plugins/bstack/scripts/lib/shell.mjs';
 
 test('segments split on operators outside quotes', () => {
   assert.deepEqual(splitSegments('a && b || c; d | e'), ['a', 'b', 'c', 'd', 'e']);
   assert.deepEqual(splitSegments('echo "a; b" && c'), ['echo "a; b"', 'c']);
   assert.deepEqual(splitSegments('cmd 2>&1 | tee x'), ['cmd 2>&1', 'tee x']);
   assert.deepEqual(splitSegments('& git status'), ['git status']);
+});
+
+test('a | after > always splits, even when the > is escaped', () => {
+  assert.deepEqual(splitSegments('echo x >| a.txt | tee b'), ['echo x >', 'a.txt', 'tee b']);
+  assert.deepEqual(splitSegments('echo \\>|git push'), ['echo \\>', 'git push']);
+  assert.deepEqual(redirectTargets('echo x >| a.txt'), [{ text: 'a.txt', expression: false }]);
+});
+
+test('a dangling redirect is one whose > ends the segment unescaped', () => {
+  assert.equal(endsInRedirect('echo x >'), true);
+  assert.equal(endsInRedirect('echo x 2>'), true);
+  assert.equal(endsInRedirect('echo x >>'), true);
+  assert.equal(endsInRedirect('echo \\>'), false);
+  assert.equal(endsInRedirect('echo `>', 'powershell'), false);
+  assert.equal(endsInRedirect('echo ^>', 'cmd'), false);
+  assert.equal(endsInRedirect('echo ^>'), true);
+  assert.equal(endsInRedirect('echo ">"'), false);
+  assert.equal(endsInRedirect('echo x > a.txt'), false);
+  assert.equal(endsInRedirect('echo x 2>&'), false);
+});
+
+test('heredoc bodies are blanked, everything else is kept', () => {
+  assert.equal(withoutHeredocBodies("cat <<'EOF' > a\nx => y\nEOF\nnode a"), "cat <<'EOF' > a\n\n\nnode a");
+  assert.equal(withoutHeredocBodies('cat <<-E\n\ta > b\n\tE\necho'), 'cat <<-E\n\n\necho');
+  assert.equal(withoutHeredocBodies('cat <<< "a > b"\necho x > y'), 'cat <<< "a > b"\necho x > y');
+  assert.equal(withoutHeredocBodies('echo "<<EOF"\na > b'), 'echo "<<EOF"\na > b');
+});
+
+test('a << in arithmetic, in a multi-line quote or without its terminator line opens no heredoc', () => {
+  for (const line of [
+    'echo $((1<<2))\nrm -rf x\n2',
+    '(( x <<= 2 ))\nrm -rf x\n2',
+    'echo "\n1 <<X\n"\necho pwned > a\nX',
+    "echo '\n<<X\n'\necho pwned > a\nX",
+    'cat <<NOPE\necho pwned > a',
+    'cat <<A <<B\nx\nA\necho pwned > a',
+  ]) {
+    assert.equal(withoutHeredocBodies(line), line, line);
+  }
+  assert.equal(withoutHeredocBodies('echo $((1<<2)); cat <<E\na > b\nE\necho'), 'echo $((1<<2)); cat <<E\n\n\necho');
+  assert.equal(withoutHeredocBodies('echo "\n" && cat <<E\na > b\nE\necho'), 'echo "\n" && cat <<E\n\n\necho');
 });
 
 test('tokens drop quotes', () => {
@@ -78,6 +119,21 @@ test('quotes, substitutions and ref syntax keep their braces and parentheses', (
 });
 
 test('git global options are skipped', () => {
-  assert.deepEqual(parseGit(['-C', 'x', '-c', 'a=b', 'push', 'origin', 'main']), { dir: 'x', gitDir: null, workTree: null, sub: 'push', rest: ['origin', 'main'] });
-  assert.deepEqual(parseGit(['--git-dir=g', '--work-tree', 'w', 'commit']), { dir: null, gitDir: 'g', workTree: 'w', sub: 'commit', rest: [] });
+  assert.deepEqual(parseGit(['-C', 'x', '-c', 'a=b', 'push', 'origin', 'main']), { dir: 'x', gitDir: null, workTree: null, dirKnown: true, dirExpression: false, aliases: false, sub: 'push', rest: ['origin', 'main'] });
+  assert.deepEqual(parseGit(['-C', 'x', '-C', '..', '-C', '/abs', '-C', 'y', '-c', 'alias.z=reset', 'z']), { dir: '/abs/y', gitDir: null, workTree: null, dirKnown: true, dirExpression: false, aliases: true, sub: 'z', rest: [] });
+  assert.deepEqual(parseGit(['--git-dir=g', '--work-tree', 'w', 'commit']), { dir: null, gitDir: 'g', workTree: 'w', dirKnown: true, dirExpression: false, aliases: false, sub: 'commit', rest: [] });
+  assert.equal(parseGit(['-C', '', '-C', 'sub', 'push']).dir, 'sub');
+  assert.equal(parseGit(['-C', '$X', '-C', 'sub', 'push']).dirKnown, false);
+  assert.equal(parseGit(['-C', '$X', '-C', '/abs', 'push']).dirKnown, true);
+});
+
+test('only an unquoted ( makes a -C path an expression', () => {
+  const dirOf = line => { const [c] = commandsIn(line); return parseGit(c.args, c.expressions); };
+  for (const line of ['git -C "C:/dev/repo (1)" push', "git -C 'C:/Program Files (x86)/r' push", 'git -C "/a (1)" -C sub push']) {
+    assert.equal(dirOf(line).dirKnown, true, line);
+  }
+  for (const line of ['git -C @(Get-Location) push', 'git -C C:/x(1) push', 'git -C x(1) -C sub push', 'git -C "$(pwd)" push']) {
+    assert.equal(dirOf(line).dirKnown, false, line);
+  }
+  assert.equal(dirOf('git -C x(1) -C /abs push').dirKnown, true);
 });

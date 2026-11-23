@@ -39,8 +39,13 @@ function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, fil
 
 const shell = (command, extra = {}) => ({ tool_name: 'Bash', tool_input: { command }, cwd: '/repo', ...extra });
 const ps = command => ({ tool_name: 'PowerShell', tool_input: { command }, cwd: 'C:/repo' });
-const blocked = (input, d = deps()) => assert.ok(decide(input, d), `expected block: ${JSON.stringify(input.tool_input)}`);
-const allowed = (input, d = deps()) => assert.equal(decide(input, d), null);
+const WINDOWS_CWD = /^[a-z]:[\\/]/i;
+const onCwdHost = (input, d) => (WINDOWS_CWD.test(input.cwd ?? '') && !d.host ? { ...d, host: GIT_BASH_HOST } : d);
+const blocked = (input, d = deps()) => assert.ok(decide(input, onCwdHost(input, d)), `expected block: ${JSON.stringify(input.tool_input)}`);
+const allowed = (input, d = deps()) => assert.equal(decide(input, onCwdHost(input, d)), null);
+const GIT_BASH_HOST = { platform: 'win32', env: {}, tmpdir: () => 'C:\\Temp' };
+const onHost = (host, d = deps()) => ({ ...d, host });
+const OVER_BASELINE = /app\.py: baseline 1, this commit 2/;
 
 test('ordinary commands pass', () => {
   allowed(shell('git status && npm test'));
@@ -201,6 +206,651 @@ test('reviewer and adversary agents do not author', () => {
   allowed(as('gh pr checkout 5 --detach', 'bstack:reviewer'));
   allowed(as('gh pr diff 5', 'bstack:reviewer'));
   allowed(as('git commit -m "fix: x"', 'bstack:worker'));
+});
+
+test('no-authoring agents leave checkouts outside their own cwd untouched', () => {
+  const tmp = path.join(os.tmpdir(), 'repro.txt');
+  for (const agent of ['bstack:comment-critic', 'bstack:reviewer', 'bstack:adversary']) {
+    const as = command => ({ ...shell(command), agent_type: agent });
+    const psAs = command => ({ ...ps(command), agent_type: agent });
+    blocked(as('git -C /checkout stash'));
+    blocked(as('git -C /checkout stash pop'));
+    blocked(as('git stash push -m wip'));
+    blocked(as('git -C /checkout checkout -- src/a.mjs'));
+    blocked(as('git -C /checkout checkout HEAD~1 -- src/a.mjs'));
+    blocked(as('git -C /checkout restore src/a.mjs'));
+    blocked(as('git -C /checkout reset --hard'));
+    blocked(as('git -C /checkout reset HEAD src/a.mjs'));
+    blocked(as('git -C /checkout apply fix.patch'));
+    blocked(as('git -C /checkout clean -fd'));
+    blocked(as('git -C /checkout rm src/a.mjs'));
+    blocked(as('git -C /checkout mv src/a.mjs src/b.mjs'));
+    blocked(as('cd /checkout && git restore src/a.mjs'));
+    blocked(as('git --work-tree /checkout checkout -- src/a.mjs'));
+    blocked(as('sed -i s/a/b/ /checkout/src/a.mjs'));
+    blocked(as('cd /checkout && sed -i.bak -e s/a/b/ src/a.mjs'));
+    blocked(as('echo x > /checkout/src/a.mjs'));
+    blocked(as('echo x >>/checkout/src/a.mjs'));
+    blocked(as('echo x | tee /checkout/src/a.mjs'));
+    blocked(as('rm -rf /checkout/src'));
+    blocked(as('mv /checkout/src/a.mjs ./a.mjs'));
+    blocked(as('cp ./a.mjs /checkout/src/a.mjs'));
+    blocked(as('echo x > "$OUT"'));
+    blocked(psAs('Set-Content /checkout/src/a.mjs x'));
+    blocked(psAs('Set-Content -Value x -Path C:/checkout/src/a.mjs'));
+    blocked(psAs('Add-Content -Path:C:/checkout/src/a.mjs -Value x'));
+    blocked(psAs('"x" | Out-File -Encoding utf8 C:/checkout/src/a.mjs'));
+    blocked(psAs('Remove-Item C:/checkout/src -Recurse -Force'));
+    blocked(psAs('Move-Item -Path C:/checkout/src/a.mjs -Destination ./a.mjs'));
+    blocked(psAs('Copy-Item ./a.mjs -Destination C:/checkout/src/a.mjs'));
+
+    allowed(as('git stash list'));
+    allowed(as('git -C /checkout stash show -p'));
+    allowed(as('git -C /checkout diff'));
+    allowed(as('git -C /checkout status --short'));
+    allowed(as('git -C /checkout apply --check fix.patch'));
+    allowed(as('git -C /checkout clean -n'));
+    allowed(as('git checkout origin/main -- src/a.mjs'));
+    allowed(as('git restore src/a.mjs'));
+    allowed(as('git -C sub reset --hard'));
+    allowed(as('node --test'));
+    allowed(as('node --test 2>&1'));
+    allowed(as('npm test > /dev/null 2>&1'));
+    allowed(as('echo x > $null'));
+    allowed(as('echo x > out.txt'));
+    allowed(as('echo x > /tmp/repro.txt'));
+    allowed(as('sed -i s/a/b/ src/a.mjs'));
+    allowed(as('grep ">" /checkout/src/a.mjs'));
+    allowed(as('cp /checkout/src/a.mjs ./a.mjs'));
+    allowed(psAs('node --test 2>$null'));
+    allowed(psAs('Set-Content src/a.mjs x'));
+    allowed({ ...psAs(`Set-Content "${tmp}" x`), cwd: path.resolve('/repo') }, onHost({ platform: process.platform, env: {}, tmpdir: () => os.tmpdir() }));
+    allowed(psAs('Set-Content $env:TEMP/repro.txt x'), onHost(GIT_BASH_HOST));
+    allowed(psAs('Copy-Item -Path C:/checkout/src/a.mjs -Destination ./a.mjs'));
+    allowed(psAs("Set-Content out.txt -Value @'\nx > C:/checkout/a.mjs\n'@"));
+  }
+  allowed(shell('git -C /checkout stash'));
+  allowed(shell('git -C /checkout checkout -- src/a.mjs'));
+  allowed(shell('sed -i s/a/b/ /checkout/src/a.mjs'));
+  allowed(ps('Set-Content C:/checkout/src/a.mjs x'));
+});
+
+test('no-authoring agents: clobber redirects, dd, truncate, ln and .NET file writes stay inside their cwd', () => {
+  for (const agent of ['bstack:comment-critic', 'bstack:reviewer', 'bstack:adversary']) {
+    const as = command => ({ ...shell(command), agent_type: agent });
+    const psAs = command => ({ ...ps(command), agent_type: agent });
+    blocked(as('echo x >| /checkout/a.mjs'));
+    blocked(as('dd if=/dev/zero of=/checkout/a.mjs bs=1 count=1'));
+    blocked(as('truncate -s 0 /checkout/a.mjs'));
+    blocked(as('truncate -c /checkout/a.mjs -s 0'));
+    blocked(as('ln -sf ./evil.mjs /checkout/src/a.mjs'));
+    blocked(as('ln -s ./evil.mjs -t /checkout/src'));
+    blocked(as('ln -s ./evil.mjs --target-directory=/checkout/src'));
+    blocked(psAs("[IO.File]::WriteAllText('C:/checkout/a.mjs', 'x')"));
+    blocked(psAs('[System.IO.File]::AppendAllText("C:/checkout/a.mjs", "x")'));
+    blocked(psAs('$null = [System.IO.File]::WriteAllBytes($p, $b)'));
+
+    allowed(as('echo x >| out.txt'));
+    allowed(as('dd if=/checkout/a.mjs of=./copy.mjs'));
+    allowed(as('truncate -s 0 out.txt'));
+    allowed(as('ln -s /checkout/src/a.mjs ./a.mjs'));
+    allowed(as('ln -s /checkout/src/a.mjs'));
+    allowed(psAs("[IO.File]::WriteAllText('C:/repo/a.mjs', 'x')"));
+    allowed(psAs("[IO.File]::ReadAllText('C:/checkout/a.mjs')"));
+  }
+});
+
+test('no-authoring agents do not switch, add, move or remove worktrees outside their cwd', () => {
+  for (const agent of ['bstack:comment-critic', 'bstack:reviewer', 'bstack:adversary']) {
+    const as = command => ({ ...shell(command), agent_type: agent });
+    blocked(as('git -C /checkout switch main'));
+    blocked(as('git -C /checkout checkout main'));
+    blocked(as('git -C /checkout checkout -b x'));
+    blocked(as('cd /checkout && git switch -c x'));
+    blocked(as('git worktree remove /checkout'));
+    blocked(as('git worktree remove --force /checkout'));
+    blocked(as('git worktree move /checkout ./moved'));
+    blocked(as('git worktree add /checkout/wt main'));
+    blocked(as('git -C /checkout worktree prune'));
+    blocked(as('git -C /checkout worktree add /tmp/wt'));
+
+    allowed(as('git switch main'));
+    allowed(as('git checkout -b repro'));
+    allowed(as('git checkout --detach origin/main'));
+    allowed(as('git worktree list'));
+    allowed(as('git -C /checkout worktree list'));
+    allowed(as('git worktree add /tmp/wt main'));
+    allowed(as('git worktree add -b repro ./wt main'));
+    allowed(as('git worktree remove /tmp/wt'));
+  }
+  allowed(shell('git -C /checkout switch main'));
+  allowed(shell('git worktree remove /checkout'));
+});
+
+const NO_AUTHORING = ['bstack:comment-critic', 'bstack:reviewer', 'bstack:adversary'];
+const asAgent = agent => command => ({ ...shell(command), agent_type: agent });
+const psAsAgent = agent => command => ({ ...ps(command), agent_type: agent });
+
+test('no-authoring agents: GIT_DIR and GIT_WORK_TREE count as a checkout outside their cwd', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(as('GIT_DIR=/checkout/.git git reset --hard'));
+    blocked(as('GIT_WORK_TREE=/checkout git checkout -- a.mjs'));
+    blocked(as('export GIT_WORK_TREE=/checkout; git clean -fd'));
+    blocked(psAs("$env:GIT_DIR='C:/checkout/.git'; git reset --hard"));
+    blocked(psAs("$env:GIT_WORK_TREE = 'C:/checkout'; git restore a.mjs"));
+
+    allowed(as('GIT_DIR=/checkout/.git git log --oneline'));
+    allowed(as('GIT_PAGER=cat git reset --hard'));
+  }
+  allowed(shell('GIT_DIR=/checkout/.git git reset --hard'));
+});
+
+test('no-authoring agents: only a real GIT_DIR or GIT_WORK_TREE assignment redirects git, and only where it applies', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(as('export GIT_DIR=/checkout/.git; git log; git checkout HEAD~1'));
+    blocked(as('GIT_WORK_TREE=/checkout; git restore a.mjs'));
+    blocked(as('cmd /c "set GIT_DIR=C:/checkout/.git && git reset --hard"'));
+    blocked(psAs("$env:GIT_DIR = 'C:/checkout/.git'; git status; git checkout HEAD~1"));
+
+    allowed(as('git grep -n GIT_DIR; git checkout HEAD~1 -- tests/guard.test.mjs'));
+    allowed(as('GIT_DIR=x git log; git checkout -b tmp'));
+    allowed(as('echo GIT_WORK_TREE && git restore a.mjs'));
+    allowed(as("bash -c 'export GIT_DIR=/checkout/.git; git log'; git reset --hard"));
+    allowed(psAs('Select-String GIT_DIR README.md; git checkout -b tmp'));
+  }
+});
+
+test('no-authoring agents: a cd into the temp dir by /tmp or a temp variable stays inside the temp dir', () => {
+  const host = onHost(GIT_BASH_HOST);
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    allowed(as('cd /tmp/x && git checkout HEAD~1'), host);
+    allowed(as('cd /tmp && echo x > f.txt'), host);
+    allowed(as('cd /tmp/x && node x.mjs > out.txt'), host);
+    allowed(as("bash -c 'cd /tmp && git clone https://example.invalid/r && cd r && git checkout x'"), host);
+    allowed(as('cd $TEMP && echo x > f.txt'), host);
+    allowed(as('cd "${TMP}/x" && git checkout HEAD~1'), host);
+    allowed(psAs('cd $env:TEMP; echo x > f.txt'), host);
+    allowed(psAs('Set-Location $env:TMP/x; git checkout HEAD~1'), host);
+
+    blocked(as('cd /tmpx && echo x > f.txt'), host);
+    blocked(as('cd /tmp/../checkout && echo x > f.txt'), host);
+    blocked(as('cd $TEMP/$X && echo x > f.txt'), host);
+  }
+});
+
+test('no-authoring agents under Git Bash: an unset $TMPDIR is empty, not the temp dir', () => {
+  const withTmpdir = onHost({ ...GIT_BASH_HOST, env: { TMPDIR: 'C:\\Temp' } });
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('cd $TMPDIR/c/repo && git -C . reset --hard'), onHost(GIT_BASH_HOST));
+    blocked(as('cd $TMPDIR && rm -rf repo/plugins'), onHost(GIT_BASH_HOST));
+    blocked(as('cd $TMPDIR && echo x > f.txt'), onHost(GIT_BASH_HOST));
+    allowed(as('cd $TMPDIR && echo x > f.txt'), withTmpdir);
+    allowed(as('cd "${TMPDIR}/x" && git checkout HEAD~1'), withTmpdir);
+  }
+});
+
+test('no-authoring agents on a POSIX host: the temp dir is the environment value, and an unset variable is unresolved', () => {
+  const mac = onHost({ platform: 'darwin', env: { TMPDIR: '/var/folders/xy/T' }, tmpdir: () => '/var/folders/xy/T' });
+  const bare = onHost({ platform: 'linux', env: {}, tmpdir: () => '/tmp' });
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    allowed(as('cd $TMPDIR && echo x > f.txt'), mac);
+    allowed(as('cd "${TMPDIR}/x" && git checkout HEAD~1'), mac);
+    allowed(as('cd /tmp/x && git checkout HEAD~1'), bare);
+    blocked(as('cd /tmp/x && git checkout HEAD~1'), mac);
+    blocked(as('cd $TMPDIR && echo x > f.txt'), bare);
+  }
+});
+
+test('no-authoring agents: repeated -C options combine like git does', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('git -C /checkout -C . reset --hard'));
+    blocked(as('git -C / -C checkout reset --hard'));
+    blocked(as('git -C sub -C ../.. restore a.mjs'));
+
+    allowed(as('git -C /repo -C sub reset --hard'));
+    allowed(as('git -C /checkout -C /repo/sub reset --hard'));
+  }
+});
+
+test('no-authoring agents: git aliases and unknown subcommands on a checkout outside their cwd', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('git -C /checkout -c alias.wipe="reset --hard" wipe'));
+    blocked(as('git -c alias.wipe="!git -C /checkout reset --hard" wipe'));
+    blocked(as('git --config-env=alias.wipe=WIPE wipe'));
+    blocked(as('git -C /checkout wipe'));
+    blocked(as('cd /checkout && git undo'));
+
+    allowed(as('git wipe'));
+    allowed(as('git --version'));
+    allowed(as('git -c core.pager=cat -C /checkout log --oneline'));
+    for (const read of ['log --oneline', 'show HEAD', 'diff', 'status --short', 'rev-parse HEAD', 'blame a.mjs', 'ls-files', 'branch --show-current', 'grep x']) {
+      allowed(as(`git -C /checkout ${read}`));
+      allowed(as(`git ${read}`));
+    }
+  }
+  allowed(shell('git -C /checkout wipe'));
+});
+
+test('no-authoring agents: a cd they cannot resolve makes the cwd unknown', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(psAs('cd $env:USERPROFILE; git reset --hard'));
+    blocked(as('cd; git reset --hard'));
+    blocked(as('cd ~ && rm -rf src'));
+    blocked(psAs('Set-Location $HOME; Set-Content a.txt x'));
+    blocked(as('pushd $HOME && echo x > a.txt'));
+
+    allowed(psAs('cd $env:USERPROFILE; git status'));
+    allowed(as('cd ~ && cd /repo && rm -rf src'));
+    allowed(as('cd; echo x > /tmp/a.txt'));
+  }
+  allowed(shell('cd; git reset --hard'));
+  allowed(ps('cd $env:USERPROFILE; Set-Content a.txt x'));
+});
+
+test('no-authoring agents: cmd %VAR% targets cannot be resolved', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('cmd /c "echo x > %USERPROFILE%\\a.txt"'));
+    blocked(as('del %USERPROFILE%\\a.txt'));
+    blocked(as('cd %USERPROFILE% && git reset --hard'));
+
+    allowed(as('echo 100% > out.txt'));
+  }
+});
+
+test('no-authoring agents: abbreviated PowerShell parameter names', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(psAs('Set-Content -Lit C:/checkout/a.mjs x'));
+    blocked(psAs('Set-Content -L C:/checkout/a.mjs x'));
+    blocked(psAs('Set-Content -Pa C:/checkout/a.mjs -Va x'));
+    blocked(psAs('Set-Content -Fo C:/checkout/a.mjs x'));
+    blocked(psAs('Out-File -File C:/checkout/a.mjs -InputObject x'));
+    blocked(psAs('Copy-Item ./a.mjs -Dest C:/checkout/a.mjs'));
+    blocked(psAs('Remove-Item -Lit C:/checkout/a.mjs'));
+    blocked(as('cp -d ./a.mjs /checkout/a.mjs'));
+    blocked(as('cp -l ./a.mjs /checkout/a.mjs'));
+
+    allowed(psAs('Set-Content -Lit ./a.mjs x'));
+    allowed(psAs('Copy-Item -Pa C:/checkout/a.mjs -Dest ./a.mjs'));
+    allowed(psAs('Set-Content -Path out.txt -Value $content'));
+    allowed(psAs('Set-Content out.txt $content'));
+  }
+});
+
+test('no-authoring agents: cp -t and --target-directory name the destination', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('cp -t /checkout/src ./a.mjs'));
+    blocked(as('cp --target-directory=/checkout/src ./a.mjs'));
+    blocked(as('cp -t /checkout/src -- ./a.mjs'));
+
+    allowed(as('cp -t ./copy /checkout/src/a.mjs'));
+  }
+});
+
+test('no-authoring agents: escaped .. in a target cannot hide a path outside their cwd', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(psAs('Set-Content .`./checkout/a.mjs x'));
+    blocked(psAs('Remove-Item C:/repo/.`./checkout -Recurse'));
+    blocked(as('rm -rf .\\./checkout'));
+    blocked(as('echo x > .\\./checkout/a.mjs'));
+    blocked(as('git -C .\\. reset --hard'));
+    blocked(psAs("Set-Content @('C:/checkout/a.mjs') x"));
+
+    allowed(as('rm -rf ./build'));
+    allowed(psAs('Set-Content src\\a.mjs x'));
+  }
+});
+
+test('no-authoring agents: more tree-rewriting git and file writers', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(as('git -C /checkout pull'));
+    blocked(as('git -C /checkout read-tree HEAD'));
+    blocked(as('git -C /checkout checkout-index -a -f'));
+    blocked(as('git -C /checkout update-index --assume-unchanged a.mjs'));
+    blocked(psAs('Rename-Item C:/checkout/a.mjs b.mjs'));
+    blocked(psAs('ren C:/checkout/a.mjs b.mjs'));
+    blocked(psAs('Clear-Content C:/checkout/a.mjs'));
+    blocked(as('mkdir -p /checkout/new'));
+    blocked(psAs('md C:/checkout/new'));
+    blocked(as('xcopy ./a.mjs C:\\checkout\\ /Y'), onHost(GIT_BASH_HOST));
+    blocked(as('robocopy ./src C:/checkout/src /MIR'), onHost(GIT_BASH_HOST));
+    blocked(as('curl -o /checkout/a.mjs https://example.com/a'));
+    blocked(as('curl -sSLo /checkout/a.mjs https://example.com/a'));
+    blocked(as('curl --output=/checkout/a.mjs https://example.com/a'));
+    blocked(as('patch -d /checkout -p1 -i fix.patch'));
+    blocked(as('patch /checkout/a.mjs fix.patch'));
+    blocked(as('cd /checkout && patch -p1 < fix.patch'));
+
+    allowed(as('git pull'));
+    allowed(as('git update-index --refresh'));
+    allowed(psAs('Rename-Item ./a.mjs b.mjs'));
+    allowed(as('mkdir -p ./out'));
+    allowed(as('xcopy C:\\checkout\\a.mjs ./copy /Y'), onHost(GIT_BASH_HOST));
+    allowed(as('curl -o ./a.html https://example.com/a'));
+    allowed(as('curl https://example.com/a'));
+    allowed(as('patch -p1 -i fix.patch'));
+  }
+  allowed(shell('git -C /checkout pull'));
+  allowed(ps('Clear-Content C:/checkout/a.mjs'));
+});
+
+test('an escaped > before | still pipes into the next command', () => {
+  for (const agent of ['', ...NO_AUTHORING]) {
+    const as = command => ({ ...shell(command), agent_type: agent });
+    const psAs = command => ({ ...ps(command), agent_type: agent });
+    blocked(as('echo \\>|git push origin main'));
+    blocked(psAs('echo `>|git push origin main'));
+    blocked(as('cmd /c "echo ^>|git push origin main"'));
+    blocked(as('echo \\>|gh pr merge 5 --squash'));
+  }
+});
+
+test('no-authoring agents: a clobber redirect >| names the next word as its target', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('echo x >| /checkout/a.mjs'));
+    blocked(as('echo x >|/checkout/a.mjs'));
+    blocked(as('echo x 2>| /checkout/err.txt'));
+    blocked(as('echo x >| /checkout/a.mjs; echo done'));
+    blocked(as('echo x >|git push origin main'));
+
+    allowed(as('echo x >| out.txt'));
+    allowed(as('echo x 2>| /tmp/err.txt'));
+    allowed(as('echo \\>|cat'));
+  }
+});
+
+test('no-authoring agents: heredoc bodies are text, not redirects', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    allowed(as("cat > /tmp/repro.mjs <<'EOF'\nconst out = cases.map(c => decide(c));\nEOF\nnode /tmp/repro.mjs"));
+    allowed(as("cat <<'EOF' | node --input-type=module\nconsole.log([1].map(x => String(x)));\nEOF"));
+    allowed(as('cat > /tmp/f.mjs <<EOF\nconst f = x => `${x}`;\nEOF'));
+    allowed(as("cat <<-'A' > /tmp/a.txt\n\tx => y\n\tA\ncat <<B\nz > w(1)\nB"));
+
+    blocked(as("cat > /checkout/a.mjs <<'EOF'\nx\nEOF"));
+    blocked(as("cat <<'EOF'\nx => y\nEOF\necho x > /checkout/a.mjs"));
+    blocked(as("bash <<'EOF'\necho x > /checkout/a.mjs\nEOF"));
+    blocked(as("cat <<'EOF' | sh\necho x > /checkout/a.mjs\nEOF"));
+  }
+});
+
+test('no-authoring agents: a << that opens no heredoc hides none of the lines after it', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('echo $((1<<2))\ngit -C /checkout reset --hard'));
+    blocked(as('echo $((1<<2))\nrm -rf /checkout/plugins'));
+    blocked(as('echo "\n1 <<X\n"\necho pwned > /checkout/README.md'));
+    blocked(as('cat <<NOPE\necho pwned > /checkout/README.md'));
+  }
+});
+
+test('no-authoring agents: git lines in a heredoc body are text, unless a shell runs them', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    allowed(as("cat > /tmp/fx.sh <<'EOF'\ncd \"$1\"\ngit checkout -q -b feat\nEOF"));
+    allowed(as("cat > /tmp/notes.txt <<'EOF'\ngit stash\nEOF"));
+    allowed(as("cat > /tmp/fx.sh <<'EOF'\ngit -C \"$1\" switch -c feat\nEOF"));
+    allowed(as("cat > /tmp/fx.sh <<'EOF'\ngit -C /some/other/repo reset --hard\nEOF"));
+    allowed(as("cat > /tmp/fx.sh <<'EOF'\ngit -c alias.x=status x\nEOF"));
+
+    blocked(as("bash <<'EOF'\ngit -C /other reset --hard\nEOF"));
+    blocked(as("cat <<'EOF' | sh\ngit stash\nEOF"));
+  }
+});
+
+test('no-authoring agents: Git Bash drive paths /c/... are the Windows drive', () => {
+  for (const agent of NO_AUTHORING) {
+    const at = command => ({ tool_name: 'Bash', tool_input: { command }, cwd: 'C:\\work\\wt', agent_type: agent });
+    allowed(at('git -C /c/work/wt checkout --detach HEAD~1'));
+    allowed(at('git diff > /c/work/wt/x.diff'));
+    allowed(at('cd /c/work/wt && git reset --hard'));
+
+    blocked(at('git -C /c/work/other checkout --detach HEAD~1'));
+    blocked(at('git diff > /d/work/wt/x.diff'));
+    blocked(at('cd /c/work && git reset --hard'));
+
+    allowed(at('git diff > /c/Temp/x.diff'));
+  }
+});
+
+const psAt = (command, extra = {}) => ({ tool_name: 'PowerShell', tool_input: { command }, cwd: 'C:\\repo', ...extra });
+const bashAt = (command, extra = {}) => ({ tool_name: 'Bash', tool_input: { command }, cwd: 'C:\\repo', ...extra });
+const BASH_TEMP_RAT = path.join(os.tmpdir(), 'rat');
+
+function onMainAt(dir) {
+  return { ...deps(), git: (cwd, args) => (args.join(' ') === 'rev-parse --abbrev-ref HEAD' ? (cwd === dir ? 'main' : 'feat/x') : '') };
+}
+
+function overBaselineAt(dir) {
+  const blob = 'c'.repeat(40);
+  const answers = {
+    'rev-parse --show-toplevel --git-path index': `${dir}\n.git/index\n`,
+    'cat-file -e :.github/comment-baseline.json': '',
+    'show :.github/comment-baseline.json': '{"files":{"app.py":1}}',
+    'diff --cached --raw -z -M --no-color': `:000000 100644 ${'0'.repeat(40)} ${blob} A\0app.py\0`,
+    'cat-file --batch': Buffer.from(`${blob} blob ${TWO.length}\n${TWO}\n`),
+  };
+  return {
+    ...deps(),
+    exists: () => false,
+    git: (cwd, args) => {
+      const answer = answers[args.join(' ')];
+      if (cwd !== dir || answer === undefined) throw new Error(`not a git repository: ${cwd}`);
+      return answer;
+    },
+  };
+}
+
+function pushedAt(dir) {
+  return {
+    ...deps(),
+    git: (cwd, args) => {
+      if (cwd !== dir) throw new Error(`not a git repository: ${cwd}`);
+      return args.includes('@{u}') ? 'origin/feat/x' : 'feat/x';
+    },
+  };
+}
+
+const LINUX_HOST = { platform: 'linux', env: {}, tmpdir: () => '/tmp' };
+const GIT_BASH_DRIVE_PATH = /^\/([a-z])(\/.*)?$/i;
+
+function resolvedOnMain(host, cwd, p, tool) {
+  if (host.platform !== 'win32') return path.posix.resolve(cwd, p);
+  const drive = tool === 'Bash' && GIT_BASH_DRIVE_PATH.exec(p);
+  return drive ? path.win32.resolve(`${drive[1].toUpperCase()}:/${drive[2] ?? ''}`) : path.win32.resolve(cwd, p);
+}
+
+const HOST_PATH_CASES = [
+  { host: LINUX_HOST, cwd: '/home/u/repo', tools: ['Bash', 'PowerShell'], paths: ['//home/u/wt', '/home/u/wt', '../wt'] },
+  { host: GIT_BASH_HOST, cwd: 'C:\\repo', tools: ['Bash'], paths: ['C:\\wt', '\\\\srv\\share\\wt', '../wt', '/c/wt'] },
+  { host: GIT_BASH_HOST, cwd: 'C:\\repo', tools: ['PowerShell'], paths: ['C:\\wt', '\\\\srv\\share\\wt', '../wt', '/wt'] },
+];
+const FULLY_ABSOLUTE = /^([a-z]:[\\/]|\\\\)|^\/(?!\/)/i;
+
+for (const { host, cwd, tools, paths } of HOST_PATH_CASES) {
+  for (const tool of tools) {
+    for (const p of paths) {
+      const label = `${host.platform} ${tool} ${p}`;
+      test(`main session rules resolve ${label} the way the host resolves it`, () => {
+        const at = command => ({ tool_name: tool, tool_input: { command }, cwd });
+        const on = d => onHost(host, d);
+        const dir = resolvedOnMain(host, cwd, p, tool);
+        const file = resolvedOnMain(host, cwd, `${p}/v.md`, tool);
+        assert.ok(decide(at(`git -C '${p}' push`), on(onMainAt(dir))), `push ${label}`);
+        assert.equal(decide(at(`git -C '${p}' push`), on(onMainAt(`${dir}-other`))), null, `push elsewhere ${label}`);
+        assert.ok(decide(at(`git -C '${p}' rebase origin/main`), on(pushedAt(dir))), `rebase ${label}`);
+        const verdictAt = { ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : null) };
+        assert.ok(decide(at(`gh pr comment 5 --body-file '${p}/v.md'`), on(verdictAt)), `body-file ${label}`);
+        assert.match(decide(at(`cd '${p}'; git commit -m x`), on(overBaselineAt(dir))) ?? '', OVER_BASELINE, `cd ${label}`);
+        const afterUnknown = decide(at(`cd $X; cd '${p}'; git commit -m x`), on(overBaselineAt(dir))) ?? '';
+        const absolute = host.platform === 'win32' ? FULLY_ABSOLUTE.test(p) && (tool === 'Bash' || !/^\/(?!\/)/.test(p)) : p.startsWith('/');
+        assert.match(afterUnknown, absolute ? OVER_BASELINE : /cannot tell which repository/, `cd after unknown ${label}`);
+        assert.match(decide(at(`git -C '${p}' commit -m x`), on(overBaselineAt(dir))) ?? '', OVER_BASELINE, `-C ${label}`);
+      });
+    }
+  }
+}
+
+test('PowerShell reads /x as the root of the current drive, not as a Git Bash path', () => {
+  blocked(psAt('git -C /c/proj push'), onMainAt('C:\\c\\proj'));
+  allowed(psAt('git -C /c/proj push'), onMainAt('C:\\proj'));
+  blocked(psAt('cd /tmp/rat; git commit -m x'), overBaselineAt('C:\\tmp\\rat'));
+  allowed(psAt('cd /tmp/rat; git commit -m x'), overBaselineAt(BASH_TEMP_RAT));
+  const verdictAt = file => ({ ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : null) });
+  blocked(psAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\c\\x\\v.md'));
+  allowed(psAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\x\\v.md'));
+  blocked(psAt('cmd /c git -C /c/proj push'), onMainAt('C:\\c\\proj'));
+});
+
+test('Bash keeps the Git Bash meaning of /c/... and /tmp; a cd to $TEMP or $TMP is unknown', () => {
+  blocked(bashAt('git -C /c/proj push'), onMainAt('C:\\proj'));
+  allowed(bashAt('git -C /c/proj push'), onMainAt('C:\\c\\proj'));
+  assert.match(decide(bashAt('cd /tmp/rat; git commit -m x'), onHost(GIT_BASH_HOST, overBaselineAt('C:\\Temp\\rat'))) ?? '', OVER_BASELINE);
+  for (const command of ['cd $TMP/rat; git commit -m x', 'pushd ${TEMP}/rat; git commit -m x']) {
+    assert.match(decide(bashAt(command), onHost(GIT_BASH_HOST, overBaselineAt('C:\\Temp\\rat'))) ?? '', /cannot tell which repository/, command);
+  }
+  const verdictAt = file => ({ ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : null) });
+  blocked(bashAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\x\\v.md'));
+  blocked(psAt("bash -c 'git -C /c/proj push'"), onMainAt('C:\\proj'));
+});
+
+test('the main session reads a cd to $TMPDIR as unknown, set or not', () => {
+  assert.match(decide(bashAt('cd $TMPDIR/c/rat; git commit -m x'), onHost(GIT_BASH_HOST, overBaselineAt('C:\\rat'))) ?? '', /cannot tell which repository/);
+  const withTmpdir = { ...GIT_BASH_HOST, env: { TMPDIR: 'C:\\Temp' } };
+  assert.match(decide(bashAt('cd $TMPDIR/rat; git commit -m x'), onHost(withTmpdir, overBaselineAt('C:\\Temp\\rat'))) ?? '', /cannot tell which repository/);
+});
+
+test('on a POSIX host /tmp is /tmp, and the main session reads a temp variable as unresolved', () => {
+  const posixAt = command => ({ tool_name: 'Bash', tool_input: { command }, cwd: '/home/u' });
+  const mac = { platform: 'darwin', env: { TMPDIR: '/var/folders/xy/T' }, tmpdir: () => '/var/folders/xy/T' };
+  for (const command of ['cd /tmp/repo && git commit -m x', 'pushd /tmp/repo; git commit -m x', 'cd /tmp && cd repo && git commit -m x']) {
+    assert.match(decide(posixAt(command), onHost(mac, overBaselineAt('/tmp/repo'))) ?? '', OVER_BASELINE, command);
+  }
+  for (const command of ['cd $TMPDIR/repo && git commit -m x', 'cd "${TMPDIR}/repo"; git commit -m x']) {
+    assert.match(decide(posixAt(command), onHost(mac, overBaselineAt('/var/folders/xy/T/repo'))) ?? '', /cannot tell which repository/, command);
+  }
+  const linux = { platform: 'linux', env: {}, tmpdir: () => '/tmp' };
+  for (const command of ['cd $TMPDIR/repo && git commit -m x', 'cd $TEMP/repo; git commit -m x']) {
+    assert.match(decide(posixAt(command), onHost(linux, overBaselineAt('/tmp/repo'))) ?? '', /cannot tell which repository/, command);
+  }
+  const pwsh = command => ({ tool_name: 'PowerShell', tool_input: { command }, cwd: '/home/u' });
+  assert.match(decide(pwsh('cd $env:TMP/repo; git commit -m x'), onHost({ ...linux, env: { TMP: '/tmp' } }, overBaselineAt('/tmp/repo'))) ?? '', /cannot tell which repository/);
+  assert.match(decide(pwsh('cd $env:TMP/repo; git commit -m x'), onHost(linux, overBaselineAt('/tmp/repo'))) ?? '', /cannot tell which repository/);
+});
+
+test('comment ratchet: a temp variable assigned earlier in the line is unresolved, not the temp dir', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  const bashDir = repo.dir.replace(/\\/g, '/');
+  const lines = [
+    [`$env:TEMP = '${repo.dir}'; cd $env:TEMP; git commit -m x`, 'PowerShell'],
+    [`$env:TMP = '${repo.dir}'; Set-Location $env:TMP; git commit -m x`, 'PowerShell'],
+    [`export TMPDIR='${bashDir}'; cd "$TMPDIR" && git commit -m x`, 'Bash'],
+    [`TEMP='${bashDir}'; cd $TEMP; git commit -m x`, 'Bash'],
+  ];
+  for (const [line, tool] of lines) assert.match(repo.run(line, tool) ?? '', /cannot tell which repository/, line);
+});
+
+test('no-authoring agents: a temp variable assigned earlier in the line is not the temp dir', () => {
+  for (const agent of NO_AUTHORING) {
+    const psAs = command => psAt(command, { agent_type: agent });
+    const as = command => bashAt(command, { agent_type: agent });
+    blocked(psAs("$env:TEMP='C:\\other\\checkout'; cd $env:TEMP; git checkout -- ."), onHost(GIT_BASH_HOST));
+    blocked(psAs("$env:TEMP='C:\\other\\checkout'; Set-Content $env:TEMP\\app.js x"), onHost(GIT_BASH_HOST));
+    blocked(psAs("$env:TMP='C:\\other\\checkout'; Set-Location $env:TMP; git reset --hard"), onHost(GIT_BASH_HOST));
+    blocked(as('export TMPDIR=/c/other/checkout; cd "$TMPDIR" && git checkout -- .'), onHost(GIT_BASH_HOST));
+    blocked(as('TEMP=/c/other/checkout; echo x > $TEMP/app.js'), onHost(GIT_BASH_HOST));
+    allowed(psAs('cd $env:TEMP; git checkout -- .'), onHost(GIT_BASH_HOST));
+  }
+});
+
+test('comment ratchet: the main session never reads a temp variable as the temp dir, however it was set', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  const bashDir = repo.dir.replace(/\\/g, '/');
+  const sub = path.relative(os.tmpdir(), repo.dir);
+  const lines = [
+    [`Set-Item env:TEMP '${repo.dir}'; cd $env:TEMP; git commit -m x`, 'PowerShell'],
+    [`$env:TEMP += '\\${sub}'; cd $env:TEMP; git commit -m x`, 'PowerShell'],
+    [`[Environment]::SetEnvironmentVariable('TMP', '${repo.dir}'); Set-Location $env:TMP; git commit -m x`, 'PowerShell'],
+    ['cd $env:TEMP; git commit -m x', 'PowerShell'],
+    [`declare -x TEMP=${bashDir}; cd $TEMP && git commit -m x`, 'Bash'],
+    [`readonly TMP=${bashDir}; cd $TMP && git commit -m x`, 'Bash'],
+    [`cd \${TMP/tmp/${bashDir.replace(/\//g, '\\/')}} && git commit -m x`, 'Bash'],
+    ['cd $TEMP && git commit -m x', 'Bash'],
+  ];
+  for (const [line, tool] of lines) {
+    assert.match(repo.run(line, tool) ?? '', /cannot tell which repository/, line);
+    assert.match(repo.run(line, tool, os.tmpdir()) ?? '', /cannot tell which repository/, `${line} (from the temp dir)`);
+  }
+});
+
+test('no-authoring agents: a temp variable is the temp dir only when every mention of it in the line is a plain read', () => {
+  for (const agent of NO_AUTHORING) {
+    const psAs = command => psAt(command, { agent_type: agent });
+    const as = command => bashAt(command, { agent_type: agent });
+    const host = onHost(GIT_BASH_HOST);
+    blocked(psAs("Set-Item env:TEMP 'C:\\other\\checkout'; cd $env:TEMP; git checkout -- ."), host);
+    blocked(psAs("$env:TEMP += '\\..\\..\\other'; cd $env:TEMP; git reset --hard"), host);
+    blocked(psAs("$env:TEMP += 'x'; Set-Content $env:TEMP\\app.js x"), host);
+    blocked(psAs("[Environment]::SetEnvironmentVariable('TMP', 'C:\\other'); Set-Location $env:TMP; git reset --hard"), host);
+    blocked(psAs("${env:TEMP} = 'C:\\other'; cd $env:TEMP; git reset --hard"), host);
+    blocked(as('declare -x TEMP=/c/other/checkout; cd $TEMP && git checkout -- .'), host);
+    blocked(as('readonly TMP=/c/other; cd $TMP && echo x > f.txt'), host);
+    blocked(as('cd ${TMP/Temp/other} && git reset --hard'), host);
+    blocked(as('cd ${TMP:-/c/other} && git reset --hard'), host);
+    blocked(as('typeset TEMP=/c/other; echo x > $TEMP/app.js'), host);
+
+    allowed(psAs('cd $env:TEMP; echo x > f.txt'), host);
+    allowed(as('echo x > $TMP/a'), host);
+    allowed(as("cat > $TEMP/x.sh <<'EOF'\necho hi\nEOF"), host);
+    allowed(as('cd "${TEMP}/x" && git checkout HEAD~1'), host);
+  }
+});
+
+test('set assigns a variable in cmd, and any mention of TEMP besides a plain read leaves $TEMP unresolved', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = command => bashAt(command, { agent_type: agent });
+    blocked(as('set TEMP=/c/other/checkout; cd $TEMP && echo x > f.txt'), onHost(GIT_BASH_HOST));
+    blocked(as('cmd /c "set GIT_DIR=C:/checkout/.git && git reset --hard"'));
+  }
+});
+
+test('no-authoring agents under PowerShell: /tmp is C:\\tmp, the temp dir is $env:TEMP', () => {
+  for (const agent of NO_AUTHORING) {
+    const psAs = command => psAt(command, { agent_type: agent });
+    const as = command => bashAt(command, { agent_type: agent });
+    blocked(psAs('Set-Content /tmp/notes.txt x'), onHost(GIT_BASH_HOST));
+    blocked(psAs('cd /tmp; Set-Content notes.txt x'), onHost(GIT_BASH_HOST));
+    blocked(psAs('Set-Content $TMPDIR/notes.txt x'), onHost(GIT_BASH_HOST));
+    allowed(psAs('Set-Content $env:TEMP/notes.txt x'), onHost(GIT_BASH_HOST));
+    allowed(psAs('Set-Content /repo/notes.txt x'), onHost(GIT_BASH_HOST));
+    allowed(as('echo x > /tmp/notes.txt'), onHost(GIT_BASH_HOST));
+    allowed(as('cd /tmp && echo x > notes.txt'), onHost(GIT_BASH_HOST));
+    blocked(as('echo x > $env:TEMP/notes.txt'), onHost(GIT_BASH_HOST));
+  }
 });
 
 test('ciState treats skipped-only and missing checks as not green', () => {
@@ -364,8 +1014,9 @@ function tempDir() {
   return dir;
 }
 
-function fixture(files, baseline) {
-  const dir = tempDir();
+function fixture(files, baseline, name) {
+  const dir = name ? path.join(tempDir(), name) : tempDir();
+  fs.mkdirSync(dir, { recursive: true });
   const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
   const write = (file, text) => {
     fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
@@ -470,6 +1121,30 @@ test('comment ratchet: shell redirections are neither pathspecs nor git add argu
     assert.equal(legit.run(command), null, command);
   }
   assert.equal(legit.run('git commit -m "feat: x" > $null', 'PowerShell'), null);
+});
+
+test('comment ratchet: a clobber redirection (>|) is not a pathspec', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  assert.match(repo.run('git add app.py >| /dev/null; git commit -m "feat: x"') ?? '', /app\.py/);
+  repo.git('add', 'app.py');
+  for (const command of ['git commit -m "feat: x" >| commit.log', 'git commit -m "feat: x" 2>| err.txt', 'git commit -m "feat: x" >|commit.log']) {
+    assert.match(repo.run(command) ?? '', /app\.py/, command);
+  }
+
+  const legit = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  legit.write('app.py', `${ONE}x = 1\n`);
+  legit.git('add', 'app.py');
+  for (const command of ['git commit -m "feat: x" >| /dev/null', 'git commit -m "feat: x" 2>| err.txt']) {
+    assert.equal(legit.run(command), null, command);
+  }
+});
+
+test('comment ratchet: an escaped > before | still pipes into git commit', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  assert.match(repo.run('echo \\>|git commit -m x') ?? '', /cannot see what `echo \\>` changes first/);
 });
 
 test('comment ratchet: checks the repo that a cd earlier in the call moves to', () => {
@@ -802,5 +1477,118 @@ test('comment ratchet: interactive adds are not replayed, so no editor runs insi
     }
   } finally {
     if (saved === undefined) delete process.env.GIT_EDITOR; else process.env.GIT_EDITOR = saved;
+  }
+});
+
+test('an empty -C is ignored and an unresolved -C fails closed, for push, rebase and the comment ratchet', () => {
+  const repo = fixture({ 'sub/app.py': NONE }, { 'sub/app.py': 0 });
+  repo.git('remote', 'add', 'origin', 'https://example.invalid/r');
+  repo.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  repo.git('branch', '--set-upstream-to=origin/main');
+  repo.write('sub/app.py', ONE);
+  repo.git('add', '-A');
+  const opaque = ['$X', '"${X}"', '%X%', '`pwd`', '"$(pwd)"'];
+  for (const command of [
+    'git -C "" -C sub push origin HEAD', "git -C '' -C sub push", 'git -C sub -C "" push',
+    ...opaque.map(x => `git -C ${x} -C sub push`), ...opaque.map(x => `git -C ${x} push origin HEAD`),
+    'git -C "" -C sub rebase origin/main', 'git -C $X -C sub rebase origin/main', 'git -C %X% pull --rebase',
+  ]) assert.ok(repo.run(command), `expected block: ${command}`);
+  for (const command of ['git -C "" -C sub commit -m "feat: x"', "git -C '' commit -m \"feat: x\""]) {
+    assert.match(repo.run(command) ?? '', /sub\/app\.py: baseline 0, this commit 1/, command);
+  }
+  for (const x of opaque) assert.match(repo.run(`git -C ${x} -C sub commit -m "feat: x"`) ?? '', /cannot tell which repository/, x);
+  assert.equal(repo.run('git -C "" -C sub push origin feat/x'), null);
+  assert.equal(repo.run('git -C $X push origin feat/x'), null);
+  assert.equal(repo.run('git -C $X -C /elsewhere push origin HEAD'), null);
+});
+
+function parenthesisRepo() {
+  const repo = fixture({ 'app.py': NONE }, { 'app.py': 0 }, 'x (1)');
+  repo.git('remote', 'add', 'origin', 'https://example.invalid/r');
+  repo.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  repo.git('update-ref', 'refs/remotes/origin/feat/x', 'HEAD');
+  repo.git('checkout', '-q', '-b', 'feat/x');
+  repo.git('branch', '--set-upstream-to=origin/main');
+  return repo;
+}
+
+test('a quoted -C path with a parenthesis is literal for push, commit, rebase and pull --rebase, under Bash and PowerShell', () => {
+  const repo = parenthesisRepo();
+  for (const tool of ['Bash', 'PowerShell']) {
+    for (const quoted of [`"${repo.dir}"`, `'${repo.dir}'`]) {
+      for (const sub of ['push origin HEAD', 'rebase origin/main', 'pull --rebase']) {
+        assert.equal(repo.run(`git -C ${quoted} ${sub}`, tool, os.tmpdir()), null, `${tool}: git -C ${quoted} ${sub}`);
+      }
+      repo.write('app.py', ONE);
+      repo.git('add', '-A');
+      assert.match(repo.run(`git -C ${quoted} commit -m "feat: x"`, tool, os.tmpdir()) ?? '', /app\.py: baseline 0, this commit 1/, `${tool}: ${quoted}`);
+      repo.git('reset', '-q', '--hard');
+    }
+  }
+  repo.git('branch', '--set-upstream-to=origin/feat/x');
+  for (const tool of ['Bash', 'PowerShell']) {
+    assert.match(repo.run(`git -C "${repo.dir}" rebase origin/main`, tool, os.tmpdir()) ?? '', /feat\/x is already pushed/, tool);
+    assert.match(repo.run(`git -C "${repo.dir}" pull --rebase`, tool, os.tmpdir()) ?? '', /feat\/x is already pushed/, tool);
+  }
+});
+
+test('a -C path that is an expression stays unresolved: $(...), @(...) and an unquoted ( inside a word', () => {
+  const repo = parenthesisRepo();
+  repo.write('app.py', ONE);
+  repo.git('add', '-A');
+  const unquoted = repo.dir.replace(' (1)', '(1)');
+  for (const dir of ['$(pwd)', '"$(pwd)"', '@(Get-Location)', unquoted]) {
+    for (const sub of ['push origin HEAD', 'rebase origin/main', 'pull --rebase']) {
+      assert.match(repo.run(`git -C ${dir} ${sub}`, 'PowerShell', os.tmpdir()) ?? '', /not literal/, `git -C ${dir} ${sub}`);
+    }
+    assert.match(repo.run(`git -C ${dir} commit -m "feat: x"`, 'PowerShell', os.tmpdir()) ?? '', /cannot tell which repository/, dir);
+  }
+});
+
+test('no-authoring agents: a quoted cd or -C into a temp dir with a parenthesis stays inside the temp dir', () => {
+  const dir = path.join(tempDir(), 'x (1)');
+  for (const agent of NO_AUTHORING) {
+    for (const tool of ['Bash', 'PowerShell']) {
+      const at = command => ({ tool_name: tool, tool_input: { command }, cwd: '/repo', agent_type: agent });
+      allowed(at(`cd "${dir}" && git checkout HEAD~1`));
+      allowed(at(`git -C "${dir}" checkout HEAD~1`));
+      allowed(at(`cd '${dir}'; git reset --hard`));
+    }
+    const psAs = command => ({ tool_name: 'PowerShell', tool_input: { command }, cwd: '/repo', agent_type: agent });
+    blocked(psAs(`cd ${dir.replace(' (1)', '(1)')}; git checkout HEAD~1`));
+    blocked(psAs(`git -C ${dir.replace(' (1)', '(1)')} checkout HEAD~1`));
+    blocked(psAs('git -C @(Get-Location) checkout HEAD~1'));
+  }
+});
+
+test('no-authoring agents: a quoted write target with a parenthesis is a literal path', () => {
+  const temp = path.join(tempDir(), 'x (1)', 'a.txt');
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    allowed(as('echo x > "notes (1).txt"'));
+    allowed(as("echo x >| 'notes (1).txt'"));
+    allowed(as('cp /tmp/fixture.tsx "app/(marketing)/page.tsx"'));
+    allowed(as('rm "app/(marketing)/tmp.txt"'));
+    allowed(as(`sed -i 's/a/b/' "src/routes/(app)/+page.svelte"`));
+    allowed(as('git worktree add "wt (1)" main'));
+    allowed({ tool_name: 'PowerShell', tool_input: { command: `Set-Content -LiteralPath "${temp}" -Value x` }, cwd: '/repo', agent_type: agent });
+    allowed(psAs("Remove-Item -LiteralPath 'app\\(marketing)\\tmp.txt'"));
+    allowed(psAs('[IO.File]::WriteAllText("notes (1).txt", "x")'));
+
+    blocked(as('echo x > notes(1).txt'));
+    blocked(as('rm app/x(1)/tmp.txt'));
+    blocked(as('echo x > "$(pwd)/a.txt"'));
+    blocked(as('git worktree add wt(1) main'));
+    blocked(psAs('Remove-Item x(1)'));
+    blocked(psAs("Remove-Item @('a.txt')"));
+    blocked(psAs('[IO.File]::WriteAllText(x(1).txt, "x")'));
+
+    blocked(as('echo x > "/checkout/notes (1).txt"'));
+    blocked(as('cp /tmp/fixture.tsx "/checkout/app/(marketing)/page.tsx"'));
+    blocked(as('rm "/checkout/app/(marketing)/tmp.txt"'));
+    blocked(as(`sed -i 's/a/b/' "/checkout/src/routes/(app)/+page.svelte"`));
+    blocked(psAs('Set-Content -LiteralPath "C:/checkout/x (1)/a.txt" -Value x'));
+    blocked(psAs("Remove-Item -LiteralPath 'C:\\checkout\\app\\(marketing)\\tmp.txt'"));
   }
 });

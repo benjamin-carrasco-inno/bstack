@@ -69,12 +69,14 @@ export function splitSegments(line) {
   return segments.map(s => s.trim()).filter(Boolean);
 }
 
-// Split one segment into words, removing quotes.
-export function tokenize(segment) {
-  const words = [];
+// Split one segment into words, removing quotes. Only an unquoted ( is an expression; PowerShell reads a(b) as two arguments.
+export function words(segment) {
+  const out = [];
   let cur = '';
   let quote = null;
   let started = false;
+  let expression = false;
+  const end = () => { out.push({ text: cur, expression }); cur = ''; started = false; expression = false; };
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i];
     if (quote) {
@@ -86,65 +88,170 @@ export function tokenize(segment) {
     const here = hereString(segment, i);
     if (here) { cur += here.body; started = true; i = here.end - 1; continue; }
     if (ch === '"' || ch === "'") { quote = ch; started = true; continue; }
-    if (/\s/.test(ch)) { if (started) { words.push(cur); cur = ''; started = false; } continue; }
+    if (/\s/.test(ch)) { if (started) end(); continue; }
+    if (ch === '(') expression = true;
     cur += ch;
     started = true;
   }
-  if (started) words.push(cur);
+  if (started) end();
+  return out;
+}
+
+export function tokenize(segment) {
+  return words(segment).map(w => w.text);
+}
+
+export function redirectTargets(segment) {
+  const targets = [];
+  let quote = null;
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else if (ch === '\\' && quote === '"') i++;
+      continue;
+    }
+    const here = hereString(segment, i);
+    if (here) { i = here.end - 1; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch !== '>') continue;
+    if (segment[i + 1] === '>') i++;
+    if (segment[i + 1] === '&') { i++; continue; }
+    if (segment[i + 1] === '|') i++;
+    const [word] = words(segment.slice(i + 1));
+    if (word?.text) targets.push(word);
+  }
+  return targets;
+}
+
+const ESCAPE = { posix: '\\', powershell: '`', cmd: '^' };
+const TRAILING_REDIRECT = /(.?)\d*>>?$/s;
+
+export function endsInRedirect(segment, dialect = 'posix') {
+  const m = TRAILING_REDIRECT.exec(segment.trimEnd());
+  return Boolean(m) && m[1] !== ESCAPE[dialect];
+}
+
+const HEREDOC_OPEN = /<<[-~]?[ \t]*(['"]?)([\w.-]+)\1/y;
+
+function heredocWords(text, state) {
+  const words = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (state.quote) {
+      if (ch === state.quote) state.quote = null;
+      else if (ch === '\\' && state.quote === '"') i++;
+      continue;
+    }
+    if (ch === '\\') { i++; continue; }
+    if (ch === '"' || ch === "'") { state.quote = ch; continue; }
+    if (state.parens) {
+      if (ch === '(') state.parens++;
+      else if (ch === ')') state.parens--;
+      continue;
+    }
+    if (ch === '(' && text[i + 1] === '(') { state.parens = 2; i++; continue; }
+    if (ch !== '<' || text[i + 1] !== '<') continue;
+    if (text[i + 2] === '<') { i += 2; continue; }
+    HEREDOC_OPEN.lastIndex = i;
+    const m = HEREDOC_OPEN.exec(text);
+    if (m) { words.push(m[2]); i = HEREDOC_OPEN.lastIndex - 1; }
+  }
   return words;
+}
+
+function terminatorLine(lines, word, after) {
+  return lines.findIndex((text, k) => k > after && text.replace(/\r$/, '').trim() === word);
+}
+
+export function withoutHeredocBodies(line) {
+  const lines = line.split('\n');
+  const out = [...lines];
+  const state = { quote: null, parens: 0 };
+  for (let n = 0; n < lines.length; n++) {
+    let end = n;
+    for (const word of heredocWords(lines[n], state)) {
+      end = terminatorLine(lines, word, end);
+      if (end < 0) break;
+    }
+    if (end <= n) continue;
+    const executed = tokenize(lines[n]).some(w => SHELLS.has(programName(w)));
+    if (!executed) out.fill('', n + 1, end + 1);
+    n = end;
+  }
+  return out.join('\n');
 }
 
 function programName(word) {
   return word.replace(/\\/g, '/').split('/').pop().toLowerCase().replace(/\.(exe|cmd|bat)$/, '');
 }
 
+const DIALECT_OF_SHELL = { pwsh: 'powershell', powershell: 'powershell', cmd: 'cmd' };
 export const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
 export const UNRESOLVED = /[$%`]/;
 
 // Every simple command in a line, including commands nested in bash -c, pwsh -Command and cmd /c.
-export function commandsIn(line, depth = 0, scope = '', shellCount = { n: 0 }) {
+export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shellCount = { n: 0 }) {
   const out = [];
   for (const segment of splitSegments(line)) {
-    let words = tokenize(segment);
+    let parsed = words(segment);
     const env = {};
-    while (words.length && (PREFIXES.has(words[0].toLowerCase()) || ASSIGNMENT.test(words[0]))) {
-      const set = ASSIGNMENT.exec(words[0]);
+    while (parsed.length && (PREFIXES.has(parsed[0].text.toLowerCase()) || ASSIGNMENT.test(parsed[0].text))) {
+      const set = ASSIGNMENT.exec(parsed[0].text);
       if (set) env[set[1]] = set[2];
-      words = words.slice(1);
+      parsed = parsed.slice(1);
     }
-    if (!words.length) {
-      if (Object.keys(env).length) out.push({ cmd: '', args: [], text: segment, env, scope });
+    if (!parsed.length) {
+      if (Object.keys(env).length) out.push({ cmd: '', args: [], expressions: new Set(), text: segment, env, scope });
       continue;
     }
-    const cmd = programName(words[0]);
-    const args = words.slice(1);
+    const cmd = programName(parsed[0].text);
+    const args = parsed.slice(1).map(w => w.text);
+    const expressions = new Set(parsed.slice(1).flatMap((w, i) => (w.expression ? [i] : [])));
     if (depth < 3 && SHELLS.has(cmd)) {
       const at = args.findIndex(a => /^(-c|-command|\/c|-encodedcommand)$/i.test(a));
-      if (at >= 0) { out.push(...commandsIn(args.slice(at + 1).join(' '), depth + 1, `${scope}/${++shellCount.n}`, shellCount)); continue; }
+      if (at >= 0) { out.push(...commandsIn(args.slice(at + 1).join(' '), depth + 1, DIALECT_OF_SHELL[cmd] ?? 'posix', `${scope}/${++shellCount.n}`, shellCount)); continue; }
     }
     if (depth < 3 && /^(invoke-expression|iex)$/.test(cmd) && args.length) {
-      out.push(...commandsIn(args.join(' '), depth + 1, scope, shellCount));
+      out.push(...commandsIn(args.join(' '), depth + 1, dialect, scope, shellCount));
       continue;
     }
-    out.push({ cmd, args, text: segment, env, scope });
+    out.push({ cmd, args, expressions, text: segment, dialect, env, scope });
   }
   return out;
 }
 
-const GIT_PATH_OPTS = { '-C': 'dir', '--git-dir': 'gitDir', '--work-tree': 'workTree' };
+const ABSOLUTE = /^([a-z]:)?[\\/]/i;
+const ALIAS_KEY = /^alias\./i;
+const GIT_PATH_OPTS = { '--git-dir': 'gitDir', '--work-tree': 'workTree' };
+const NO_EXPRESSIONS = new Set();
 
-// git global options come before the subcommand: git -C dir --git-dir=x -c k=v push ...
-export function parseGit(args) {
+// git global options come before the subcommand: git -C dir --git-dir=x -c k=v push ... Each -C is relative to the one before; an empty one is ignored.
+export function parseGit(args, expressions = NO_EXPRESSIONS) {
   const found = { dir: null, gitDir: null, workTree: null };
+  let aliases = false;
+  let dirExpression = false;
   let i = 0;
   while (i < args.length && args[i].startsWith('-')) {
     const a = args[i];
+    const value = args[i + 1];
+    if (a === '-C') {
+      if (value) {
+        const absolute = found.dir === null || ABSOLUTE.test(value);
+        dirExpression = expressions.has(i + 1) || (!absolute && dirExpression);
+        found.dir = absolute ? value : `${found.dir}/${value}`;
+      }
+      i += 2;
+      continue;
+    }
     const eq = a.startsWith('--') ? a.indexOf('=') : -1;
     const key = GIT_PATH_OPTS[eq > 0 ? a.slice(0, eq) : a];
     if (key && eq > 0) { found[key] = a.slice(eq + 1); i += 1; continue; }
-    if (key) { found[key] = args[i + 1] ?? null; i += 2; continue; }
-    if (a === '-c' || a === '--namespace') { i += 2; continue; }
+    if (key) { found[key] = value ?? null; i += 2; continue; }
+    if (a === '-c' || a === '--config-env') { aliases ||= ALIAS_KEY.test(value ?? ''); i += 2; continue; }
+    if (a.startsWith('--config-env=')) aliases ||= ALIAS_KEY.test(a.slice(13));
+    if (a === '--namespace') { i += 2; continue; }
     i += 1;
   }
-  return { ...found, sub: args[i] ?? '', rest: args.slice(i + 1) };
+  return { ...found, dirKnown: found.dir === null || (!dirExpression && !UNRESOLVED.test(found.dir)), dirExpression, aliases, sub: args[i] ?? '', rest: args.slice(i + 1) };
 }

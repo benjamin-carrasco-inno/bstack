@@ -9,15 +9,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ASSIGNMENT, UNRESOLVED, commandsIn, parseGit, tokenize } from './lib/shell.mjs';
+import { ASSIGNMENT, UNRESOLVED, commandsIn, endsInRedirect, parseGit, redirectTargets, tokenize, withoutHeredocBodies, words } from './lib/shell.mjs';
 import { KINDS, MARKER, latestFor, timeOf } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
+import { pathsOn } from './lib/paths.mjs';
 import { riskTier, readRiskPaths } from './risk-tier.mjs';
 
 const DEFAULT_BRANCH = /^(main|master)$/;
 const READ_ONLY = new Set(['grep', 'rg', 'findstr', 'select-string', 'sls', 'cat', 'type', 'get-content', 'gc', 'jq', 'less', 'head', 'tail', 'wc']);
-const NO_AUTHORING_AGENTS = /(^|:)(reviewer|adversary)$/;
+const NO_AUTHORING_AGENTS = /(^|:)(reviewer|adversary|comment-critic)$/;
 
 export function decide(input, deps) {
   const tool = String(input.tool_name ?? '');
@@ -27,13 +28,20 @@ export function decide(input, deps) {
   if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(tool)) return writeRule(input.tool_input ?? {}, deps);
   if (tool !== 'Bash' && tool !== 'PowerShell') return null;
   const line = String(input.tool_input?.command ?? '');
-  const commands = located(commandsIn(line), cwd);
+  const dialect = tool === 'PowerShell' ? 'powershell' : 'posix';
+  const host = withPaths(deps.host ?? REAL_HOST);
+  const hostDeps = { ...deps, host };
+  const root = host.paths.resolvePath(cwd);
+  const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
+    const reason = markerRule(c, cwd, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps) : null);
     if (reason) return reason;
   }
-  return null;
+  return agentWritesRule(line, dialect, cwd, agent, root, { ...host, tempNames: plainTempNames(line) });
 }
+
+const REAL_HOST = { platform: process.platform, env: process.env, tmpdir: () => os.tmpdir() };
+const withPaths = host => ({ ...host, paths: pathsOn(host.platform) });
 
 const DIR_MOVES = {
   cd: 'go', chdir: 'go', 'set-location': 'go', sl: 'go',
@@ -41,16 +49,50 @@ const DIR_MOVES = {
   popd: 'pop', 'pop-location': 'pop',
 };
 const HOME = /^~(?=$|[\\/])/;
+const OPAQUE = /[$`]|%[^%\s]+%/;
+const GIT_LOCATION_VARIABLE = /^GIT_(DIR|WORK_TREE)$/i;
+const TEMP_PREFIX = {
+  posix: /^(?:\/tmp|\$\{?(?<name>TMPDIR|TEMP|TMP)\}?)(?=$|\/)/,
+  powershell: /^\$env:(?<name>TEMP|TMP)(?=$|[\\/])/i,
+};
 
 const UNKNOWN_DIR = null;
 const PS_ENV = /^\$env:([A-Za-z_]\w*)\s*=\s*(.*)$/is;
 
-function located(commands, start) {
+const TEMP_NAME_MENTION = /(?<![\w$])(?:\$\{|\$env:|\$)?(TMPDIR|TEMP|TMP)(?!\w)/gi;
+const PLAIN_TEMP_READ = /^(?:\$\{\w+\}|\$(?:env:)?\w+)(?:\s*(?:$|[;|&\n])|['"\\/])/i;
+const NO_TEMP_NAMES = new Set();
+
+function plainTempNames(line) {
+  const mentions = [...line.matchAll(TEMP_NAME_MENTION)];
+  const names = new Set(mentions.map(m => m[1].toUpperCase()));
+  for (const m of mentions) {
+    if (!PLAIN_TEMP_READ.test(line.slice(m.index))) names.delete(m[1].toUpperCase());
+  }
+  return names;
+}
+
+function inTempDir(word, dialect, host) {
+  const prefix = TEMP_PREFIX[dialect]?.exec(word ?? '');
+  if (!prefix) return { word, dialect };
+  const name = prefix.groups.name?.toUpperCase();
+  if (name && !host.tempNames?.has(name)) return { word, dialect };
+  const dir = tempDirNamed(name, host);
+  if (!dir) return { word, dialect };
+  return { word: dir + word.slice(prefix[0].length), dialect: 'posix' };
+}
+
+function tempDirNamed(name, host) {
+  if (host.platform !== 'win32') return name && host.env[name];
+  return name === 'TMPDIR' ? host.env.TMPDIR : host.tmpdir();
+}
+
+function located(commands, start, host) {
   const scopes = new Map();
   return commands.map(c => {
     const shell = shellState(scopes, c.scope ?? '', start);
-    const at = { ...c, cwd: shell.here, env: { ...shell.env, ...c.env } };
-    changeDir(shell, c);
+    const at = { ...c, cwd: shell.here.dir, cwdKnown: shell.here.known, env: { ...shell.env, ...c.env } };
+    changeDir(shell, c, host);
     setVariables(shell.env, c);
     return at;
   });
@@ -58,15 +100,16 @@ function located(commands, start) {
 
 function shellState(scopes, scope, start) {
   if (!scopes.has(scope)) {
-    const parent = scope ? shellState(scopes, scope.slice(0, scope.lastIndexOf('/')), start) : { here: start, previous: undefined, stack: [], env: {} };
+    const parent = scope ? shellState(scopes, scope.slice(0, scope.lastIndexOf('/')), start) : { here: { dir: start, known: true }, previous: undefined, stack: [], env: {} };
     scopes.set(scope, { ...parent, stack: [...parent.stack], env: { ...parent.env } });
   }
   return scopes.get(scope);
 }
 
-function changeDir(shell, c) {
+function changeDir(shell, c, host) {
   const move = DIR_MOVES[c.cmd];
-  const target = dirTarget(c.args);
+  const at = c.args.findIndex(a => a === '-' || (!a.startsWith('-') && !/^\/d$/i.test(a)));
+  const { word: target, dialect } = inTempDir(c.args[at], c.dialect, host);
   if (move === 'pop') {
     if (shell.stack.length) [shell.previous, shell.here] = [shell.here, shell.stack.pop()];
   } else if (move && target === '-') {
@@ -74,13 +117,15 @@ function changeDir(shell, c) {
   } else if (move) {
     if (move === 'push') shell.stack.push(shell.here);
     shell.previous = shell.here;
-    shell.here = resolvedDir(target, shell.here);
+    const dir = resolvedDir(target, shell.here.dir, dialect, host.paths);
+    const opaque = target === undefined || c.expressions?.has(at) || OPAQUE.test(target) || HOME.test(target);
+    shell.here = { dir, known: dir !== UNKNOWN_DIR && !opaque && (shell.here.known || host.paths.isAbsolute(target, dialect)) };
   }
 }
 
 function setVariables(env, c) {
   if (c.cmd === '') Object.assign(env, c.env);
-  if (c.cmd === 'export') {
+  if (c.cmd === 'export' || (c.cmd === 'set' && c.dialect === 'cmd')) {
     for (const set of c.args.map(a => ASSIGNMENT.exec(a)).filter(Boolean)) env[set[1]] = set[2];
   }
   const ps = PS_ENV.exec(c.text);
@@ -90,16 +135,12 @@ function setVariables(env, c) {
   }
 }
 
-function dirTarget(args) {
-  return args.find(a => a === '-' || (!a.startsWith('-') && !/^\/d$/i.test(a)));
-}
-
-function resolvedDir(target, here) {
+function resolvedDir(target, here, dialect, paths) {
   if (target === undefined) return here;
   if (UNRESOLVED.test(target)) return UNKNOWN_DIR;
   const literal = target.replace(HOME, os.homedir());
-  if (here === UNKNOWN_DIR && !path.isAbsolute(literal)) return UNKNOWN_DIR;
-  return path.resolve(here ?? '', literal);
+  if (here === UNKNOWN_DIR && !paths.isAbsolute(literal, dialect)) return UNKNOWN_DIR;
+  return paths.resolvePath(here ?? '', literal, dialect);
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
@@ -113,7 +154,7 @@ function markerRule(c, cwd, deps) {
   if (!READ_ONLY.has(c.cmd) && pathArgs(c).some(a => PENDING_PATH.test(a))) return SAVED_VERDICTS;
   if (c.cmd === 'gh') {
     for (const file of bodyFiles(c.args)) {
-      const text = deps.readFile(path.resolve(cwd, file));
+      const text = deps.readFile(deps.host.paths.resolvePath(cwd, file, c.dialect));
       if (text && MARKER.test(text)) return `The body file ${file} contains a bstack verdict line. Verdicts are posted only by the bstack hook.`;
     }
   }
@@ -139,7 +180,7 @@ function bodyFiles(args) {
   return files.filter(f => f && f !== '-' && !f.includes('=@'));
 }
 
-// --- reviewer and adversary judge; they never author ---------------------------------------------
+// --- reviewer, adversary and comment-critic judge; they never author ---------------------------------
 function agentRule(c, agent) {
   if (!NO_AUTHORING_AGENTS.test(agent)) return null;
   const git = c.cmd === 'git' ? parseGit(c.args).sub : '';
@@ -150,12 +191,207 @@ function agentRule(c, agent) {
   return null;
 }
 
+function agentWritesRule(line, dialect, cwd, agent, root, host) {
+  if (!NO_AUTHORING_AGENTS.test(agent)) return null;
+  const commands = located(commandsIn(withoutHeredocBodies(line), 0, dialect), cwd, host);
+  for (const [k, c] of commands.entries()) {
+    const reason = treeRewriteRule(c, agent, root, host) ?? fileWriteRule(c, agent, root, commands[k + 1], host);
+    if (reason) return reason;
+  }
+  return null;
+}
+
+const TREE_REWRITING_GIT = {
+  stash: { rewrites: rest => !/^(list|show)$/.test(rest[0] ?? ''), anywhere: true },
+  checkout: { rewrites: () => true },
+  switch: { rewrites: () => true },
+  worktree: { rewrites: rest => /^(add|remove|move|prune|repair)$/.test(rest[0] ?? ''), paths: rest => positionalArgs(rest.slice(1), /^(-b|-B|--reason)$/) },
+  restore: { rewrites: () => true },
+  reset: { rewrites: () => true },
+  apply: { rewrites: rest => !rest.some(a => /^--(check|stat|numstat|summary)$/.test(a)) },
+  clean: { rewrites: rest => !rest.some(a => a === '--dry-run' || /^-[a-zA-Z]*n/.test(a)) },
+  rm: { rewrites: () => true },
+  mv: { rewrites: () => true },
+  pull: { rewrites: () => true },
+  'read-tree': { rewrites: () => true },
+  'checkout-index': { rewrites: () => true },
+  'update-index': { rewrites: () => true },
+};
+const UNKNOWN_GIT = { rewrites: () => true };
+const GIT_BUILTINS = new Set(`add am annotate apply archive bisect blame branch bugreport bundle cat-file check-attr check-ignore
+  check-mailmap check-ref-format checkout checkout-index cherry cherry-pick clean clone commit commit-graph commit-tree config
+  count-objects describe diagnose diff diff-files diff-index diff-tree difftool fetch fetch-pack for-each-ref for-each-repo
+  format-patch fsck gc get-tar-commit-id grep hash-object help init interpret-trailers log ls-files ls-remote ls-tree
+  maintenance merge merge-base merge-file merge-tree mktag mktree mv name-rev notes pack-objects pack-refs prune pull push
+  range-diff read-tree rebase reflog remote repack replace rerere reset restore rev-list rev-parse revert rm shortlog show
+  show-branch show-ref sparse-checkout stash status submodule switch symbolic-ref tag update-index update-ref var
+  verify-commit verify-pack verify-tag version whatchanged worktree write-tree`.split(/\s+/));
+
+function treeRewriteRule(c, agent, root, host) {
+  if (c.cmd !== 'git') return null;
+  const { dir, dirExpression, aliases, sub, rest } = parseGit(c.args, c.expressions);
+  if (aliases) return `The ${agent} agent must not define git aliases on the command line: an alias can run any command, also on another checkout. Run the git command itself.`;
+  const rule = TREE_REWRITING_GIT[sub] ?? (sub && !GIT_BUILTINS.has(sub) ? UNKNOWN_GIT : null);
+  if (!rule?.rewrites(rest)) return null;
+  if (rule.anywhere) return `The ${agent} agent must not run git ${sub}: the stash stack is shared by every worktree of the repo. Read with git stash list or git stash show.`;
+  const otherTree = Object.keys(c.env).some(name => GIT_LOCATION_VARIABLE.test(name)) || c.args.some(a => /^--(work-tree|git-dir)\b/.test(a));
+  const here = knownCwd(c);
+  const repo = !dir ? here : dirExpression ? undefined : writeTarget(dir, here, c.dialect, host, false);
+  const touched = [repo, ...(rule.paths?.(rest) ?? []).map(p => repo && writeTarget(p, repo, c.dialect, host, isExpressionArg(c, p)))];
+  if (otherTree || touched.some(p => !p || !owns(root, p, host))) return `The ${agent} agent must not run git ${sub} on a checkout outside its own worktree (${root}), or one the guard cannot locate; it would rewrite someone else's uncommitted work. Read with git diff or git show instead.`;
+  return null;
+}
+
+function knownCwd(c) {
+  return c.cwdKnown ? c.cwd : undefined;
+}
+
+const PATH_NAMES = ['path', 'literalpath', 'lp', 'pspath'];
+const POWERSHELL_SWITCHES = ['force', 'nonewline', 'passthru', 'append', 'noclobber', 'whatif', 'confirm', 'asbytestream', 'recurse'];
+const byArgs = spec => (args, dialect) => writeTargets(args, spec, dialect);
+const REMOVES = byArgs({ pick: 'all', named: PATH_NAMES });
+const MOVES = byArgs({ pick: 'all', named: [...PATH_NAMES, 'destination'] });
+const COPIES_BY_ARGS = byArgs({ pick: 'last', named: ['destination'] });
+const COPIES = (args, dialect) => {
+  const dirs = targetDirectories(args);
+  return dirs.length ? dirs : COPIES_BY_ARGS(args, dialect);
+};
+const WRITES_CONTENT = byArgs({ pick: 'first', named: [...PATH_NAMES, 'filepath'], valued: true });
+const WINDOWS_COPIES = args => {
+  const paths = args.filter(a => !/^\/[a-z?]+(:.*)?$/i.test(a));
+  return [paths[1] ?? '.'];
+};
+
+const FILE_WRITERS = {
+  sed: sedInPlaceTargets,
+  tee: byArgs({ pick: 'all', named: [] }),
+  rm: REMOVES, 'remove-item': REMOVES, ri: REMOVES, del: REMOVES, erase: REMOVES, rmdir: REMOVES, rd: REMOVES,
+  'clear-content': REMOVES, clc: REMOVES, mkdir: REMOVES, md: REMOVES,
+  mv: MOVES, 'move-item': MOVES, mi: MOVES, move: MOVES, 'rename-item': MOVES, rni: MOVES, ren: MOVES,
+  cp: COPIES, 'copy-item': COPIES, cpi: COPIES, copy: COPIES,
+  xcopy: WINDOWS_COPIES, robocopy: WINDOWS_COPIES,
+  'set-content': WRITES_CONTENT, sc: WRITES_CONTENT, 'add-content': WRITES_CONTENT, ac: WRITES_CONTENT,
+  'out-file': WRITES_CONTENT, 'tee-object': WRITES_CONTENT, 'new-item': WRITES_CONTENT, ni: WRITES_CONTENT,
+  dd: args => args.filter(a => a.startsWith('of=')).map(a => a.slice(3)),
+  truncate: args => positionalArgs(args, /^(-s|-r|--size|--reference)$/),
+  ln: linkTargets,
+  curl: args => optionValues(args, /^(-[a-zA-Z]*o|--output|--output-dir)$/, /^--output(-dir)?=/),
+  patch: patchTargets,
+};
+
+function positionalArgs(args, valued) {
+  return args.filter((a, i) => !a.startsWith('-') && !valued.test(args[i - 1] ?? ''));
+}
+
+function optionValues(args, separate, glued) {
+  return args.flatMap((a, i) => separate.test(a) ? [args[i + 1]] : glued.test(a) ? [a.slice(a.indexOf('=') + 1)] : []).filter(Boolean);
+}
+
+function targetDirectories(args) {
+  return optionValues(args, /^(-t|--target-directory)$/, /^--target-directory=/);
+}
+
+function linkTargets(args) {
+  const named = targetDirectories(args);
+  if (named.length) return named;
+  const positional = positionalArgs(args, /^(-t|--target-directory|-S|--suffix)$/);
+  return positional.length > 1 ? positional.slice(-1) : [];
+}
+
+const PATCH_VALUED = /^(-[pidoDBFrzVYg]|--(strip|input|output|directory|reject-file|prefix|suffix|basename-prefix|fuzz|backup-if-mismatch|version-control|get))$/;
+
+function patchTargets(args) {
+  const words = args.filter((a, i) => !a.startsWith('<') && args[i - 1] !== '<');
+  const named = optionValues(words, /^(-[dor]|--(directory|output|reject-file))$/, /^--(directory|output|reject-file)=/);
+  const [original] = positionalArgs(words, PATCH_VALUED);
+  return [...named, original ?? '.'];
+}
+
+const DOTNET_FILE_WRITE = /\[(System\.)?IO\.File\]::(Write|Append)\w*\s*\(\s*(?:(['"])(.*?)\3|([^,\s)]+))/gi;
+
+function dotnetWriteTargets(text) {
+  return [...text.matchAll(DOTNET_FILE_WRITE)].map(m => ({ text: m[4] ?? m[5], expression: m[5]?.includes('(') ?? false }));
+}
+
+function namesParameter(flag, names, dialect) {
+  const name = /^-([a-z]+)$/i.exec(flag)?.[1].toLowerCase();
+  if (!name) return false;
+  return names.some(n => (dialect === 'powershell' ? n.startsWith(name) : n === name));
+}
+
+function writeTargets(args, { pick, named, valued = false }, dialect) {
+  const byName = [];
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const inline = /^(-[a-z]+):(.+)$/i.exec(a);
+    if (inline) { if (namesParameter(inline[1], named, dialect)) byName.push(inline[2]); continue; }
+    if (namesParameter(a, named, dialect)) { if (i + 1 < args.length) byName.push(args[++i]); continue; }
+    if (/^-./.test(a) || /^\/[a-z]$/i.test(a)) { if (valued && !namesParameter(a, POWERSHELL_SWITCHES, dialect)) i++; continue; }
+    positional.push(a);
+  }
+  if (byName.length && pick !== 'all') return byName;
+  return [...byName, ...{ first: positional.slice(0, 1), last: positional.slice(-1), all: positional }[pick]];
+}
+
+function sedInPlaceTargets(args) {
+  if (!args.some(a => /^-[^-]*i/.test(a) || a.startsWith('--in-place'))) return [];
+  const positional = [];
+  let scriptGiven = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (/^(-e|-f|--expression|--file)$/.test(a)) { scriptGiven = true; i++; continue; }
+    if (/^--(expression|file)=/.test(a)) { scriptGiven = true; continue; }
+    if (a.startsWith('-')) continue;
+    positional.push(a);
+  }
+  return scriptGiven ? positional : positional.slice(1);
+}
+
+const NULL_SINK = /^(\$null|\/dev\/(null|stdout|stderr)|nul)$/i;
+
+const PARENT_SEGMENT = /(^|[\\/])\.\.($|[\\/])/;
+
+function hidesParent(word) {
+  return PARENT_SEGMENT.test(word.replace(/\\(.)/g, '$1')) && !PARENT_SEGMENT.test(word);
+}
+
+function writeTarget(word, cwd, shellDialect, host, expression) {
+  if (NULL_SINK.test(word)) return null;
+  const { word: inTemp, dialect } = inTempDir(word, shellDialect, host);
+  const expanded = inTemp.replace(HOME, os.homedir());
+  if (expression || OPAQUE.test(expanded) || hidesParent(expanded)) return undefined;
+  const asProvider = host.platform !== 'win32' && dialect === 'powershell' ? expanded.replace(/\\/g, '/') : expanded;
+  if (cwd === undefined && !host.paths.isAbsolute(asProvider, dialect)) return undefined;
+  return host.paths.resolvePath(cwd, asProvider, dialect);
+}
+
+function owns(root, target, host) {
+  return [root, host.paths.resolvePath(host.tmpdir())].some(dir => host.paths.contains(dir, target));
+}
+
+function isExpressionArg(c, value) {
+  return Boolean(value) && c.args.some((a, i) => c.expressions?.has(i) && a.endsWith(value));
+}
+
+function fileWriteRule(c, agent, root, next, host) {
+  const clobbered = next && endsInRedirect(c.text, c.dialect) ? words(next.text).slice(0, 1) : [];
+  const byCommand = (FILE_WRITERS[c.cmd]?.(c.args, c.dialect) ?? []).map(text => ({ text, expression: isExpressionArg(c, text) }));
+  for (const { text: word, expression } of [...redirectTargets(c.text), ...clobbered, ...dotnetWriteTargets(c.text), ...byCommand]) {
+    const target = writeTarget(word, knownCwd(c), c.dialect, host, expression);
+    if (target === null) continue;
+    if (target === undefined) return `The ${agent} agent may write files only inside its own worktree or the temp dir, and ${word} cannot be resolved before it runs. Use a literal path.`;
+    if (!owns(root, target, host)) return `The ${agent} agent may write files only inside its own worktree (${root}) or the temp dir, not ${target}. Report what should change instead of changing it.`;
+  }
+  return null;
+}
+
 // --- git ------------------------------------------------------------------------------------------
 const CONCLUDES_WITH_COMMIT = /^(merge|cherry-pick|revert|rebase)$/;
 
 function gitRule(c, cwd, deps, line) {
-  const { dir, sub, rest } = parseGit(c.args);
-  const repo = dir ? path.resolve(cwd, dir) : cwd;
+  const { dir, dirKnown, sub, rest } = parseGit(c.args, c.expressions);
+  const repo = !dirKnown ? UNKNOWN_DIR : dir ? deps.host.paths.resolvePath(cwd, dir, c.dialect) : cwd;
   if (rest.includes('--no-verify') || (sub === 'commit' && rest.some(a => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--')))) {
     return 'Do not skip git hooks (--no-verify / -n). Fix what the hook reports; it is part of the safety net.';
   }
@@ -167,6 +403,7 @@ function gitRule(c, cwd, deps, line) {
   return null;
 }
 
+const UNKNOWN_BRANCH = null;
 const PUSH_VALUE_OPTS = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec']);
 
 function pushRule(rest, repo, deps) {
@@ -186,12 +423,16 @@ function pushRule(rest, repo, deps) {
     return 'Plain force-push can destroy commits. If you must rewrite your own unshared branch, use --force-with-lease; on a shared branch, merge instead.';
   }
   const refspecs = positional.slice(1);
-  const current = () => { try { return deps.git(repo, ['rev-parse', '--abbrev-ref', 'HEAD']).trim(); } catch { return ''; } };
+  const current = () => {
+    if (repo === UNKNOWN_DIR) return UNKNOWN_BRANCH;
+    try { return deps.git(repo, ['rev-parse', '--abbrev-ref', 'HEAD']).trim(); } catch { return ''; }
+  };
   const targets = refspecs.length ? refspecs.map(r => {
     let dst = r.includes(':') ? r.split(':').pop() : r;
     dst = dst.replace(/^\+/, '').replace(/^refs\/heads\//, '');
     return dst === 'HEAD' || dst === '' ? (r.startsWith(':') ? r.slice(1) : current()) : dst;
   }) : [current()];
+  if (targets.includes(UNKNOWN_BRANCH)) return unlocatedRepo('which branch this push sends');
   if (flags.includes('--delete') || flags.includes('-d')) {
     return targets.some(t => DEFAULT_BRANCH.test(t)) ? 'Never delete the default branch.' : null;
   }
@@ -202,7 +443,12 @@ function pushRule(rest, repo, deps) {
   return null;
 }
 
+function unlocatedRepo(what) {
+  return `bstack cannot tell ${what}: the git -C path is not literal, so the guard cannot locate the repository. Write the path out, or cd there in its own call.`;
+}
+
 function rebaseRule(repo, deps) {
+  if (repo === UNKNOWN_DIR) return unlocatedRepo('whether this rebase rewrites a pushed branch');
   let branch = '';
   let upstream = '';
   try {
