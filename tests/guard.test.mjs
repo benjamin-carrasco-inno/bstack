@@ -671,38 +671,39 @@ test('PowerShell reads /x as the root of the current drive, not as a Git Bash pa
   blocked(psAt('cmd /c git -C /c/proj push'), onMainAt('C:\\c\\proj'));
 });
 
-test('Bash keeps the Git Bash meaning of /c/..., /tmp, $TEMP and $TMP', () => {
+test('Bash keeps the Git Bash meaning of /c/... and /tmp; a cd to $TEMP or $TMP is unknown', () => {
   blocked(bashAt('git -C /c/proj push'), onMainAt('C:\\proj'));
   allowed(bashAt('git -C /c/proj push'), onMainAt('C:\\c\\proj'));
-  for (const command of ['cd /tmp/rat; git commit -m x', 'cd $TMP/rat; git commit -m x', 'pushd ${TEMP}/rat; git commit -m x']) {
-    assert.match(decide(bashAt(command), onHost(GIT_BASH_HOST, overBaselineAt('C:\\Temp\\rat'))) ?? '', OVER_BASELINE, command);
+  assert.match(decide(bashAt('cd /tmp/rat; git commit -m x'), onHost(GIT_BASH_HOST, overBaselineAt('C:\\Temp\\rat'))) ?? '', OVER_BASELINE);
+  for (const command of ['cd $TMP/rat; git commit -m x', 'pushd ${TEMP}/rat; git commit -m x']) {
+    assert.match(decide(bashAt(command), onHost(GIT_BASH_HOST, overBaselineAt('C:\\Temp\\rat'))) ?? '', /cannot tell which repository/, command);
   }
   const verdictAt = file => ({ ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : null) });
   blocked(bashAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\x\\v.md'));
   blocked(psAt("bash -c 'git -C /c/proj push'"), onMainAt('C:\\proj'));
 });
 
-test('Git Bash leaves $TMPDIR empty unless the environment sets it, so $TMPDIR/c/x is /c/x', () => {
+test('the main session reads a cd to $TMPDIR as unknown, set or not', () => {
   assert.match(decide(bashAt('cd $TMPDIR/c/rat; git commit -m x'), onHost(GIT_BASH_HOST, overBaselineAt('C:\\rat'))) ?? '', /cannot tell which repository/);
   const withTmpdir = { ...GIT_BASH_HOST, env: { TMPDIR: 'C:\\Temp' } };
-  assert.match(decide(bashAt('cd $TMPDIR/rat; git commit -m x'), onHost(withTmpdir, overBaselineAt('C:\\Temp\\rat'))) ?? '', OVER_BASELINE);
+  assert.match(decide(bashAt('cd $TMPDIR/rat; git commit -m x'), onHost(withTmpdir, overBaselineAt('C:\\Temp\\rat'))) ?? '', /cannot tell which repository/);
 });
 
-test('on a POSIX host /tmp is /tmp, and a temp variable is the environment value or unresolved', () => {
+test('on a POSIX host /tmp is /tmp, and the main session reads a temp variable as unresolved', () => {
   const posixAt = command => ({ tool_name: 'Bash', tool_input: { command }, cwd: '/home/u' });
   const mac = { platform: 'darwin', env: { TMPDIR: '/var/folders/xy/T' }, tmpdir: () => '/var/folders/xy/T' };
   for (const command of ['cd /tmp/repo && git commit -m x', 'pushd /tmp/repo; git commit -m x', 'cd /tmp && cd repo && git commit -m x']) {
     assert.match(decide(posixAt(command), onHost(mac, overBaselineAt('/tmp/repo'))) ?? '', OVER_BASELINE, command);
   }
   for (const command of ['cd $TMPDIR/repo && git commit -m x', 'cd "${TMPDIR}/repo"; git commit -m x']) {
-    assert.match(decide(posixAt(command), onHost(mac, overBaselineAt('/var/folders/xy/T/repo'))) ?? '', OVER_BASELINE, command);
+    assert.match(decide(posixAt(command), onHost(mac, overBaselineAt('/var/folders/xy/T/repo'))) ?? '', /cannot tell which repository/, command);
   }
   const linux = { platform: 'linux', env: {}, tmpdir: () => '/tmp' };
   for (const command of ['cd $TMPDIR/repo && git commit -m x', 'cd $TEMP/repo; git commit -m x']) {
     assert.match(decide(posixAt(command), onHost(linux, overBaselineAt('/tmp/repo'))) ?? '', /cannot tell which repository/, command);
   }
   const pwsh = command => ({ tool_name: 'PowerShell', tool_input: { command }, cwd: '/home/u' });
-  assert.match(decide(pwsh('cd $env:TMP/repo; git commit -m x'), onHost({ ...linux, env: { TMP: '/tmp' } }, overBaselineAt('/tmp/repo'))) ?? '', OVER_BASELINE);
+  assert.match(decide(pwsh('cd $env:TMP/repo; git commit -m x'), onHost({ ...linux, env: { TMP: '/tmp' } }, overBaselineAt('/tmp/repo'))) ?? '', /cannot tell which repository/);
   assert.match(decide(pwsh('cd $env:TMP/repo; git commit -m x'), onHost(linux, overBaselineAt('/tmp/repo'))) ?? '', /cannot tell which repository/);
 });
 
@@ -733,10 +734,55 @@ test('no-authoring agents: a temp variable assigned earlier in the line is not t
   }
 });
 
-test('set assigns a variable only in cmd; in bash it sets positional parameters', () => {
+test('comment ratchet: the main session never reads a temp variable as the temp dir, however it was set', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  const bashDir = repo.dir.replace(/\\/g, '/');
+  const sub = path.relative(os.tmpdir(), repo.dir);
+  const lines = [
+    [`Set-Item env:TEMP '${repo.dir}'; cd $env:TEMP; git commit -m x`, 'PowerShell'],
+    [`$env:TEMP += '\\${sub}'; cd $env:TEMP; git commit -m x`, 'PowerShell'],
+    [`[Environment]::SetEnvironmentVariable('TMP', '${repo.dir}'); Set-Location $env:TMP; git commit -m x`, 'PowerShell'],
+    ['cd $env:TEMP; git commit -m x', 'PowerShell'],
+    [`declare -x TEMP=${bashDir}; cd $TEMP && git commit -m x`, 'Bash'],
+    [`readonly TMP=${bashDir}; cd $TMP && git commit -m x`, 'Bash'],
+    [`cd \${TMP/tmp/${bashDir.replace(/\//g, '\\/')}} && git commit -m x`, 'Bash'],
+    ['cd $TEMP && git commit -m x', 'Bash'],
+  ];
+  for (const [line, tool] of lines) {
+    assert.match(repo.run(line, tool) ?? '', /cannot tell which repository/, line);
+    assert.match(repo.run(line, tool, os.tmpdir()) ?? '', /cannot tell which repository/, `${line} (from the temp dir)`);
+  }
+});
+
+test('no-authoring agents: a temp variable is the temp dir only when every mention of it in the line is a plain read', () => {
+  for (const agent of NO_AUTHORING) {
+    const psAs = command => psAt(command, { agent_type: agent });
+    const as = command => bashAt(command, { agent_type: agent });
+    const host = onHost(GIT_BASH_HOST);
+    blocked(psAs("Set-Item env:TEMP 'C:\\other\\checkout'; cd $env:TEMP; git checkout -- ."), host);
+    blocked(psAs("$env:TEMP += '\\..\\..\\other'; cd $env:TEMP; git reset --hard"), host);
+    blocked(psAs("$env:TEMP += 'x'; Set-Content $env:TEMP\\app.js x"), host);
+    blocked(psAs("[Environment]::SetEnvironmentVariable('TMP', 'C:\\other'); Set-Location $env:TMP; git reset --hard"), host);
+    blocked(psAs("${env:TEMP} = 'C:\\other'; cd $env:TEMP; git reset --hard"), host);
+    blocked(as('declare -x TEMP=/c/other/checkout; cd $TEMP && git checkout -- .'), host);
+    blocked(as('readonly TMP=/c/other; cd $TMP && echo x > f.txt'), host);
+    blocked(as('cd ${TMP/Temp/other} && git reset --hard'), host);
+    blocked(as('cd ${TMP:-/c/other} && git reset --hard'), host);
+    blocked(as('typeset TEMP=/c/other; echo x > $TEMP/app.js'), host);
+
+    allowed(psAs('cd $env:TEMP; echo x > f.txt'), host);
+    allowed(as('echo x > $TMP/a'), host);
+    allowed(as("cat > $TEMP/x.sh <<'EOF'\necho hi\nEOF"), host);
+    allowed(as('cd "${TEMP}/x" && git checkout HEAD~1'), host);
+  }
+});
+
+test('set assigns a variable in cmd, and any mention of TEMP besides a plain read leaves $TEMP unresolved', () => {
   for (const agent of NO_AUTHORING) {
     const as = command => bashAt(command, { agent_type: agent });
-    allowed(as('set TEMP=/c/other/checkout; cd $TEMP && echo x > f.txt'), onHost(GIT_BASH_HOST));
+    blocked(as('set TEMP=/c/other/checkout; cd $TEMP && echo x > f.txt'), onHost(GIT_BASH_HOST));
     blocked(as('cmd /c "set GIT_DIR=C:/checkout/.git && git reset --hard"'));
   }
 });
