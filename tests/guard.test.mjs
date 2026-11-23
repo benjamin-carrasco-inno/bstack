@@ -1521,7 +1521,7 @@ test('no-authoring agents: a quoted write target with a parenthesis is a literal
     allowed(as('rm "app/(marketing)/tmp.txt"'));
     allowed(as(`sed -i 's/a/b/' "src/routes/(app)/+page.svelte"`));
     allowed(as('git worktree add "wt (1)" main'));
-    allowed(psAs(`Set-Content -LiteralPath "${temp}" -Value x`));
+    allowed({ tool_name: 'PowerShell', tool_input: { command: `Set-Content -LiteralPath "${temp}" -Value x` }, cwd: '/repo', agent_type: agent });
     allowed(psAs("Remove-Item -LiteralPath 'app\\(marketing)\\tmp.txt'"));
     allowed(psAs('[IO.File]::WriteAllText("notes (1).txt", "x")'));
 
