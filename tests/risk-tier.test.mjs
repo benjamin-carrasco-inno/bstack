@@ -193,6 +193,28 @@ test('DDL words inside sql string literals do not make a fixture a schema file',
   assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["SELECT 'unterminated; DROP TABLE t;"] })), 2);
 });
 
+test('a suppression token in a .jsx or .tsx file always counts, inside quotes or not', () => {
+  const lines = [
+    "      <p>Rock 'n roll {/* eslint-disable-line react/no-unescaped-entities */} and 'em</p>",
+    '      <p>"Quote {/* eslint-disable-line react/no-unescaped-entities */} unquote"</p>',
+    '  const s = "eslint-disable";',
+  ];
+  for (const p of ['src/App.tsx', 'src/App.jsx']) {
+    for (const l of lines) assert.equal(tier(file(p, { add: [l] })), 2, `${p}: ${l}`);
+  }
+});
+
+test('a .sql fixture with dollar quotes, escape strings or backslashes is a schema file', () => {
+  const fixtures = [
+    ['SELECT $$it\'s$$;', 'DROP TABLE users;', "SELECT $$'$$;"],
+    ["SELECT E'a\\\\' b';", 'DROP TABLE users;', "SELECT E'c\\\\' d';"],
+    ["SELECT format('DROP TABLE %I', 'users') \\gexec"],
+    ["INSERT INTO t (s) VALUES (e'x');"],
+    ['SELECT $1;'],
+  ];
+  for (const add of fixtures) assert.equal(tier(file('tests/fixtures/seed.sql', { created: true, add })), 2, add.join(' '));
+});
+
 test('adding tests stays tier 1', () => {
   assert.equal(tier(file('tests/test_api.py', { created: true, add: ['def test_c():', '    assert c()'] })), 1);
 });
