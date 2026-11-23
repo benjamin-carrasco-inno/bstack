@@ -486,6 +486,63 @@ test('no-authoring agents: more tree-rewriting git and file writers', () => {
   allowed(ps('Clear-Content C:/checkout/a.mjs'));
 });
 
+test('an escaped > before | still pipes into the next command', () => {
+  for (const agent of ['', ...NO_AUTHORING]) {
+    const as = command => ({ ...shell(command), agent_type: agent });
+    const psAs = command => ({ ...ps(command), agent_type: agent });
+    blocked(as('echo \\>|git push origin main'));
+    blocked(psAs('echo `>|git push origin main'));
+    blocked(as('cmd /c "echo ^>|git push origin main"'));
+    blocked(as('echo \\>|gh pr merge 5 --squash'));
+  }
+});
+
+test('no-authoring agents: a clobber redirect >| names the next word as its target', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('echo x >| /checkout/a.mjs'));
+    blocked(as('echo x >|/checkout/a.mjs'));
+    blocked(as('echo x 2>| /checkout/err.txt'));
+    blocked(as('echo x >| /checkout/a.mjs; echo done'));
+    blocked(as('echo x >|git push origin main'));
+
+    allowed(as('echo x >| out.txt'));
+    allowed(as('echo x 2>| /tmp/err.txt'));
+    allowed(as('echo \\>|cat'));
+  }
+});
+
+test('no-authoring agents: heredoc bodies are text, not redirects', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    allowed(as("cat > /tmp/repro.mjs <<'EOF'\nconst out = cases.map(c => decide(c));\nEOF\nnode /tmp/repro.mjs"));
+    allowed(as("cat <<'EOF' | node --input-type=module\nconsole.log([1].map(x => String(x)));\nEOF"));
+    allowed(as('cat > /tmp/f.mjs <<EOF\nconst f = x => `${x}`;\nEOF'));
+    allowed(as("cat <<-'A' > /tmp/a.txt\n\tx => y\n\tA\ncat <<B\nz > w(1)\nB"));
+
+    blocked(as("cat > /checkout/a.mjs <<'EOF'\nx\nEOF"));
+    blocked(as("cat <<'EOF'\nx => y\nEOF\necho x > /checkout/a.mjs"));
+    blocked(as("bash <<'EOF'\necho x > /checkout/a.mjs\nEOF"));
+    blocked(as("cat <<'EOF' | sh\necho x > /checkout/a.mjs\nEOF"));
+  }
+});
+
+test('no-authoring agents: Git Bash drive paths /c/... are the Windows drive', () => {
+  for (const agent of NO_AUTHORING) {
+    const at = command => ({ tool_name: 'Bash', tool_input: { command }, cwd: 'C:\\work\\wt', agent_type: agent });
+    allowed(at('git -C /c/work/wt checkout --detach HEAD~1'));
+    allowed(at('git diff > /c/work/wt/x.diff'));
+    allowed(at('cd /c/work/wt && git reset --hard'));
+
+    blocked(at('git -C /c/work/other checkout --detach HEAD~1'));
+    blocked(at('git diff > /d/work/wt/x.diff'));
+    blocked(at('cd /c/work && git reset --hard'));
+
+    const drive = /^([a-z]):[\\/](.*)$/i.exec(os.tmpdir());
+    if (drive) allowed(at(`git diff > /${drive[1].toLowerCase()}/${drive[2].replace(/\\/g, '/')}/x.diff`));
+  }
+});
+
 test('ciState treats skipped-only and missing checks as not green', () => {
   assert.equal(ciState([]).ok, false);
   assert.equal(ciState([{ __typename: 'CheckRun', name: 'a', status: 'COMPLETED', conclusion: 'SKIPPED' }]).ok, false);
@@ -770,6 +827,13 @@ test('comment ratchet: a clobber redirection (>|) is not a pathspec', () => {
   for (const command of ['git commit -m "feat: x" >| /dev/null', 'git commit -m "feat: x" 2>| err.txt']) {
     assert.equal(legit.run(command), null, command);
   }
+});
+
+test('comment ratchet: an escaped > before | still pipes into git commit', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  assert.match(repo.run('echo \\>|git commit -m x') ?? '', /app\.py/);
 });
 
 test('comment ratchet: checks the repo that a cd earlier in the call moves to', () => {

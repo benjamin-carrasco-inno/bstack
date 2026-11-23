@@ -18,6 +18,16 @@ test('a POSIX absolute path is absolute on every platform', () => {
   assert.equal(resolvePath('/repo'), '/repo');
 });
 
+test('a Git Bash drive path /c/... is the Windows drive when the base is a Windows path', () => {
+  assert.equal(resolvePath('C:\\wt', '/c/wt/x.diff'), 'C:\\wt\\x.diff');
+  assert.equal(resolvePath('C:\\wt', '/d'), 'D:\\');
+  assert.equal(resolvePath('/repo', '/c/wt'), '/c/wt');
+  assert.equal(resolvePath('C:\\wt', '/checkout'), '/checkout');
+  assert.equal(contains('C:\\wt', '/c/wt/x.diff'), true);
+  assert.equal(contains('C:\\wt', '/d/wt/x.diff'), false);
+  assert.equal(contains('/c/wt', '/c/wt/x'), true);
+});
+
 test('contains compares within one path style and refuses across styles', () => {
   assert.equal(contains('C:\\repo', 'C:\\repo'), true);
   assert.equal(contains('C:\\repo', 'c:\\Repo\\src\\a.mjs'), true);
