@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commandsIn, parseGit } from './lib/shell.mjs';
-import { KINDS, MARKER, latestFor } from './lib/verdicts.mjs';
+import { KINDS, MARKER, latestFor, timeOf } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { riskTier, readRiskPaths } from './risk-tier.mjs';
@@ -80,7 +80,7 @@ function markerRule(c, cwd, deps) {
   if (MARKER.test(c.text) && !READ_ONLY.has(c.cmd) && !readOnlyGh) {
     return 'Verdict and interrogate lines are posted by the bstack hook when the bstack:reviewer or bstack:adversary agent finishes. Run that agent instead of writing the line yourself.';
   }
-  if (PENDING_NAME.test(c.text) && !READ_ONLY.has(c.cmd)) return SAVED_VERDICTS;
+  if (!READ_ONLY.has(c.cmd) && pathArgs(c).some(a => PENDING_PATH.test(a))) return SAVED_VERDICTS;
   if (c.cmd === 'gh') {
     for (const file of bodyFiles(c.args)) {
       const text = deps.readFile(path.resolve(cwd, file));
@@ -88,6 +88,14 @@ function markerRule(c, cwd, deps) {
     }
   }
   return null;
+}
+
+const PENDING_PATH = new RegExp(String.raw`(^|[\\/>=])${PENDING_NAME.source}([\\/]|$)`, 'i');
+const MESSAGE_OPTS = new Set(['-m', '--message', '-b', '--body', '-t', '--title']);
+
+function pathArgs({ cmd, args }) {
+  if (cmd !== 'git' && cmd !== 'gh') return args;
+  return args.filter((a, i) => !MESSAGE_OPTS.has(args[i - 1]) && !/^--(message|body|title)=/.test(a));
 }
 
 function bodyFiles(args) {
@@ -261,14 +269,15 @@ function mergeGate(args, cwd, deps) {
   return null;
 }
 
-// Verdicts the hook saved while GitHub did not answer: post the ones for this head, drop older ones.
+// Verdicts the hook saved while GitHub did not answer: post the ones for this head, drop older heads,
+// empty entries and entries a verdict of the same kind posted since then has replaced.
 function postSaved(pr, cwd, deps) {
   const repo = repoOfUrl(pr.url);
   if (!repo) return null;
   pr.comments ??= [];
   for (const { file, entry } of deps.pending.list(repo, String(pr.number))) {
-    if (entry.sha !== pr.headRefOid || !(entry.kind in KINDS)) { deps.pending.remove(file); continue; }
     const body = String(entry.body ?? '');
+    if (entry.sha !== pr.headRefOid || !(entry.kind in KINDS) || !body.trim() || replaced(entry, pr.comments)) { deps.pending.remove(file); continue; }
     if (!pr.comments.some(c => String(c.body ?? '').trim() === body.trim())) {
       try { deps.postComment(cwd, pr.url, body); }
       catch (e) { return `bstack could not post the ${entry.kind} it saved for ${pr.headRefOid.slice(0, 7)} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
@@ -279,8 +288,17 @@ function postSaved(pr, cwd, deps) {
   return null;
 }
 
+function replaced(entry, comments) {
+  const { tag, line } = KINDS[entry.kind];
+  const savedAt = Date.parse(entry.at ?? '') || 0;
+  return comments.some(c => {
+    const body = String(c.body ?? '');
+    return body.startsWith(tag) && line.exec(body)?.[2] === entry.sha && timeOf(c) > savedAt;
+  });
+}
+
 const runKey = c => `${c.__typename ?? ''}|${c.workflowName ?? ''}|${c.name ?? c.context ?? 'check'}`;
-const runTime = c => Date.parse(c.startedAt ?? c.completedAt ?? '') || 0;
+const runTime = c => Date.parse(c.startedAt ?? c.completedAt ?? c.createdAt ?? '') || 0;
 
 // A re-run or a newer run of a check on the same SHA replaces the older one, so a run cancelled by a
 // newer one does not count.

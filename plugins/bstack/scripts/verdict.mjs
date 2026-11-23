@@ -124,7 +124,7 @@ export function handle(input, gh, read = readTranscript) {
   try {
     pr = JSON.parse(gh(input.cwd, ['pr', 'view', report.pr, ...repoArgs(repo), '--json', 'number,url,headRefOid,comments']));
   } catch (e) {
-    if (transient(e)) return { save: { kind, repo, pr: report.pr, sha: report.sha, body: commentBody(kind, report.result, report.sha, report.body) } };
+    if (transient(e)) return { save: { kind, repo, pr: report.pr, sha: report.sha, result: report.result, report: report.body } };
     const named = repo ? `PR ${report.pr} in ${repo}` : `PR ${report.pr}`;
     return fail(named, `bstack could not read ${named} (${String(e.message ?? e).split('\n')[0]}).`,
       'Check the PR number and end with the line again.');
@@ -135,12 +135,12 @@ export function handle(input, gh, read = readTranscript) {
   }
   const body = commentBody(kind, report.result, report.sha, report.body);
   if ((pr.comments ?? []).some(c => String(c.body ?? '').trim() === body.trim())) return {};
-  return { post: { pr: pr.url, repo, body, kind, number: String(pr.number), sha: report.sha } };
+  return { post: { pr: pr.url, repo, body, kind, number: String(pr.number), sha: report.sha, result: report.result, report: report.body } };
 }
 
 export const commentArgs = (post, file) => ['pr', 'comment', post.pr, ...repoArgs(post.repo), '--body-file', file];
 
-const TRANSIENT = /ETIMEDOUT|timed? ?out|timeout|dial tcp|connectex|connection (reset|refused)|network|no such host|unexpected EOF|TLS handshake|HTTP 50[0234]/i;
+const TRANSIENT = /ETIMEDOUT|timed? ?out|timeout|dial tcp|connectex|connection (reset|refused)|network|no such host|\bEOF\b|TLS handshake|HTTP 50[0234]|error connecting to|check your internet connection|githubstatus\.com/i;
 export const transient = e => e?.code === 'ETIMEDOUT' || TRANSIENT.test(String(e?.message ?? e));
 
 // Three tries over about 60 s: a 25 s gh timeout, then waits of 5 s and 15 s. hooks.json allows 210 s
@@ -178,23 +178,24 @@ function postComment(cwd, post, gh) {
 }
 
 // Returns the hook's stdout object, or null when there is nothing to say.
-export function deliver(input, { gh, read = readSettled, save = pendingStore().save, origin = originRepo }) {
+export function deliver(input, { gh, read = readSettled, save = pendingStore().save, origin = originRepo, now = () => new Date().toISOString() }) {
   const out = handle(input, gh, read);
   if (out.block) return { decision: 'block', reason: out.block };
   if (out.warn) return { systemMessage: out.warn };
-  let saved = out.save;
+  let unposted = out.save;
   if (out.post) {
     try {
       postComment(input.cwd, out.post, gh);
       return { systemMessage: `bstack: verdict posted on ${out.post.pr}` };
-    } catch (e) {
-      if (!transient(e)) throw e;
-      const { kind, repo, number, sha, body } = out.post;
-      saved = { kind, repo: repo ?? repoOfUrl(out.post.pr), pr: number, sha, body };
+    } catch {
+      const { kind, repo, number, sha, result, report } = out.post;
+      unposted = { kind, repo: repo ?? repoOfUrl(out.post.pr), pr: number, sha, result, report };
     }
   }
-  if (!saved) return null;
-  saved.repo ??= origin(input.cwd);
+  if (!unposted) return null;
+  const { result, report, ...where } = unposted;
+  const at = now();
+  const saved = { ...where, repo: where.repo ?? origin(input.cwd), at, body: commentBody(where.kind, result, where.sha, report, at) };
   if (!saved.repo) {
     return { systemMessage: `bstack: GitHub did not answer and the repository of PR ${saved.pr} is unknown, so nothing was posted. Run a fresh ${input.agent_type} agent for it.` };
   }
