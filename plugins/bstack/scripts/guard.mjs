@@ -10,7 +10,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commandsIn, parseGit } from './lib/shell.mjs';
-import { MARKER, latestFor } from './lib/verdicts.mjs';
+import { KINDS, MARKER, latestFor } from './lib/verdicts.mjs';
+import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { riskTier, readRiskPaths } from './risk-tier.mjs';
 
@@ -72,11 +73,14 @@ function resolvedDir(target, here) {
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
+const SAVED_VERDICTS = 'Saved verdicts are written only by the bstack hook when GitHub does not answer; the guard posts them at the next merge. Run the bstack:reviewer or bstack:adversary agent instead.';
+
 function markerRule(c, cwd, deps) {
   const readOnlyGh = c.cmd === 'gh' && (/^(view|checks|diff|list|status)$/.test(c.args[1] ?? '') || (c.args[0] === 'api' && !hasWriteFields(c.args)));
   if (MARKER.test(c.text) && !READ_ONLY.has(c.cmd) && !readOnlyGh) {
     return 'Verdict and interrogate lines are posted by the bstack hook when the bstack:reviewer or bstack:adversary agent finishes. Run that agent instead of writing the line yourself.';
   }
+  if (PENDING_NAME.test(c.text) && !READ_ONLY.has(c.cmd)) return SAVED_VERDICTS;
   if (c.cmd === 'gh') {
     for (const file of bodyFiles(c.args)) {
       const text = deps.readFile(path.resolve(cwd, file));
@@ -233,6 +237,8 @@ function mergeGate(args, cwd, deps) {
   if (pr.state && pr.state !== 'OPEN') return null;
   const sha = pr.headRefOid;
   const short = sha.slice(0, 7);
+  const unposted = postSaved(pr, cwd, deps);
+  if (unposted) return unposted;
 
   const ci = ciState(pr.statusCheckRollup);
   if (!ci.ok) return `CI is not green on ${short}: ${ci.detail}. Watch it with gh pr checks ${pr.url} --watch. Flaky: rerun once. Caused by the change: fix it. Never weaken the check.`;
@@ -255,8 +261,40 @@ function mergeGate(args, cwd, deps) {
   return null;
 }
 
+// Verdicts the hook saved while GitHub did not answer: post the ones for this head, drop older ones.
+function postSaved(pr, cwd, deps) {
+  const repo = repoOfUrl(pr.url);
+  if (!repo) return null;
+  pr.comments ??= [];
+  for (const { file, entry } of deps.pending.list(repo, String(pr.number))) {
+    if (entry.sha !== pr.headRefOid || !(entry.kind in KINDS)) { deps.pending.remove(file); continue; }
+    const body = String(entry.body ?? '');
+    if (!pr.comments.some(c => String(c.body ?? '').trim() === body.trim())) {
+      try { deps.postComment(cwd, pr.url, body); }
+      catch (e) { return `bstack could not post the ${entry.kind} it saved for ${pr.headRefOid.slice(0, 7)} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
+      pr.comments.push({ body, createdAt: new Date().toISOString() });
+    }
+    deps.pending.remove(file);
+  }
+  return null;
+}
+
+const runKey = c => `${c.__typename ?? ''}|${c.workflowName ?? ''}|${c.name ?? c.context ?? 'check'}`;
+const runTime = c => Date.parse(c.startedAt ?? c.completedAt ?? '') || 0;
+
+// A re-run or a newer run of a check on the same SHA replaces the older one, so a run cancelled by a
+// newer one does not count.
+function newestRuns(checks) {
+  const newest = new Map();
+  for (const c of checks) {
+    const seen = newest.get(runKey(c));
+    if (!seen || runTime(c) >= runTime(seen)) newest.set(runKey(c), c);
+  }
+  return [...newest.values()];
+}
+
 export function ciState(rollup) {
-  const checks = Array.isArray(rollup) ? rollup : [];
+  const checks = newestRuns(Array.isArray(rollup) ? rollup : []);
   if (!checks.length) return { ok: false, detail: 'no checks ran (a missing check is not a pass)' };
   const pending = [];
   const failed = [];
@@ -289,6 +327,7 @@ function mcpRule(tool, input) {
 }
 
 function writeRule(input, deps) {
+  if (PENDING_NAME.test(String(input.file_path ?? input.notebook_path ?? ''))) return SAVED_VERDICTS;
   const text = [input.content, input.new_string, input.new_source, ...(input.edits ?? []).map(e => e.new_string)].filter(Boolean).join('\n');
   if (!MARKER.test(text)) return null;
   const file = String(input.file_path ?? input.notebook_path ?? '');
@@ -297,12 +336,32 @@ function writeRule(input, deps) {
 }
 
 // --- wiring -----------------------------------------------------------------------------------------
+// hooks.json gives the shell guard 300 s: the PR read, the diff and one saved-verdict post at 30 + 60 s each.
+export function retryOnTimeout(run, timeouts = [30000, 60000]) {
+  return (cwd, args) => {
+    try {
+      return run(cwd, args, timeouts[0]);
+    } catch (e) {
+      if (e?.code !== 'ETIMEDOUT') throw e;
+      return run(cwd, args, timeouts[1]);
+    }
+  };
+}
+
+const gh = retryOnTimeout((cwd, args, timeout) => execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout, maxBuffer: 64 << 20 }));
+
 export const realDeps = {
   git: (cwd, args, { env, input, buffer, timeout = 15000 } = {}) => execFileSync('git', ['-C', cwd, ...args], {
     encoding: buffer ? undefined : 'utf8', input, env: env ? { ...process.env, ...env } : undefined, timeout, maxBuffer: 256 << 20,
     stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   }),
-  gh: (cwd, args) => execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 45000, maxBuffer: 64 << 20 }),
+  gh,
+  pending: pendingStore(),
+  postComment: (cwd, url, body) => {
+    const file = path.join(os.tmpdir(), `bstack-saved-verdict-${process.pid}-${Date.now()}.md`);
+    fs.writeFileSync(file, body, 'utf8');
+    try { gh(cwd, ['pr', 'comment', url, '--body-file', file]); } finally { fs.rmSync(file, { force: true }); }
+  },
   exists: file => fs.existsSync(file),
   readFile: file => { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } },
   insideBstackSource: file => {

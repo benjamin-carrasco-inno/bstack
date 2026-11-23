@@ -167,6 +167,14 @@ test('a verdict is posted after a 30 s gh outage, with no agent rerun', () => {
   assert.deepEqual(clock.calls.map(a => a[1]), ['view', 'comment']);
 });
 
+test('a refused connection is retried like a timeout', () => {
+  let calls = 0;
+  const refused = 'Command failed: gh pr view 7\nPost "https://api.github.com/graphql": proxyconnect tcp: dial tcp 127.0.0.1:9: connectex: No connection could be made because the target machine actively refused it.\n';
+  const gh = retrying(() => { if (++calls < 3) throw new Error(refused); return 'ok'; }, { pause: () => {} });
+  assert.equal(gh('/repo', ['pr', 'view', '7']), 'ok');
+  assert.equal(calls, 3);
+});
+
 test('retries stop at once on an error that is not transient', () => {
   let calls = 0;
   const gh = retrying(() => { calls++; throw new Error('GraphQL: Could not resolve to a PullRequest with the number of 70.'); }, { pause: () => {} });
