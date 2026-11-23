@@ -227,6 +227,27 @@ test('ciState judges only the newest run of each check on the head SHA', () => {
   assert.match(ciState([run('lint', 'SUCCESS', '2026-11-23T10:01:00Z'), run('standards', 'CANCELLED', '2026-11-23T10:00:00Z')]).detail, /failed: standards/);
 });
 
+test('ciState keeps an older failure when a newer run of the check is skipped or neutral', () => {
+  for (const later of ['SKIPPED', 'NEUTRAL']) {
+    const rollup = [run('test', 'FAILURE', '2026-11-23T10:00:00Z'), run('test', later, '2026-11-23T10:01:00Z')];
+    assert.match(ciState(rollup).detail, /failed: test/, later);
+  }
+});
+
+test('ciState keeps a newer queued run pending even after an older success', () => {
+  for (const startedAt of [null, '0001-01-01T00:00:00Z']) {
+    const rollup = [run('test', 'SUCCESS', '2026-11-23T10:00:00Z'), run('test', null, startedAt, 'QUEUED')];
+    assert.match(ciState(rollup).detail, /still running: test/, String(startedAt));
+  }
+});
+
+test('ciState drops a cancelled run only for a strictly newer success of the same check', () => {
+  assert.match(ciState([run('test', 'CANCELLED', '2026-11-23T10:00:00Z'), run('test', 'SUCCESS', '2026-11-23T10:00:00Z')]).detail, /failed: test/);
+  assert.match(ciState([run('test', 'CANCELLED', null), run('test', 'SUCCESS', '2026-11-23T10:00:00Z')]).detail, /failed: test/);
+  assert.match(ciState([run('test', 'CANCELLED', '2026-11-23T10:00:00Z'), run('test', 'FAILURE', '2026-11-23T10:01:00Z')]).detail, /failed: test/);
+  assert.equal(ciState([run('test', 'CANCELLED', '2026-11-23T10:00:00Z'), run('test', 'SUCCESS', '2026-11-23T10:01:00Z')]).ok, true);
+});
+
 function withPending(entries, { post = () => {}, pr = {} } = {}) {
   const removed = [];
   const posted = [];
@@ -307,9 +328,9 @@ test('a saved entry with an empty body is dropped, not posted', () => {
   assert.deepEqual(removed, ['f0']);
 });
 
-test('ciState orders status contexts without startedAt by their own time', () => {
+test('ciState judges every status context, whatever its time', () => {
   const ctx = (state, createdAt) => ({ __typename: 'StatusContext', context: 'ci/legacy', state, createdAt });
-  assert.equal(ciState([ctx('SUCCESS', '2026-11-23T10:05:00Z'), ctx('FAILURE', '2026-11-23T10:00:00Z')]).ok, true);
+  assert.match(ciState([ctx('SUCCESS', '2026-11-23T10:05:00Z'), ctx('FAILURE', '2026-11-23T10:00:00Z')]).detail, /failed: ci\/legacy/);
   assert.match(ciState([ctx('FAILURE', '2026-11-23T10:05:00Z'), ctx('SUCCESS', '2026-11-23T10:00:00Z')]).detail, /failed: ci\/legacy/);
 });
 
