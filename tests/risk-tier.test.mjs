@@ -123,10 +123,13 @@ test('a .sql fixture with any schema statement or unrecognised line is a schema 
     'CREATE EXTENSION pgcrypto;', "ALTER TYPE mood ADD VALUE 'b';", 'GRANT SELECT ON t TO r;', 'REVOKE SELECT ON t FROM r;',
     'TRUNCATE t;', "COMMENT ON TABLE t IS 'x';", 'SELECT 1; CREATE TABLE t (id int);',
   ];
-  for (const s of statements) assert.equal(tier(file('tests/fixtures/db/seed.sql', { add: [s] })), 2, s);
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { add: ['CREATE', 'TABLE t (id int);'] })), 2);
-  assert.equal(tier(file('tests/fixtures/db/schema.sql', { add: ['  extra int,'] })), 2);
-  assert.equal(tier(file('tests/fixtures/db/seed.sql', { del: ['CREATE TABLE t (id int);'] })), 2);
+  for (const s of statements) assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: [s] })), 2, s);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ['CREATE', 'TABLE t (id int);'] })), 2);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ['SELECT 1;', '  extra int,'] })), 2);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ['VACUUM;'] })), 2);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ['SELECT 1', '\\i schema.sql'] })), 2);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { deleted: true, del: ['CREATE TABLE t (id int);'] })), 2);
+  assert.equal(tier(file('pkg/testdata/seed.sql', { deleted: true, del: ['SELECT 1;'] })), 1);
 });
 
 test('a .sql fixture of queries and inserts is data', () => {
@@ -141,14 +144,14 @@ test('a .sql fixture of queries and inserts is data', () => {
   ] })), 1);
 });
 
-test('a .sql fixture line counts as a continuation only inside a data statement added in the same run', () => {
+test('a modified .sql fixture is a schema file, since the diff hides the statement around its lines', () => {
   const sql = lines => ['diff --git a/tests/fixtures/db/q.sql b/tests/fixtures/db/q.sql', '--- a/tests/fixtures/db/q.sql',
     '+++ b/tests/fixtures/db/q.sql', ...lines].join('\n');
-  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', '+SELECT a,', '+  b', '+FROM t;'])), 1);
-  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', '+SELECT a;', '+  extra int,'])), 2);
-  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', '+SELECT a,', '@@ -9,2 +10,3 @@', '+  extra int,'])), 2);
-  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', '+SELECT a,', ' CREATE TABLE t (', '+  extra int,'])), 2);
+  assert.equal(tier(file('tests/fixtures/db/schema.sql', { add: ['  extra int,'] })), 2);
+  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', ' CREATE TABLE t (', '+  extra int,'])), 2);
+  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', ' CREATE VIEW v AS', '+SELECT a, b FROM t;'])), 2);
   assert.equal(tier(sql(['@@ -1,2 +1,3 @@', ' CREATE INDEX i ON t', '+(a, b);'])), 2);
+  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', '+SELECT a,', '+  b', '+FROM t;'])), 2);
 });
 
 test('adding tests stays tier 1', () => {

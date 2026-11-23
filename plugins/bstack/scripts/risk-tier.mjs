@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { literalSpans, syntaxFor } from './comments.mjs';
+import { literalSpans, SYNTAX, syntaxFor } from './comments.mjs';
 
 const DOCS = /(^|\/)(LICENSE|NOTICE|CHANGELOG|README)(\.[a-z]+)?$|\.(md|rst|txt|adoc)$/i;
 const NOT_DOCS = /(^|\/)(AGENTS|CLAUDE)\.md$|(^|\/)requirements[^/]*\.txt$|(^|\/)\.github\/[^/]+\.txt$|(^|\/)(skills|agents|rules)\//i;
@@ -44,9 +44,26 @@ const SUPPRESSION = /#\s*noqa|type:\s*ignore|pyright:\s*ignore|eslint-disable|@t
 const TEST_REMOVED = /^\s*(async\s+)?def\s+test_|^\s*#\[(tokio::)?test\]|^\s*(it|test)\s*\(/;
 const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
 
+const MULTILINE_DELIMITER = new Map([[SYNTAX.js, /`/], [SYNTAX.py, /"""|'''/]]);
+const SQL_BLANK_OR_COMMENT = /^\s*(--|$)/;
+const SQL_DATA_START = /^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|VALUES)\b/i;
+const SQL_NOT_DATA = /\b(CREATE|ALTER|DROP|GRANT|REVOKE|TRUNCATE|RENAME)\b|\bCOMMENT\s+ON\b|^\s*\\/i;
+
+function isSqlData(lines) {
+  let inStatement = false;
+  return lines.every(line => {
+    if (SQL_BLANK_OR_COMMENT.test(line)) return true;
+    if (SQL_NOT_DATA.test(line)) return false;
+    if (SQL_DATA_START.test(line)) inStatement = true;
+    else if (!inStatement) return false;
+    if (line.includes(';')) inStatement = false;
+    return true;
+  });
+}
+
 function suppresses(line, syntax) {
   const tokens = [...line.matchAll(new RegExp(SUPPRESSION, 'g'))].map(m => m.index);
-  if (!tokens.length || !syntax) return tokens.length > 0;
+  if (!tokens.length || !syntax || MULTILINE_DELIMITER.get(syntax)?.test(line)) return tokens.length > 0;
   const literals = literalSpans(line, syntax);
   return tokens.some(at => !literals.some(([from, to]) => from <= at && at < to));
 }
@@ -85,9 +102,8 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
     if (!docs) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
     if (extra.some(re => re.test(p))) raise(2, `listed in .github/risk-paths.txt: ${p}`);
     const fixture = FIXTURE.test(p);
-    const dataFixture = fixture && /\.sql$/i.test(p);
+    const dataFixture = fixture && /\.sql$/i.test(p) && (f.created || f.deleted) && isSqlData(f.created ? f.added : f.removed);
     for (const [re, why] of PATH_RULES) if (re.test(p) && !(dataFixture && re === SCHEMA_FILE)) raise(2, `${why}: ${p}`);
-    if (dataFixture && [...f.added, ...f.removed].some(l => SCHEMA_STATEMENT.test(l))) raise(2, `SQL schema statement: ${p}`);
 
     const isTest = TEST_PATH.test(p);
     if (isTest && f.deleted) raise(2, `test file deleted: ${p}`);
