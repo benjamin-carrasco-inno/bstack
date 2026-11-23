@@ -1509,3 +1509,36 @@ test('no-authoring agents: a quoted cd or -C into a temp dir with a parenthesis 
     blocked(psAs('git -C @(Get-Location) checkout HEAD~1'));
   }
 });
+
+test('no-authoring agents: a quoted write target with a parenthesis is a literal path', () => {
+  const temp = path.join(tempDir(), 'x (1)', 'a.txt');
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    allowed(as('echo x > "notes (1).txt"'));
+    allowed(as("echo x >| 'notes (1).txt'"));
+    allowed(as('cp /tmp/fixture.tsx "app/(marketing)/page.tsx"'));
+    allowed(as('rm "app/(marketing)/tmp.txt"'));
+    allowed(as(`sed -i 's/a/b/' "src/routes/(app)/+page.svelte"`));
+    allowed(as('git worktree add "wt (1)" main'));
+    allowed(psAs(`Set-Content -LiteralPath "${temp}" -Value x`));
+    allowed(psAs("Remove-Item -LiteralPath 'app\\(marketing)\\tmp.txt'"));
+    allowed(psAs('[IO.File]::WriteAllText("notes (1).txt", "x")'));
+
+    blocked(as('echo x > notes(1).txt'));
+    blocked(as('rm app/x(1)/tmp.txt'));
+    blocked(as('echo x > "$(pwd)/a.txt"'));
+    blocked(as('git worktree add wt(1) main'));
+    blocked(psAs('Remove-Item x(1)'));
+    blocked(psAs("Remove-Item @('a.txt')"));
+    blocked(psAs('Set-Content -LiteralPath (Join-Path C:/repo a.txt) -Value x'));
+    blocked(psAs('[IO.File]::WriteAllText((Join-Path C:/repo a.txt), "x")'));
+
+    blocked(as('echo x > "/checkout/notes (1).txt"'));
+    blocked(as('cp /tmp/fixture.tsx "/checkout/app/(marketing)/page.tsx"'));
+    blocked(as('rm "/checkout/app/(marketing)/tmp.txt"'));
+    blocked(as(`sed -i 's/a/b/' "/checkout/src/routes/(app)/+page.svelte"`));
+    blocked(psAs('Set-Content -LiteralPath "C:/checkout/x (1)/a.txt" -Value x'));
+    blocked(psAs("Remove-Item -LiteralPath 'C:\\checkout\\app\\(marketing)\\tmp.txt'"));
+  }
+});
