@@ -62,6 +62,7 @@ test('prose in non-source files that names a suppression token is not a suppress
 test('a suppression in a source file outside the CODE extensions is tier 2', () => {
   assert.equal(tier(file('src/util.mts', { add: ['// @ts-ignore'] })), 2);
   assert.equal(tier(file('src/util.cts', { add: ['// @ts-ignore'] })), 2);
+  assert.equal(tier(file('src/page.mdx', { add: ['{/* eslint-disable */}'] })), 2);
   assert.equal(tier(file('notebooks/a.ipynb', { add: ['    "import os  # noqa\\n",'] })), 2);
   assert.equal(tier(file('src/app.pyw', { add: ['x = f()  # type: ignore'] })), 2);
   assert.equal(tier(file('bin/tool', { add: ['x = f()  # type: ignore'] })), 2);

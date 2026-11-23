@@ -35,8 +35,8 @@ const WEAKENING_ADDED = [
   [/pytest\.mark\.(skip|xfail)|@unittest\.skip|#\[ignore\]|\b(it|test|describe)\.skip\(|\bx(it|describe)\(/, 'test skipped'],
   [/continue-on-error:\s*true|\|\|\s*true\b/, 'CI step allowed to fail'],
 ];
-const PROSE = /\.(md|mdx|markdown|rst|txt|adoc|asciidoc)$/i;
-const SUPPRESSION =/#\s*noqa|type:\s*ignore|pyright:\s*ignore|eslint-disable|@ts-(ignore|expect-error|nocheck)|#!?\[allow\(/;
+const PROSE = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
+const SUPPRESSION = /#\s*noqa|type:\s*ignore|pyright:\s*ignore|eslint-disable|@ts-(ignore|expect-error|nocheck)|#!?\[allow\(/;
 const TEST_REMOVED = /^\s*(async\s+)?def\s+test_|^\s*#\[(tokio::)?test\]|^\s*(it|test)\s*\(/;
 const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
 
