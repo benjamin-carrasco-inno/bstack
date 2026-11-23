@@ -62,9 +62,14 @@ function inTempDir(word, dialect, host, assigned) {
   if (!prefix) return { word, dialect };
   const name = prefix.groups.name?.toUpperCase();
   if (name && Object.keys(assigned).some(k => k.toUpperCase() === name)) return { word, dialect };
-  const dir = host.platform === 'win32' ? host.tmpdir() : name && host.env[name];
+  const dir = tempDirNamed(name, host);
   if (!dir) return { word, dialect };
   return { word: dir + word.slice(prefix[0].length), dialect: 'posix' };
+}
+
+function tempDirNamed(name, host) {
+  if (host.platform !== 'win32') return name && host.env[name];
+  return name === 'TMPDIR' ? host.env.TMPDIR : host.tmpdir();
 }
 
 function located(commands, start, host) {
