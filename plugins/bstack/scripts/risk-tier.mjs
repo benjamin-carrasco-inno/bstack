@@ -49,9 +49,14 @@ export function parseDiff(diff) {
   let f = null;
   for (const line of String(diff ?? '').split(/\r?\n/)) {
     const head = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-    if (head) { f = { path: head[2], added: [], removed: [], created: false, deleted: false }; files.push(f); continue; }
+    if (head) {
+      f = { path: head[2], oldPath: head[1] === head[2] ? null : head[1], added: [], removed: [], created: false, deleted: false };
+      files.push(f); continue;
+    }
     if (!f) continue;
-    if (line.startsWith('new file mode')) f.created = true;
+    const from = /^rename from (.+)$/.exec(line);
+    if (from) f.oldPath = from[1] === f.path ? null : from[1];
+    else if (line.startsWith('new file mode')) f.created = true;
     else if (line.startsWith('deleted file mode')) f.deleted = true;
     else if (line.startsWith('+++') || line.startsWith('---')) continue;
     else if (line.startsWith('+')) f.added.push(line.slice(1));
@@ -77,12 +82,14 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
     const docs = DOCS.test(p) && !NOT_DOCS.test(p);
     if (!docs) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
     if (extra.some(re => re.test(p))) raise(2, `listed in .github/risk-paths.txt: ${p}`);
-    const fixture = FIXTURE.test(p);
+    const paths = f.oldPath ? [p, f.oldPath.replace(/\\/g, '/')] : [p];
+    const fixture = paths.every(q => FIXTURE.test(q));
     const isTest = TEST_PATH.test(p);
+    const testOnly = paths.every(q => TEST_PATH.test(q));
     const sqlLines = [...f.added, ...f.removed];
-    const testFixtureSql = isTest && fixture && /\.sql$/i.test(p) && sqlLines.length > 0;
+    const testFixtureSql = testOnly && fixture && paths.every(q => /\.sql$/i.test(q)) && sqlLines.length > 0;
     if (testFixtureSql && sqlLines.some(l => SCHEMA_STATEMENT.test(l))) raise(2, `SQL schema statement: ${p}`);
-    for (const [re, why] of PATH_RULES) if (re.test(p) && !(testFixtureSql && re === SCHEMA_FILE)) raise(2, `${why}: ${p}`);
+    for (const q of paths) for (const [re, why] of PATH_RULES) if (re.test(q) && !(testFixtureSql && re === SCHEMA_FILE)) raise(2, `${why}: ${q}`);
 
     if (isTest && f.deleted) raise(2, `test file deleted: ${p}`);
     if (isTest && f.removed.some(l => TEST_REMOVED.test(l))) raise(2, `test removed: ${p}`);
@@ -91,7 +98,7 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
       if (lost > 0) raise(2, `fewer assertions: ${p}`);
     }
     for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
-    if (!PROSE.test(p) && !fixture && !isTest && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
+    if (!PROSE.test(p) && !fixture && !testOnly && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
     if (CODE.test(p) && !isTest) {
