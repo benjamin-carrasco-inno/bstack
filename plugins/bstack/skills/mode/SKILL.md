@@ -51,6 +51,7 @@ Weekly quota is real. Spend where risk is.
 
 - Implementation rounds go to `bstack:worker`, fresh each round, with the goal, the files, and the check that proves it.
 - Big read-only searches go to Explore. Parallel work in one repo uses one worktree per agent.
+
 ## Gates
 
 Every playbook step names the evidence that opens it. Inconclusive evidence, or evidence from the wrong surface (a unit test where the user hit an HTTP route), keeps the gate closed. A lane that cannot run (no test runner, the app will not start) is a gap to report and fix, never a pass.

@@ -40,6 +40,7 @@ GitHub issues in the repo where the work lands, through `gh` (2.94 or newer for 
 - Claim by assigning yourself (`gh issue edit <n> --add-assignee @me`) before any work. Assigned means a session is on it now; a session that stops leaves a status comment and removes its claim.
 - The issue holds the question or the contract. The answer goes in a comment when resolved, then close it. Prototypes and long research are linked, not pasted.
 - Issues are readable by everyone with access to the repo: no secrets, personal or customer data.
+
 ## Labels
 
 - `plan:map`, `plan:spec`: a map, a spec.
