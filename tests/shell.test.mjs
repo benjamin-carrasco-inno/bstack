@@ -83,5 +83,6 @@ test('quotes, substitutions and ref syntax keep their braces and parentheses', (
 });
 
 test('git global options are skipped', () => {
-  assert.deepEqual(parseGit(['-C', 'x', '-c', 'a=b', 'push', 'origin', 'main']), { dir: 'x', sub: 'push', rest: ['origin', 'main'] });
+  assert.deepEqual(parseGit(['-C', 'x', '-c', 'a=b', 'push', 'origin', 'main']), { dir: 'x', aliases: false, sub: 'push', rest: ['origin', 'main'] });
+  assert.deepEqual(parseGit(['-C', 'x', '-C', '..', '-C', '/abs', '-C', 'y', '-c', 'alias.z=reset', 'z']), { dir: '/abs/y', aliases: true, sub: 'z', rest: [] });
 });

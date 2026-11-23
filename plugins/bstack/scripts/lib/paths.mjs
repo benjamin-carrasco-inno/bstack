@@ -6,6 +6,10 @@ const POSIX_ABSOLUTE = /^[\\/]/;
 const styleOf = absolute => (WINDOWS_ABSOLUTE.test(absolute) ? path.win32 : path.posix);
 const posixSlashes = p => p.replace(/\\/g, '/');
 
+export function isAbsolute(p) {
+  return WINDOWS_ABSOLUTE.test(p) || POSIX_ABSOLUTE.test(p);
+}
+
 export function resolvePath(base, p = '.') {
   if (WINDOWS_ABSOLUTE.test(p)) return path.win32.resolve(p);
   if (POSIX_ABSOLUTE.test(p)) return path.posix.resolve(posixSlashes(p));

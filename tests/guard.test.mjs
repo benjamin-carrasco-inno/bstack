@@ -442,7 +442,7 @@ test('no-authoring agents: escaped .. in a target cannot hide a path outside the
     blocked(as('rm -rf .\\./checkout'));
     blocked(as('echo x > .\\./checkout/a.mjs'));
     blocked(as('git -C .\\. reset --hard'));
-    blocked(psAs('Set-Content (Join-Path .. checkout/a.mjs) x'));
+    blocked(psAs("Set-Content @('C:/checkout/a.mjs') x"));
 
     allowed(as('rm -rf ./build'));
     allowed(psAs('Set-Content src\\a.mjs x'));
