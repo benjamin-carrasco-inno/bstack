@@ -106,6 +106,37 @@ test('a data-only .sql fixture is not a schema file', () => {
   assert.equal(tier(file('app/queries.sql', { add: ['SELECT 1;'] })), 2);
 });
 
+test('a suppression on a line with a template or triple-quote delimiter always counts', () => {
+  assert.equal(tier(file('src/a.js', { add: ['abc`; foo(); // eslint-disable-line'] })), 2);
+  assert.equal(tier(file('src/a.ts', { add: ['`; const n: number = "x"; // @ts-ignore'] })), 2);
+  assert.equal(tier(file('src/a.ts', { add: ['  ${x}`); // @ts-expect-error'] })), 2);
+  assert.equal(tier(file('src/a.js', { add: ['abc`; foo(); // eslint-disable-line `'] })), 2);
+  assert.equal(tier(file('src/a.py', { add: ['end"""; x = f()  # noqa'] })), 2);
+  assert.equal(tier(file('src/a.py', { add: ["end'''; x = f()  # noqa '''"] })), 2);
+});
+
+test('a .sql fixture with any schema statement or unrecognised line is a schema file', () => {
+  const statements = [
+    'CREATE UNIQUE INDEX i ON t (id);', 'CREATE SCHEMA s;', 'CREATE OR REPLACE VIEW v AS SELECT 1;',
+    'CREATE MATERIALIZED VIEW v AS SELECT 1;', 'CREATE FUNCTION f() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql;',
+    "CREATE TYPE mood AS ENUM ('a');", 'CREATE SEQUENCE s;', 'CREATE TEMP TABLE t (id int);', 'DROP SCHEMA s;',
+    'CREATE EXTENSION pgcrypto;', "ALTER TYPE mood ADD VALUE 'b';", 'GRANT SELECT ON t TO r;', 'REVOKE SELECT ON t FROM r;',
+    'TRUNCATE t;', "COMMENT ON TABLE t IS 'x';", 'SELECT 1; CREATE TABLE t (id int);',
+  ];
+  for (const s of statements) assert.equal(tier(file('tests/fixtures/db/seed.sql', { add: [s] })), 2, s);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { add: ['CREATE', 'TABLE t (id int);'] })), 2);
+  assert.equal(tier(file('tests/fixtures/db/schema.sql', { add: ['  extra int,'] })), 2);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { del: ['CREATE TABLE t (id int);'] })), 2);
+});
+
+test('a .sql fixture of queries and inserts is data', () => {
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: [
+    '-- seed rows', '', 'INSERT INTO t (id, name) VALUES', "  (1, 'a'),", "  (2, 'b');",
+    'WITH r AS (SELECT id FROM t)', 'SELECT t.id', 'FROM t', '  JOIN r ON r.id = t.id', 'WHERE t.id > 0',
+    '  AND t.name IS NOT NULL', 'ORDER BY t.id', 'LIMIT 10;', "UPDATE t SET name = 'c' WHERE id = 1;", 'DELETE FROM t WHERE id = 2;',
+  ] })), 1);
+});
+
 test('adding tests stays tier 1', () => {
   assert.equal(tier(file('tests/test_api.py', { created: true, add: ['def test_c():', '    assert c()'] })), 1);
 });
