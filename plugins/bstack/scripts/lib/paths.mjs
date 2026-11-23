@@ -29,12 +29,11 @@ const WINDOWS_HOST = {
   },
   resolvePath(base, p = '.', dialect = 'posix') {
     if (WINDOWS_ABSOLUTE.test(p)) return path.win32.resolve(p);
-    const from = base === undefined || WINDOWS_HOST.isAbsolute(base) ? base : path.win32.resolve(base);
-    const windows = from !== undefined && styleOf(from) === path.win32;
-    if (windows && dialect !== 'posix') return path.win32.resolve(from, p);
-    if (POSIX_ABSOLUTE.test(p)) return windows && GIT_BASH_DRIVE.test(p) ? path.win32.resolve(driveLetterForm(p)) : path.posix.resolve(posixSlashes(p));
-    if (windows) return path.win32.resolve(from, p);
-    return path.posix.resolve(posixSlashes(from), posixSlashes(p));
+    if (base && styleOf(base) === path.posix && POSIX_ABSOLUTE.test(base)) return path.posix.resolve(posixSlashes(base), posixSlashes(p));
+    if (dialect !== 'posix') return path.win32.resolve(base ?? '', p);
+    if (GIT_BASH_DRIVE.test(p)) return path.win32.resolve(driveLetterForm(p));
+    if (POSIX_ABSOLUTE.test(p)) return path.posix.resolve(posixSlashes(p));
+    return path.win32.resolve(base ?? '', p);
   },
   contains(dir, target) {
     const style = styleOf(dir);

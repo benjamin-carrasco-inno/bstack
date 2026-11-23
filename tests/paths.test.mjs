@@ -34,6 +34,13 @@ test('on a Windows host a Git Bash drive path /c/... is the Windows drive when t
   assert.equal(contains('/c/wt', '/c/wt/x'), true);
 });
 
+test('on a Windows host a Git Bash drive path is the drive even when the base is unknown, whatever the process cwd', () => {
+  const { resolvePath } = windows;
+  assert.equal(resolvePath('', '/c/wt'), 'C:\\wt');
+  assert.equal(resolvePath(undefined, '/d/x'), 'D:\\x');
+  assert.equal(resolvePath('', '/checkout'), '/checkout');
+});
+
 test('on a Windows host PowerShell and cmd resolve /x against the drive of a Windows base, without Git Bash translation', () => {
   const { resolvePath, isAbsolute } = windows;
   for (const dialect of ['powershell', 'cmd']) {
