@@ -5,8 +5,6 @@ description: The engineering method for every code task (bug fix, feature, refac
 
 # bstack mode
 
-The always-on rules arrived at session start. This file routes the work; the playbook holds the gates.
-
 ## First reply in a code task
 
 Three lines, then start:
@@ -46,7 +44,6 @@ A repo can raise paths to tier 2 with globs in `.github/risk-paths.txt`. Add one
 
 Weekly quota is real. Spend where risk is.
 - Main session: the user's choice (default Opus, medium). Raise to high for tier 2 work, not by default. Never xhigh or max by default.
-- `bstack:reviewer` runs Sonnet and `bstack:adversary` runs Opus (Fable for large architecture work, see `bstack:interrogate`); their frontmatter sets it.
 - Mechanical work (polling CI, bulk renames, reformatting): a Haiku subagent.
 - Fable for implementation only when the user names it, or after Opus failed twice on the same task.
 
@@ -54,8 +51,6 @@ Weekly quota is real. Spend where risk is.
 
 - Implementation rounds go to `bstack:worker`, fresh each round, with the goal, the files, and the check that proves it.
 - Big read-only searches go to Explore. Parallel work in one repo uses one worktree per agent.
-- The author of a change never judges it.
-
 ## Gates
 
 Every playbook step names the evidence that opens it. Inconclusive evidence, or evidence from the wrong surface (a unit test where the user hit an HTTP route), keeps the gate closed. A lane that cannot run (no test runner, the app will not start) is a gap to report and fix, never a pass.

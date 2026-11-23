@@ -16,4 +16,4 @@ Building one issue. The ticket is the contract: its acceptance criteria are the 
 
 **Gate to ship:** proof for every acceptance criterion, plus the gates of the build playbook.
 
-**Stopping mid-way:** push the branch and leave one status comment (on the PR if there is one, else on the ticket): how far, the branch, the next step, open questions. Then remove the claim (`--remove-assignee @me`): a claim means a session is on it now, and the next session finds the ticket through `next`.
+**Stopping mid-way:** push the branch and leave one status comment (on the PR if there is one, else on the ticket): how far, the branch, the next step, open questions. Then remove the claim (`--remove-assignee @me`).

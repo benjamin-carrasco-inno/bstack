@@ -18,7 +18,7 @@ Record now: `git status --porcelain`, and the result of the repo's tests and lin
 
 ## 2. Spawn the critic
 
-The critic has only Read, Grep and Glob, so it cannot change the checkout; you run every command for it. Spawn `bstack:comment-critic` with only: the checkout path, the scope definition above, the absolute paths of the files in scope, and for a diff its full text. Not your view of the comments. It must form its own.
+Spawn `bstack:comment-critic` with only: the checkout path, the scope definition above, the absolute paths of the files in scope, and for a diff its full text. Not your view of the comments. It must form its own.
 
 ## 3. Check the report
 
