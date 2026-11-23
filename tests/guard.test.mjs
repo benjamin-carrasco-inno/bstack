@@ -592,6 +592,16 @@ test('no-authoring agents: heredoc bodies are text, not redirects', () => {
   }
 });
 
+test('no-authoring agents: a << that opens no heredoc hides none of the lines after it', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('echo $((1<<2))\ngit -C /checkout reset --hard'));
+    blocked(as('echo $((1<<2))\nrm -rf /checkout/plugins'));
+    blocked(as('echo "\n1 <<X\n"\necho pwned > /checkout/README.md'));
+    blocked(as('cat <<NOPE\necho pwned > /checkout/README.md'));
+  }
+});
+
 test('no-authoring agents: git lines in a heredoc body are text, unless a shell runs them', () => {
   for (const agent of NO_AUTHORING) {
     const as = asAgent(agent);

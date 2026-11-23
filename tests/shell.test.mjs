@@ -35,6 +35,21 @@ test('heredoc bodies are blanked, everything else is kept', () => {
   assert.equal(withoutHeredocBodies('echo "<<EOF"\na > b'), 'echo "<<EOF"\na > b');
 });
 
+test('a << in arithmetic, in a multi-line quote or without its terminator line opens no heredoc', () => {
+  for (const line of [
+    'echo $((1<<2))\nrm -rf x\n2',
+    '(( x <<= 2 ))\nrm -rf x\n2',
+    'echo "\n1 <<X\n"\necho pwned > a\nX',
+    "echo '\n<<X\n'\necho pwned > a\nX",
+    'cat <<NOPE\necho pwned > a',
+    'cat <<A <<B\nx\nA\necho pwned > a',
+  ]) {
+    assert.equal(withoutHeredocBodies(line), line, line);
+  }
+  assert.equal(withoutHeredocBodies('echo $((1<<2)); cat <<E\na > b\nE\necho'), 'echo $((1<<2)); cat <<E\n\n\necho');
+  assert.equal(withoutHeredocBodies('echo "\n" && cat <<E\na > b\nE\necho'), 'echo "\n" && cat <<E\n\n\necho');
+});
+
 test('tokens drop quotes', () => {
   assert.deepEqual(tokenize(`git commit -m "fix: a b" -m 'c'`), ['git', 'commit', '-m', 'fix: a b', '-m', 'c']);
   assert.deepEqual(tokenize('a ""'), ['a', '']);
