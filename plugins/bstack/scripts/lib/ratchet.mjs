@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BASELINE, countSource, decodeSource, syntaxFor } from '../comments.mjs';
-import { parseGit } from './shell.mjs';
+import { UNRESOLVED, parseGit } from './shell.mjs';
 
 const COMMENTS_SCRIPT = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'comments.mjs').replace(/\\/g, '/');
 const VALUE_OPTS = new Set(['-m', '--message', '-F', '--file', '-C', '--reuse-message', '-c', '--reedit-message', '-t', '--template',
@@ -63,9 +63,13 @@ export function parseCommit(rest) {
   return opts;
 }
 
-export function commentRatchet({ repo, rest, prior, tool }, deps) {
+export function commentRatchet({ command, rest, prior, tool }, shellDeps) {
   const opts = parseCommit(rest);
   if (opts.dryRun) return null;
+  const target = commitTarget(command);
+  if (typeof target === 'string') return target;
+  const { repo, gitEnv } = target;
+  const deps = gitEnv ? { ...shellDeps, git: (cwd, args, o = {}) => shellDeps.git(cwd, args, { ...o, env: { ...gitEnv, ...o.env } }) } : shellDeps;
   opts.paths.push(...pathspecsFromFile(repo, opts, deps));
   let root, realIndex;
   try {
@@ -75,6 +79,8 @@ export function commentRatchet({ repo, rest, prior, tool }, deps) {
   if (!deps.exists(path.join(root, BASELINE)) && !inIndex(root, {}, deps)) return null;
 
   const replays = prior.filter(p => p.cmd === 'git' && Object.hasOwn(INDEX_REPLAYS, parseGit(p.args).sub));
+  const unsafe = prior.find(p => !safeBeforeCommit(p, tool, shellDeps)) ?? (gitEnv ? replays[0] : undefined);
+  if (unsafe) return ownCall(unsafe);
   const rebuild = replays.length || opts.all || opts.paths.length;
   const temp = rebuild ? path.join(os.tmpdir(), `bstack-ratchet-${process.pid}-${Date.now()}.index`) : null;
   const env = temp ? { GIT_INDEX_FILE: temp } : {};
@@ -89,6 +95,63 @@ export function commentRatchet({ repo, rest, prior, tool }, deps) {
   } finally {
     if (temp) for (const f of [temp, `${temp}.lock`]) fs.rmSync(f, { force: true });
   }
+}
+
+const GIT_LOCATION = { gitDir: 'GIT_DIR', workTree: 'GIT_WORK_TREE' };
+
+function commitTarget({ args, cwd, env = {} }) {
+  const parsed = parseGit(args);
+  if (cwd === null) return unknownRepo('a cd to a path the guard cannot resolve');
+  if (parsed.dir !== null && UNRESOLVED.test(parsed.dir)) return unknownRepo(`-C ${parsed.dir}`);
+  if (env.GIT_INDEX_FILE !== undefined) return unknownRepo('GIT_INDEX_FILE');
+  const repo = parsed.dir === null ? cwd : path.resolve(cwd, parsed.dir);
+  const gitEnv = {};
+  for (const [option, name] of Object.entries(GIT_LOCATION)) {
+    const value = parsed[option] ?? env[name];
+    if (value === undefined || value === null) continue;
+    if (UNRESOLVED.test(value)) return unknownRepo(`${name} ${value}`);
+    gitEnv[name] = path.resolve(repo, value);
+  }
+  return { repo, gitEnv: Object.keys(gitEnv).length ? gitEnv : null };
+}
+
+function unknownRepo(what) {
+  return `bstack cannot tell which repository or index this commit uses (${what}), so it cannot check the comment baseline. Write the path out, or cd there and run the commit in its own call.`;
+}
+
+function ownCall(command) {
+  return `bstack checks the comment baseline before the command line runs, so it cannot see what \`${command.text}\` changes first. Run that on its own, then the commit in its own call.`;
+}
+
+const SAFE_COMMANDS = new Set(['', 'echo', 'printf', 'write-output', 'write-host', 'true', 'false', ':', 'test', 'test-path', '[', 'fi', 'done', 'esac',
+  'export', 'pwd', 'get-location', 'ls', 'dir', 'get-childitem', 'gci', 'cat', 'type', 'get-content', 'gc', 'grep', 'rg', 'findstr',
+  'select-string', 'sls', 'jq', 'less', 'head', 'tail', 'wc', 'cd', 'chdir', 'set-location', 'sl', 'pushd', 'popd', 'push-location', 'pop-location']);
+const READ_ONLY_GIT = new Set(['status', 'diff', 'log', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'cat-file', 'blame', 'grep', 'describe', 'shortlog', 'branch', 'fetch']);
+const SUBSTITUTION = { Bash: /\$\(|`|[<>]\(/, PowerShell: /\$\(/ };
+const OUTPUT_REDIRECT = /^.*?[0-9*&]?>[>|]?(&?)(.*)$/s;
+const DISCARD = /^(\/dev\/null|\$null|nul)$/i;
+const GIT_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'];
+const QUOTED_ENV_SET = /^\$env:\w+\s*=\s*("[^"]*"|'[^']*')$/i;
+
+function safeBeforeCommit(c, tool, deps) {
+  if ((SUBSTITUTION[tool] ?? SUBSTITUTION.Bash).test(c.text) || writesFile(c.args)) return false;
+  if (c.cmd === 'git') {
+    const { dir, gitDir, workTree, sub, rest } = parseGit(c.args);
+    if (READ_ONLY_GIT.has(sub)) return !rest.some(a => a.startsWith('--output'));
+    if (!Object.hasOwn(INDEX_REPLAYS, sub) || c.cwd === null || gitDir !== null || workTree !== null) return false;
+    if ((dir !== null && UNRESOLVED.test(dir)) || GIT_ENV.some(name => c.env?.[name] !== undefined)) return false;
+    const where = dir === null ? c.cwd : path.resolve(c.cwd, dir);
+    return INDEX_REPLAYS[sub](withoutRedirections(rest), { where, shellCwd: c.cwd, tool }, deps).length > 0;
+  }
+  if (c.text.startsWith('$')) return QUOTED_ENV_SET.test(c.text) || !c.text.includes('=');
+  return SAFE_COMMANDS.has(c.cmd) || /^-[a-z]+$/i.test(c.cmd);
+}
+
+function writesFile(words) {
+  return words.some((w, i) => {
+    const redirect = OUTPUT_REDIRECT.exec(w);
+    return redirect && !redirect[1] && !DISCARD.test(redirect[2] || words[i + 1] || '');
+  });
 }
 
 function pathspecsFromFile(repo, { pathspecFile, pathspecNul }, deps) {
@@ -134,7 +197,7 @@ function restoreArgs(words) {
 }
 
 function rmArgs(words) {
-  return beforeDashes(words).includes('--cached') ? [['rm', ...words]] : [];
+  return [['rm', ...(beforeDashes(words).includes('--cached') ? [] : ['--cached']), ...words]];
 }
 
 function resetArgs(words, { where }, deps) {
@@ -245,12 +308,17 @@ function check(root, repo, opts, env, deps) {
   return refused.length ? refusal(refused) : null;
 }
 
-const IN_PROGRESS_SIDES = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD^'];
+const IN_PROGRESS_SIDES = ['CHERRY_PICK_HEAD', 'REVERT_HEAD^', 'REBASE_HEAD'];
 
 function inProgressSides(root, deps) {
-  return IN_PROGRESS_SIDES.flatMap(ref => {
+  let mergeHeads = [];
+  try {
+    const file = path.resolve(root, deps.git(root, ['rev-parse', '--git-path', 'MERGE_HEAD']).trim());
+    mergeHeads = (deps.readFile(file) ?? '').split(/\s+/).filter(Boolean);
+  } catch {}
+  return [...mergeHeads, ...IN_PROGRESS_SIDES.flatMap(ref => {
     try { return [deps.git(root, ['rev-parse', '-q', '--verify', ref]).trim()]; } catch { return []; }
-  });
+  })];
 }
 
 function readBaseline(text) {

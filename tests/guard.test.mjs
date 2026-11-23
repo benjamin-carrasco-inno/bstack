@@ -387,7 +387,7 @@ test('comment ratchet: unstaging earlier in the call is replayed on the temporar
   ];
   for (const [line, tool] of unstaging) assert.equal(repo.run(line, tool), null, line);
   for (const line of ['git reset --hard && git commit -m "feat: b"', 'git restore --staged --worktree app.py && git commit -m "feat: b"', 'git reset --soft HEAD && git commit -m "feat: b"']) {
-    assert.match(repo.run(line) ?? '', /app\.py/, line);
+    assert.match(repo.run(line) ?? '', /in its own call/, line);
   }
   assert.equal(repo.git('rev-parse', 'HEAD'), head);
   assert.equal(repo.staged(), 'app.py\nb.py', 'the guard must not touch the real index');
@@ -592,6 +592,7 @@ test('comment ratchet: a command before the commit that may change files or the 
     ['git reset more && git commit -m x', 'Bash'],
     ['npm run generate && git commit -am x', 'Bash'],
     ['echo $(touch b.py) && git commit -am x', 'Bash'],
+    ['$env:X = git stash; git commit -am x', 'PowerShell'],
   ];
   for (const [line, tool] of refused) assert.match(repo.run(line, tool) ?? '', /in its own call/, line);
   repo.write('b.py', `${NONE}y = 2\n`);
