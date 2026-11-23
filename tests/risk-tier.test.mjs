@@ -181,14 +181,15 @@ test('a .sql fixture that copies rows or touches the catalog is a schema file', 
   assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ['INSERT INTO t (id) SELECT id FROM s;'] })), 1);
 });
 
-test('DDL words inside sql string literals do not make a fixture a schema file', () => {
+test('DDL words inside sql string literals still make a fixture a schema file', () => {
   const fixtures = [
     ["INSERT INTO users (name) VALUES ('Grant');"],
     ["INSERT INTO notes (body) VALUES ('please comment on this');"],
     ['INSERT INTO verbs (v) VALUES', "  ('create'), ('drop'), ('rename');"],
     ["INSERT INTO t (s) VALUES ('it''s CREATE TABLE time');"],
   ];
-  for (const add of fixtures) assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add })), 1, add.join(' '));
+  for (const add of fixtures) assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add })), 2, add.join(' '));
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["INSERT INTO users (name) VALUES ('Ann');"] })), 1);
   assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["SELECT 'x'; DROP TABLE t;"] })), 2);
   assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["SELECT 'unterminated; DROP TABLE t;"] })), 2);
 });
@@ -213,6 +214,32 @@ test('a .sql fixture with dollar quotes, escape strings or backslashes is a sche
     ['SELECT $1;'],
   ];
   for (const add of fixtures) assert.equal(tier(file('tests/fixtures/seed.sql', { created: true, add })), 2, add.join(' '));
+});
+
+test('a .sql fixture with a DDL or side-effect word anywhere, comments and strings included, is a schema file', () => {
+  const fixtures = [
+    ["INSERT INTO users VALUES (1, 'ann'), -- Ann's row", "  (2, 'bo');", 'CREATE TABLE audit (id int);',
+      "INSERT INTO users VALUES (3, 'cy'), -- Cy's row", "  (4, 'di');"],
+    ["SELECT 1 /* it's */;", 'DROP TABLE users;', "SELECT 2 /* that's it */;"],
+    ['SELECT 1 AS "o\'neil";', 'ALTER TABLE users ADD COLUMN x int;', 'SELECT 2 AS "o\'hara";'],
+    ["UPDATE pg_attribute SET attnotnull = false WHERE attname = 'x';"],
+    ["SELECT dblink_exec('dbname=app', 'DROP TABLE users');"],
+    ["SELECT dblink('dbname=app', 'SELECT 1');"],
+    ["SELECT setval('s', 1);"], ['SELECT pg_terminate_backend(1);'], ['SELECT * FROM pg_class;'],
+    ['-- CREATE TABLE t (id int);', 'SELECT 1;'], ["INSERT INTO users (name) VALUES ('Grant');"],
+    ['EXECUTE p;'], ['SELECT 1; CALL p();'],
+  ];
+  for (const add of fixtures) assert.equal(tier(file('tests/fixtures/seed.sql', { created: true, add })), 2, add.join(' '));
+});
+
+test('a line whose quotes or block comment may continue across lines exempts no suppression', () => {
+  assert.equal(tier(file('src/app.py', { add: ['x = "abc \\', 'def" # noqa: E501 12" pipe'] })), 2);
+  assert.equal(tier(file('src/app.js', { add: ['/* legacy', '   "x */ doThing(); // eslint-disable-line no-undef "'] })), 2);
+  assert.equal(tier(file('src/app.js', { add: ['const s = "it\'s eslint-disable";'] })), 2);
+  assert.equal(tier(file('src/app.py', { add: ['x = "abc \\', 'more \\', 'def" # noqa: E501 12" pipe'] })), 2);
+  const contextOpener = ['diff --git a/src/app.py b/src/app.py', '--- a/src/app.py', '+++ b/src/app.py',
+    '@@ -1,1 +1,2 @@', ' x = "abc \\', '+def" # noqa: E501 12" pipe'].join('\n');
+  assert.equal(tier(contextOpener), 2);
 });
 
 test('adding tests stays tier 1', () => {
