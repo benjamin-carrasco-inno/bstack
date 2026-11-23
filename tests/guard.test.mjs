@@ -69,6 +69,23 @@ test('push detection survives PowerShell and nesting', () => {
   blocked(ps('git.exe push origin main'));
 });
 
+test('git and gh inside blocks are checked', () => {
+  blocked(ps('if ($?) { git push origin main }'));
+  blocked(ps('if ($?) { git commit --no-verify -m x }'));
+  blocked(ps('git status; if ($?) { gh pr merge 5 --squash --admin }'));
+  blocked(ps('if ($x) { echo a } else { git push origin main }'));
+  blocked(ps('if (git push origin main) { echo ok }'));
+  blocked(shell('if true; then git commit --no-verify -m x; fi'));
+  blocked(shell('while true; do git push origin main; done'));
+  blocked(shell('( git push origin main )'));
+  blocked(shell('{ git push origin main; }'));
+  allowed(ps('git add -A; if ($?) { git commit -m "fix (scope) {x}" }'));
+  allowed(ps('if ($?) { git push -u origin feat/x }'));
+  allowed(shell('if git diff --quiet; then echo same; else git status; fi'));
+  allowed(shell('( cd sub && git log --oneline -5 )'));
+  allowed(shell('git rev-parse @{u} && git log HEAD@{1}'));
+});
+
 test('force-push needs --force-with-lease', () => {
   blocked(shell('git push --force origin feat/x'));
   blocked(shell('git push -f origin feat/x'));
@@ -257,6 +274,7 @@ test('comment ratchet: sees what git add, -a and pathspecs in the same call woul
   repo.write('app.py', TWO);
   assert.match(repo.run('git add -A && git commit -m "feat: x"'), /app\.py/);
   assert.match(repo.run('git add app.py; git commit -m "feat: x"', 'PowerShell'), /app\.py/);
+  assert.match(repo.run("git add -A; if ($?) { git commit -m 'x' }", 'PowerShell') ?? '', /app\.py/);
   assert.match(repo.run('git commit -am "feat: x"'), /app\.py/);
   assert.match(repo.run('git commit -m "feat: x" -- app.py'), /app\.py/);
   assert.match(repo.run('git commit -m "feat: x" app.py'), /app\.py/);
