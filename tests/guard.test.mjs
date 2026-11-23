@@ -755,6 +755,23 @@ test('comment ratchet: shell redirections are neither pathspecs nor git add argu
   assert.equal(legit.run('git commit -m "feat: x" > $null', 'PowerShell'), null);
 });
 
+test('comment ratchet: a clobber redirection (>|) is not a pathspec', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  assert.match(repo.run('git add app.py >| /dev/null; git commit -m "feat: x"') ?? '', /app\.py/);
+  repo.git('add', 'app.py');
+  for (const command of ['git commit -m "feat: x" >| commit.log', 'git commit -m "feat: x" 2>| err.txt', 'git commit -m "feat: x" >|commit.log']) {
+    assert.match(repo.run(command) ?? '', /app\.py/, command);
+  }
+
+  const legit = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  legit.write('app.py', `${ONE}x = 1\n`);
+  legit.git('add', 'app.py');
+  for (const command of ['git commit -m "feat: x" >| /dev/null', 'git commit -m "feat: x" 2>| err.txt']) {
+    assert.equal(legit.run(command), null, command);
+  }
+});
+
 test('comment ratchet: checks the repo that a cd earlier in the call moves to', () => {
   const repo = fixture({ 'app.py': ONE, 'src/b.py': NONE }, { 'app.py': 1, 'src/b.py': 0 });
   const elsewhere = tempDir();
