@@ -82,21 +82,19 @@ test('suppression tokens in fixture files are not suppressions', () => {
   assert.equal(tier(file('pkg/testdata/a.rs', { add: ['#[allow(dead_code)]'] })), 1);
 });
 
-test('suppression tokens inside string or regex literals are not suppressions', () => {
-  assert.equal(tier(file('tests/risk.test.mjs', { add: ["  assert.equal(tier(file('src/app.js', { add: ['// eslint-disable-next-line no-console'] })), 2);"] })), 1);
-  assert.equal(tier(file('src/scan.mjs', { add: ['const RE = /eslint-disable|@ts-ignore/;'] })), 1);
-  assert.equal(tier(file('tests/test_scan.py', { add: ['    assert count("x = 1  # noqa") == 1'] })), 1);
-  assert.equal(tier(file('src/a.rs', { add: ['let s = "#[allow(dead_code)]";'] })), 1);
+test('suppression tokens in test files are not suppressions', () => {
+  assert.equal(tier(file('tests/x.test.mjs', { add: ["  assert.equal(tier(file('src/app.js', { add: ['// eslint-disable-next-line'] })), 2);"] })), 1);
+  assert.equal(tier(file('tests/fixtures/comments/sample.ts', { add: ['// @ts-ignore'] })), 1);
+  assert.equal(tier(file('test/test_scan.py', { add: ['    assert count("x = 1  # noqa") == 1'] })), 1);
+  assert.equal(tier(file('src/__tests__/a.js', { add: ['// eslint-disable-line'] })), 1);
+  assert.equal(tier(file('src/a.test.ts', { add: ['// @ts-expect-error'] })), 1);
+  assert.equal(tier(file('pkg/scan_test.rs', { add: ['#[allow(dead_code)]'] })), 1);
 });
 
-test('real suppressions in comments stay tier 2 next to literals', () => {
-  assert.equal(tier(file('src/a.js', { add: ['// eslint-disable-next-line'] })), 2);
-  assert.equal(tier(file('src/a.py', { add: ['x = f()  # noqa'] })), 2);
-  assert.equal(tier(file('src/a.js', { add: ['const s = "x"; // eslint-disable-line'] })), 2);
-  assert.equal(tier(file('src/a.js', { add: ['const s = "eslint-disable"; // eslint-disable-line'] })), 2);
-  assert.equal(tier(file('src/a.js', { add: [' * eslint-disable no-console'] })), 2);
-  assert.equal(tier(file('src/a.js', { add: ['eslint-disable no-console'] })), 2);
-  assert.equal(tier(file('src/a.ts', { add: ['const s = `', '// @ts-ignore'] })), 2);
+test('a suppression token in a string in non-test source is tier 2, the accepted cost of not parsing literals', () => {
+  assert.equal(tier(file('src/a.js', { add: ['const s = "eslint-disable";'] })), 2);
+  assert.equal(tier(file('src/scan.mjs', { add: ['const RE = /eslint-disable|@ts-ignore/;'] })), 2);
+  assert.equal(tier(file('src/a.py', { add: ['x = "# noqa"'] })), 2);
 });
 
 test('a data-only .sql fixture is not a schema file', () => {
@@ -104,15 +102,6 @@ test('a data-only .sql fixture is not a schema file', () => {
   assert.equal(tier(file('tests/fixtures/db/seed.sql', { add: ['CREATE TABLE t (id int);'] })), 2);
   assert.equal(tier(file('db/migrations/001_init.sql', { add: ['SELECT 1;'] })), 2);
   assert.equal(tier(file('app/queries.sql', { add: ['SELECT 1;'] })), 2);
-});
-
-test('a suppression on a line with a template or triple-quote delimiter always counts', () => {
-  assert.equal(tier(file('src/a.js', { add: ['abc`; foo(); // eslint-disable-line'] })), 2);
-  assert.equal(tier(file('src/a.ts', { add: ['`; const n: number = "x"; // @ts-ignore'] })), 2);
-  assert.equal(tier(file('src/a.ts', { add: ['  ${x}`); // @ts-expect-error'] })), 2);
-  assert.equal(tier(file('src/a.js', { add: ['abc`; foo(); // eslint-disable-line `'] })), 2);
-  assert.equal(tier(file('src/a.py', { add: ['end"""; x = f()  # noqa'] })), 2);
-  assert.equal(tier(file('src/a.py', { add: ["end'''; x = f()  # noqa '''"] })), 2);
 });
 
 test('a .sql fixture with any schema statement or unrecognised line is a schema file', () => {
@@ -154,19 +143,6 @@ test('a modified .sql fixture is a schema file, since the diff hides the stateme
   assert.equal(tier(sql(['@@ -1,2 +1,3 @@', '+SELECT a,', '+  b', '+FROM t;'])), 2);
 });
 
-test('an unterminated literal on a line exempts no suppression on that line', () => {
-  const cases = [
-    ['src/About.tsx', "      <p>Back in the '90s we shipped weekly</p> {/* eslint-disable-line react/no-unescaped-entities */}"],
-    ['src/Band.jsx', "  <li>Rock 'n roll</li> {/* eslint-disable-line react/no-unescaped-entities */}"],
-    ['src/A.tsx', "  <Foo label='x' /> 'quote <Bar prop={1} /> {/* @ts-expect-error */}"],
-    ['src/a.py', '  tail of string"; x = f()  # type: ignore'],
-    ['src/a.js', "  tail of string '; foo(); // @ts-ignore"],
-  ];
-  for (const [p, l] of cases) assert.equal(tier(file(p, { add: [l] })), 2, l);
-  assert.equal(tier(file('src/a.js', { add: ['const s = "eslint-disable";'] })), 1);
-  assert.equal(tier(file('src/a.py', { add: ['x = "# noqa"'] })), 1);
-});
-
 test('a .sql fixture that copies rows or touches the catalog is a schema file', () => {
   const fixtures = [
     ['SELECT * INTO users_backup FROM users;'],
@@ -194,17 +170,6 @@ test('DDL words inside sql string literals still make a fixture a schema file', 
   assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["SELECT 'unterminated; DROP TABLE t;"] })), 2);
 });
 
-test('a suppression token in a .jsx or .tsx file always counts, inside quotes or not', () => {
-  const lines = [
-    "      <p>Rock 'n roll {/* eslint-disable-line react/no-unescaped-entities */} and 'em</p>",
-    '      <p>"Quote {/* eslint-disable-line react/no-unescaped-entities */} unquote"</p>',
-    '  const s = "eslint-disable";',
-  ];
-  for (const p of ['src/App.tsx', 'src/App.jsx']) {
-    for (const l of lines) assert.equal(tier(file(p, { add: [l] })), 2, `${p}: ${l}`);
-  }
-});
-
 test('a .sql fixture with dollar quotes, escape strings or backslashes is a schema file', () => {
   const fixtures = [
     ['SELECT $$it\'s$$;', 'DROP TABLE users;', "SELECT $$'$$;"],
@@ -230,16 +195,6 @@ test('a .sql fixture with a DDL or side-effect word anywhere, comments and strin
     ['EXECUTE p;'], ['SELECT 1; CALL p();'],
   ];
   for (const add of fixtures) assert.equal(tier(file('tests/fixtures/seed.sql', { created: true, add })), 2, add.join(' '));
-});
-
-test('a line whose quotes or block comment may continue across lines exempts no suppression', () => {
-  assert.equal(tier(file('src/app.py', { add: ['x = "abc \\', 'def" # noqa: E501 12" pipe'] })), 2);
-  assert.equal(tier(file('src/app.js', { add: ['/* legacy', '   "x */ doThing(); // eslint-disable-line no-undef "'] })), 2);
-  assert.equal(tier(file('src/app.js', { add: ['const s = "it\'s eslint-disable";'] })), 2);
-  assert.equal(tier(file('src/app.py', { add: ['x = "abc \\', 'more \\', 'def" # noqa: E501 12" pipe'] })), 2);
-  const contextOpener = ['diff --git a/src/app.py b/src/app.py', '--- a/src/app.py', '+++ b/src/app.py',
-    '@@ -1,1 +1,2 @@', ' x = "abc \\', '+def" # noqa: E501 12" pipe'].join('\n');
-  assert.equal(tier(contextOpener), 2);
 });
 
 test('adding tests stays tier 1', () => {
