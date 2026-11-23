@@ -9,14 +9,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { commandsIn, parseGit } from './lib/shell.mjs';
+import { commandsIn, parseGit, redirectTargets } from './lib/shell.mjs';
 import { MARKER, latestFor } from './lib/verdicts.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { riskTier, readRiskPaths } from './risk-tier.mjs';
 
 const DEFAULT_BRANCH = /^(main|master)$/;
 const READ_ONLY = new Set(['grep', 'rg', 'findstr', 'select-string', 'sls', 'cat', 'type', 'get-content', 'gc', 'jq', 'less', 'head', 'tail', 'wc']);
-const NO_AUTHORING_AGENTS = /(^|:)(reviewer|adversary)$/;
+const NO_AUTHORING_AGENTS = /(^|:)(reviewer|adversary|comment-critic)$/;
 
 export function decide(input, deps) {
   const tool = String(input.tool_name ?? '');
@@ -28,7 +28,7 @@ export function decide(input, deps) {
   const line = String(input.tool_input?.command ?? '');
   const commands = located(commandsIn(line), cwd);
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
+    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent, path.resolve(cwd)) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
     if (reason) return reason;
   }
   return null;
@@ -97,13 +97,112 @@ function bodyFiles(args) {
   return files.filter(f => f && f !== '-' && !f.includes('=@'));
 }
 
-// --- reviewer and adversary judge; they never author ---------------------------------------------
-function agentRule(c, agent) {
+// --- reviewer, adversary and comment-critic judge; they never author ---------------------------------
+function agentRule(c, agent, root) {
   if (!NO_AUTHORING_AGENTS.test(agent)) return null;
   const git = c.cmd === 'git' ? parseGit(c.args).sub : '';
   const gh = c.cmd === 'gh' ? `${c.args[0]} ${c.args[1] ?? ''}` : '';
   if (/^(commit|push|merge|rebase|tag|cherry-pick|am|revert)$/.test(git) || /^pr (merge|comment|review|edit|close|create|ready)|^issue (comment|create|edit|close|reopen|delete|transfer|lock|unlock|pin|unpin|develop)|^label (create|edit|delete|clone)|^api /.test(gh) && !(gh.startsWith('api ') && !hasWriteFields(c.args))) {
     return `The ${agent} agent judges and reproduces; it does not commit, push or post. Report the finding in your final message; the hook posts it.`;
+  }
+  return treeRewriteRule(c, agent, root) ?? fileWriteRule(c, agent, root);
+}
+
+const TREE_REWRITING_GIT = {
+  stash: { rewrites: rest => !/^(list|show)$/.test(rest[0] ?? ''), anywhere: true },
+  checkout: { rewrites: rest => rest.some(a => a === '--' || a === '.' || a === '-f' || a === '--force') },
+  restore: { rewrites: () => true },
+  reset: { rewrites: () => true },
+  apply: { rewrites: rest => !rest.some(a => /^--(check|stat|numstat|summary)$/.test(a)) },
+  clean: { rewrites: rest => !rest.some(a => a === '--dry-run' || /^-[a-zA-Z]*n/.test(a)) },
+  rm: { rewrites: () => true },
+  mv: { rewrites: () => true },
+};
+
+function treeRewriteRule(c, agent, root) {
+  if (c.cmd !== 'git') return null;
+  const { dir, sub, rest } = parseGit(c.args);
+  const rule = TREE_REWRITING_GIT[sub];
+  if (!rule?.rewrites(rest)) return null;
+  if (rule.anywhere) return `The ${agent} agent must not run git ${sub}: the stash stack is shared by every worktree of the repo. Read with git stash list or git stash show.`;
+  const otherTree = c.args.some(a => /^--(work-tree|git-dir)\b/.test(a));
+  const repo = dir ? writeTarget(dir, c.cwd) : c.cwd;
+  if (otherTree || !repo || !owns(root, repo)) return `The ${agent} agent must not run git ${sub} on a checkout outside its own worktree (${root}); it would rewrite someone else's uncommitted work. Read with git diff or git show instead.`;
+  return null;
+}
+
+const NAMED_PATH = /^-(path|literalpath|lp|pspath)$/i;
+const POWERSHELL_SWITCH = /^-(force|nonewline|passthru|append|noclobber|whatif|confirm|asbytestream|recurse)$/i;
+const byArgs = spec => args => writeTargets(args, spec);
+const REMOVES = byArgs({ pick: 'all', named: NAMED_PATH });
+const MOVES = byArgs({ pick: 'all', named: /^-(path|literalpath|lp|pspath|destination)$/i });
+const COPIES = byArgs({ pick: 'last', named: /^-destination$/i });
+const WRITES_CONTENT = byArgs({ pick: 'first', named: /^-(path|literalpath|lp|pspath|filepath)$/i, valued: true });
+
+const FILE_WRITERS = {
+  sed: sedInPlaceTargets,
+  tee: byArgs({ pick: 'all', named: /^$/ }),
+  rm: REMOVES, 'remove-item': REMOVES, ri: REMOVES, del: REMOVES, erase: REMOVES, rmdir: REMOVES, rd: REMOVES,
+  mv: MOVES, 'move-item': MOVES, mi: MOVES, move: MOVES,
+  cp: COPIES, 'copy-item': COPIES, cpi: COPIES, copy: COPIES,
+  'set-content': WRITES_CONTENT, sc: WRITES_CONTENT, 'add-content': WRITES_CONTENT, ac: WRITES_CONTENT,
+  'out-file': WRITES_CONTENT, 'tee-object': WRITES_CONTENT, 'new-item': WRITES_CONTENT, ni: WRITES_CONTENT,
+};
+
+function writeTargets(args, { pick, named, valued = false }) {
+  const byName = [];
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const inline = /^(-[a-z]+):(.+)$/i.exec(a);
+    if (inline) { if (named.test(inline[1])) byName.push(inline[2]); continue; }
+    if (named.test(a)) { if (i + 1 < args.length) byName.push(args[++i]); continue; }
+    if (/^-./.test(a) || /^\/[a-z]$/i.test(a)) { if (valued && !POWERSHELL_SWITCH.test(a)) i++; continue; }
+    positional.push(a);
+  }
+  if (byName.length && pick !== 'all') return byName;
+  return [...byName, ...{ first: positional.slice(0, 1), last: positional.slice(-1), all: positional }[pick]];
+}
+
+function sedInPlaceTargets(args) {
+  if (!args.some(a => /^-[^-]*i/.test(a) || a.startsWith('--in-place'))) return [];
+  const positional = [];
+  let scriptGiven = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (/^(-e|-f|--expression|--file)$/.test(a)) { scriptGiven = true; i++; continue; }
+    if (/^--(expression|file)=/.test(a)) { scriptGiven = true; continue; }
+    if (a.startsWith('-')) continue;
+    positional.push(a);
+  }
+  return scriptGiven ? positional : positional.slice(1);
+}
+
+const NULL_SINK = /^(\$null|\/dev\/(null|stdout|stderr)|nul)$/i;
+const TEMP_VARIABLE = /^(\$env:(TEMP|TMP)|\$\{?(TMPDIR|TEMP|TMP)\}?)(?=$|[\\/])/i;
+const POSIX_TEMP = /^\/tmp(?=$|\/)/;
+
+function writeTarget(word, cwd) {
+  if (NULL_SINK.test(word)) return null;
+  const expanded = word.replace(TEMP_VARIABLE, os.tmpdir()).replace(POSIX_TEMP, os.tmpdir()).replace(HOME, os.homedir());
+  if (expanded.includes('$')) return undefined;
+  return path.resolve(cwd, expanded);
+}
+
+function owns(root, target) {
+  return [root, os.tmpdir()].some(dir => {
+    const rel = path.relative(path.resolve(dir), target);
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+  });
+}
+
+function fileWriteRule(c, agent, root) {
+  const words = [...redirectTargets(c.text), ...(FILE_WRITERS[c.cmd]?.(c.args) ?? [])];
+  for (const word of words) {
+    const target = writeTarget(word, c.cwd);
+    if (target === null) continue;
+    if (target === undefined) return `The ${agent} agent may write files only inside its own worktree or the temp dir, and ${word} cannot be resolved before it runs. Use a literal path.`;
+    if (!owns(root, target)) return `The ${agent} agent may write files only inside its own worktree (${root}) or the temp dir, not ${target}. Report what should change instead of changing it.`;
   }
   return null;
 }

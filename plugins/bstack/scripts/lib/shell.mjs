@@ -72,6 +72,28 @@ export function tokenize(segment) {
   return words;
 }
 
+export function redirectTargets(segment) {
+  const targets = [];
+  let quote = null;
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else if (ch === '\\' && quote === '"') i++;
+      continue;
+    }
+    const here = hereString(segment, i);
+    if (here) { i = here.end - 1; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch !== '>') continue;
+    if (segment[i + 1] === '>') i++;
+    if (segment[i + 1] === '&') { i++; continue; }
+    const [word] = tokenize(segment.slice(i + 1));
+    if (word) targets.push(word);
+  }
+  return targets;
+}
+
 function programName(word) {
   return word.replace(/\\/g, '/').split('/').pop().toLowerCase().replace(/\.(exe|cmd|bat)$/, '');
 }
