@@ -162,6 +162,73 @@ test('reviewer and adversary agents do not author', () => {
   allowed(as('git commit -m "fix: x"', 'bstack:worker'));
 });
 
+test('no-authoring agents leave checkouts outside their own cwd untouched', () => {
+  const tmp = path.join(os.tmpdir(), 'repro.txt');
+  for (const agent of ['bstack:comment-critic', 'bstack:reviewer', 'bstack:adversary']) {
+    const as = command => ({ ...shell(command), agent_type: agent });
+    const psAs = command => ({ ...ps(command), agent_type: agent });
+    blocked(as('git -C /checkout stash'));
+    blocked(as('git -C /checkout stash pop'));
+    blocked(as('git stash push -m wip'));
+    blocked(as('git -C /checkout checkout -- src/a.mjs'));
+    blocked(as('git -C /checkout checkout HEAD~1 -- src/a.mjs'));
+    blocked(as('git -C /checkout restore src/a.mjs'));
+    blocked(as('git -C /checkout reset --hard'));
+    blocked(as('git -C /checkout reset HEAD src/a.mjs'));
+    blocked(as('git -C /checkout apply fix.patch'));
+    blocked(as('git -C /checkout clean -fd'));
+    blocked(as('git -C /checkout rm src/a.mjs'));
+    blocked(as('git -C /checkout mv src/a.mjs src/b.mjs'));
+    blocked(as('cd /checkout && git restore src/a.mjs'));
+    blocked(as('git --work-tree /checkout checkout -- src/a.mjs'));
+    blocked(as('sed -i s/a/b/ /checkout/src/a.mjs'));
+    blocked(as('cd /checkout && sed -i.bak -e s/a/b/ src/a.mjs'));
+    blocked(as('echo x > /checkout/src/a.mjs'));
+    blocked(as('echo x >>/checkout/src/a.mjs'));
+    blocked(as('echo x | tee /checkout/src/a.mjs'));
+    blocked(as('rm -rf /checkout/src'));
+    blocked(as('mv /checkout/src/a.mjs ./a.mjs'));
+    blocked(as('cp ./a.mjs /checkout/src/a.mjs'));
+    blocked(as('echo x > "$OUT"'));
+    blocked(psAs('Set-Content /checkout/src/a.mjs x'));
+    blocked(psAs('Set-Content -Value x -Path C:/checkout/src/a.mjs'));
+    blocked(psAs('Add-Content -Path:C:/checkout/src/a.mjs -Value x'));
+    blocked(psAs('"x" | Out-File -Encoding utf8 C:/checkout/src/a.mjs'));
+    blocked(psAs('Remove-Item C:/checkout/src -Recurse -Force'));
+    blocked(psAs('Move-Item -Path C:/checkout/src/a.mjs -Destination ./a.mjs'));
+    blocked(psAs('Copy-Item ./a.mjs -Destination C:/checkout/src/a.mjs'));
+
+    allowed(as('git stash list'));
+    allowed(as('git -C /checkout stash show -p'));
+    allowed(as('git -C /checkout diff'));
+    allowed(as('git -C /checkout status --short'));
+    allowed(as('git -C /checkout apply --check fix.patch'));
+    allowed(as('git -C /checkout clean -n'));
+    allowed(as('git checkout origin/main -- src/a.mjs'));
+    allowed(as('git restore src/a.mjs'));
+    allowed(as('git -C sub reset --hard'));
+    allowed(as('node --test'));
+    allowed(as('node --test 2>&1'));
+    allowed(as('npm test > /dev/null 2>&1'));
+    allowed(as('echo x > $null'));
+    allowed(as('echo x > out.txt'));
+    allowed(as('echo x > /tmp/repro.txt'));
+    allowed(as('sed -i s/a/b/ src/a.mjs'));
+    allowed(as('grep ">" /checkout/src/a.mjs'));
+    allowed(as('cp /checkout/src/a.mjs ./a.mjs'));
+    allowed(psAs('node --test 2>$null'));
+    allowed(psAs('Set-Content src/a.mjs x'));
+    allowed(psAs(`Set-Content "${tmp}" x`));
+    allowed(psAs('Set-Content $env:TEMP/repro.txt x'));
+    allowed(psAs('Copy-Item -Path C:/checkout/src/a.mjs -Destination ./a.mjs'));
+    allowed(psAs("Set-Content out.txt -Value @'\nx > C:/checkout/a.mjs\n'@"));
+  }
+  allowed(shell('git -C /checkout stash'));
+  allowed(shell('git -C /checkout checkout -- src/a.mjs'));
+  allowed(shell('sed -i s/a/b/ /checkout/src/a.mjs'));
+  allowed(ps('Set-Content C:/checkout/src/a.mjs x'));
+});
+
 test('ciState treats skipped-only and missing checks as not green', () => {
   assert.equal(ciState([]).ok, false);
   assert.equal(ciState([{ __typename: 'CheckRun', name: 'a', status: 'COMPLETED', conclusion: 'SKIPPED' }]).ok, false);
