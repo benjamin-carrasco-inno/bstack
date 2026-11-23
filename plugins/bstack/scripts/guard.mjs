@@ -46,14 +46,17 @@ const DIR_MOVES = {
 const HOME = /^~(?=$|[\\/])/;
 const OPAQUE = /[$`(]|%[^%\s]+%/;
 const GIT_LOCATION_VARIABLE = /^GIT_(DIR|WORK_TREE)$/i;
-const TEMP_VARIABLE = /^(\$env:(TEMP|TMP)|\$\{?(TMPDIR|TEMP|TMP)\}?)(?=$|[\\/])/i;
-const POSIX_TEMP = /^\/tmp(?=$|\/)/;
+const TEMP_PREFIX = {
+  posix: /^(\/tmp|\$\{?(TMPDIR|TEMP|TMP)\}?)(?=$|\/)/,
+  powershell: /^\$env:(TEMP|TMP)(?=$|[\\/])/i,
+};
 
 const UNKNOWN_DIR = null;
 const PS_ENV = /^\$env:([A-Za-z_]\w*)\s*=\s*(.*)$/is;
 
-function inTempDir(word) {
-  return word?.replace(TEMP_VARIABLE, os.tmpdir()).replace(POSIX_TEMP, os.tmpdir());
+function inTempDir(word, dialect) {
+  const prefix = TEMP_PREFIX[dialect];
+  return prefix ? word?.replace(prefix, os.tmpdir()) : word;
 }
 
 function located(commands, start) {
@@ -77,7 +80,7 @@ function shellState(scopes, scope, start) {
 
 function changeDir(shell, c) {
   const move = DIR_MOVES[c.cmd];
-  const target = inTempDir(dirTarget(c.args));
+  const target = inTempDir(dirTarget(c.args), c.dialect);
   if (move === 'pop') {
     if (shell.stack.length) [shell.previous, shell.here] = [shell.here, shell.stack.pop()];
   } else if (move && target === '-') {
@@ -85,9 +88,9 @@ function changeDir(shell, c) {
   } else if (move) {
     if (move === 'push') shell.stack.push(shell.here);
     shell.previous = shell.here;
-    const dir = resolvedDir(target, shell.here.dir);
+    const dir = resolvedDir(target, shell.here.dir, c.dialect);
     const opaque = target === undefined || OPAQUE.test(target) || HOME.test(target);
-    shell.here = { dir, known: dir !== UNKNOWN_DIR && !opaque && (shell.here.known || isAbsolute(target)) };
+    shell.here = { dir, known: dir !== UNKNOWN_DIR && !opaque && (shell.here.known || isAbsolute(target, c.dialect)) };
   }
 }
 
@@ -107,12 +110,12 @@ function dirTarget(args) {
   return args.find(a => a === '-' || (!a.startsWith('-') && !/^\/d$/i.test(a)));
 }
 
-function resolvedDir(target, here) {
+function resolvedDir(target, here, dialect) {
   if (target === undefined) return here;
   if (UNRESOLVED.test(target)) return UNKNOWN_DIR;
   const literal = target.replace(HOME, os.homedir());
-  if (here === UNKNOWN_DIR && !isAbsolute(literal)) return UNKNOWN_DIR;
-  return resolvePath(here ?? '', literal);
+  if (here === UNKNOWN_DIR && !isAbsolute(literal, dialect)) return UNKNOWN_DIR;
+  return resolvePath(here ?? '', literal, dialect);
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
@@ -126,7 +129,7 @@ function markerRule(c, cwd, deps) {
   if (!READ_ONLY.has(c.cmd) && pathArgs(c).some(a => PENDING_PATH.test(a))) return SAVED_VERDICTS;
   if (c.cmd === 'gh') {
     for (const file of bodyFiles(c.args)) {
-      const text = deps.readFile(resolvePath(cwd, file));
+      const text = deps.readFile(resolvePath(cwd, file, c.dialect));
       if (text && MARKER.test(text)) return `The body file ${file} contains a bstack verdict line. Verdicts are posted only by the bstack hook.`;
     }
   }
@@ -208,8 +211,8 @@ function treeRewriteRule(c, agent, root) {
   if (rule.anywhere) return `The ${agent} agent must not run git ${sub}: the stash stack is shared by every worktree of the repo. Read with git stash list or git stash show.`;
   const otherTree = Object.keys(c.env).some(name => GIT_LOCATION_VARIABLE.test(name)) || c.args.some(a => /^--(work-tree|git-dir)\b/.test(a));
   const here = knownCwd(c);
-  const repo = dir ? writeTarget(dir, here) : here;
-  const touched = [repo, ...(rule.paths?.(rest) ?? []).map(p => repo && writeTarget(p, repo))];
+  const repo = dir ? writeTarget(dir, here, c.dialect) : here;
+  const touched = [repo, ...(rule.paths?.(rest) ?? []).map(p => repo && writeTarget(p, repo, c.dialect))];
   if (otherTree || touched.some(p => !p || !owns(root, p))) return `The ${agent} agent must not run git ${sub} on a checkout outside its own worktree (${root}), or one the guard cannot locate; it would rewrite someone else's uncommitted work. Read with git diff or git show instead.`;
   return null;
 }
@@ -328,12 +331,12 @@ function hidesParent(word) {
   return PARENT_SEGMENT.test(word.replace(/\\(.)/g, '$1')) && !PARENT_SEGMENT.test(word);
 }
 
-function writeTarget(word, cwd) {
+function writeTarget(word, cwd, dialect) {
   if (NULL_SINK.test(word)) return null;
-  const expanded = inTempDir(word).replace(HOME, os.homedir());
+  const expanded = inTempDir(word, dialect).replace(HOME, os.homedir());
   if (OPAQUE.test(expanded) || hidesParent(expanded)) return undefined;
-  if (cwd === undefined && !isAbsolute(expanded)) return undefined;
-  return resolvePath(cwd, expanded);
+  if (cwd === undefined && !isAbsolute(expanded, dialect)) return undefined;
+  return resolvePath(cwd, expanded, dialect);
 }
 
 function owns(root, target) {
@@ -344,7 +347,7 @@ function fileWriteRule(c, agent, root, next) {
   const clobbered = next && endsInRedirect(c.text, c.dialect) ? tokenize(next.text).slice(0, 1) : [];
   const words = [...redirectTargets(c.text), ...clobbered,...dotnetWriteTargets(c.text), ...(FILE_WRITERS[c.cmd]?.(c.args, c.dialect) ?? [])];
   for (const word of words) {
-    const target = writeTarget(word, knownCwd(c));
+    const target = writeTarget(word, knownCwd(c), c.dialect);
     if (target === null) continue;
     if (target === undefined) return `The ${agent} agent may write files only inside its own worktree or the temp dir, and ${word} cannot be resolved before it runs. Use a literal path.`;
     if (!owns(root, target)) return `The ${agent} agent may write files only inside its own worktree (${root}) or the temp dir, not ${target}. Report what should change instead of changing it.`;
@@ -357,7 +360,7 @@ const CONCLUDES_WITH_COMMIT = /^(merge|cherry-pick|revert|rebase)$/;
 
 function gitRule(c, cwd, deps, line) {
   const { dir, dirKnown, sub, rest } = parseGit(c.args);
-  const repo = !dirKnown ? UNKNOWN_DIR : dir ? resolvePath(cwd, dir) : cwd;
+  const repo = !dirKnown ? UNKNOWN_DIR : dir ? resolvePath(cwd, dir, c.dialect) : cwd;
   if (rest.includes('--no-verify') || (sub === 'commit' && rest.some(a => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--')))) {
     return 'Do not skip git hooks (--no-verify / -n). Fix what the hook reports; it is part of the safety net.';
   }

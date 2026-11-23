@@ -12,14 +12,15 @@ function inStyleOf(windows, p) {
   return windows && GIT_BASH_DRIVE.test(p) ? path.win32.resolve(driveLetterForm(p)) : p;
 }
 
-export function isAbsolute(p) {
-  return WINDOWS_ABSOLUTE.test(p) || POSIX_ABSOLUTE.test(p);
+export function isAbsolute(p, dialect = 'posix') {
+  return WINDOWS_ABSOLUTE.test(p) || (dialect === 'posix' && POSIX_ABSOLUTE.test(p));
 }
 
-export function resolvePath(base, p = '.') {
+export function resolvePath(base, p = '.', dialect = 'posix') {
   if (WINDOWS_ABSOLUTE.test(p)) return path.win32.resolve(p);
   const from = base === undefined || isAbsolute(base) ? base : path.resolve(base);
   const windows = from !== undefined && styleOf(from) === path.win32;
+  if (windows && dialect !== 'posix') return path.win32.resolve(from, p);
   if (POSIX_ABSOLUTE.test(p)) return windows && GIT_BASH_DRIVE.test(p) ? path.win32.resolve(driveLetterForm(p)) : path.posix.resolve(posixSlashes(p));
   if (windows) return path.win32.resolve(from, p);
   return path.posix.resolve(posixSlashes(from), posixSlashes(p));

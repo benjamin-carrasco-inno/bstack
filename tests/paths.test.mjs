@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolvePath, contains } from '../plugins/bstack/scripts/lib/paths.mjs';
+import { resolvePath, contains, isAbsolute } from '../plugins/bstack/scripts/lib/paths.mjs';
 
 test('a Windows drive path is absolute on every platform', () => {
   assert.equal(resolvePath('C:/repo', 'C:/checkout/src/a.mjs'), 'C:\\checkout\\src\\a.mjs');
@@ -26,6 +26,19 @@ test('a Git Bash drive path /c/... is the Windows drive when the base is a Windo
   assert.equal(contains('C:\\wt', '/c/wt/x.diff'), true);
   assert.equal(contains('C:\\wt', '/d/wt/x.diff'), false);
   assert.equal(contains('/c/wt', '/c/wt/x'), true);
+});
+
+test('PowerShell and cmd resolve /x against the drive of a Windows base, without Git Bash translation', () => {
+  for (const dialect of ['powershell', 'cmd']) {
+    assert.equal(resolvePath('C:\\repo', '/tmp/x', dialect), 'C:\\tmp\\x');
+    assert.equal(resolvePath('D:/wt', '/c/proj', dialect), 'D:\\c\\proj');
+    assert.equal(resolvePath('C:\\repo', 'src', dialect), 'C:\\repo\\src');
+    assert.equal(resolvePath('/repo', '/tmp/x', dialect), '/tmp/x');
+    assert.equal(isAbsolute('/tmp/x', dialect), false);
+    assert.equal(isAbsolute('C:/tmp/x', dialect), true);
+  }
+  assert.equal(resolvePath('C:\\repo', '/c/proj', 'posix'), 'C:\\proj');
+  assert.equal(isAbsolute('/tmp/x'), true);
 });
 
 test('contains compares within one path style and refuses across styles', () => {
