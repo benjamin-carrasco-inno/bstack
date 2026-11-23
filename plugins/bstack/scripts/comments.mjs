@@ -206,7 +206,7 @@ export function countSource(file, text) {
 
 export function countText(text, syntax) {
   const src = text.replace(/^﻿/, '').replace(/\r\n?/g, '\n');
-  const { found } = scan(src, syntax);
+  const found = findComments(src, syntax);
   const lines = { comment: new Set(), suppression: new Set() };
   const { kinds, exempt } = classify(found, syntax);
   kinds.forEach((kind, k) => {
@@ -218,9 +218,7 @@ export function countText(text, syntax) {
   return { comments: lines.comment.size, suppressions: lines.suppression.size };
 }
 
-export const literalSpans = (text, syntax) => scan(text, syntax).literals;
-
-function scan(src, syn) {
+function findComments(src, syn) {
   const n = src.length;
   const newlines = [];
   for (let k = 0; k < n; k++) if (src[k] === '\n') newlines.push(k);
@@ -263,7 +261,6 @@ function scan(src, syn) {
   };
 
   const found = [];
-  const literals = [];
   let code = false, prev = '', word = '', lastEnd = -1, regexFailsBefore = -1, depth = 0, fieldLevel = 0;
   const push = (from, stop, body, kind) => found.push({ from: lineOf(from), to: lineOf(Math.max(from, stop - 1)), body, kind, header: !code });
   const operand = () => prev === 's' || prev === ')' || prev === ']' || (prev === 'w' && !REGEX_AFTER_WORD.has(word));
@@ -278,18 +275,16 @@ function scan(src, syn) {
     return close.test(src) ? close.lastIndex : -1;
   };
 
-  let stringClosed = false;
   const skipString = (k, s, close, field) => {
     while (k < n) {
       if (s.doubled && src.startsWith(close + close, k)) { k += 2 * close.length; continue; }
       const end = closesAt(close, k);
-      if (end >= 0) { stringClosed = true; return end; }
-      if (src[k] === '\n' && !s.multiline) { stringClosed = false; return k; }
+      if (end >= 0) return end;
+      if (src[k] === '\n' && !s.multiline) return k;
       if (field?.literal && src.startsWith(field.literal, k)) k += field.literal.length;
       else if (field && src.startsWith(field.open, k) && fieldLevel < FIELD_LEVELS) k = skipField(k + field.open.length, field);
       else k += src[k] === s.escape ? 2 : 1;
     }
-    stringClosed = false;
     return n;
   };
 
@@ -311,13 +306,11 @@ function scan(src, syn) {
 
   const readString = (token, { s, body, close }, prefix = '') => {
     const stop = skipString(body, s, close, s.field ?? (syn.field?.prefix.test(prefix) ? syn.field : null));
-    const closed = stringClosed;
     if (syn.docstrings && s.doc && (s.multiline || !/[fbt]/i.test(prefix)) && isDocstring(token, stop)) {
       push(token, stop, src.slice(body, Math.max(body, stop - close.length)), 'block');
     } else {
       code = true;
       prev = 's';
-      literals.push({ from: token, to: stop, closed });
     }
     return stop;
   };
@@ -336,7 +329,6 @@ function scan(src, syn) {
     return -1;
   };
 
-  let regexClosed = false;
   const readRegex = start => {
     if (start < regexFailsBefore) return start + 1;
     let k = start + 1, inClass = false;
@@ -352,7 +344,6 @@ function scan(src, syn) {
       else if (ch === '/' && !inClass) break;
       k++;
     }
-    regexClosed = k < n;
     k++;
     while (k < n && /[a-z]/i.test(src[k])) k++;
     return k;
@@ -403,7 +394,6 @@ function scan(src, syn) {
     if (syn.regex && c === '/' && !selfClose && (prev === '' || REGEX_AFTER.has(prev) || (prev === 'w' && REGEX_AFTER_WORD.has(word)))) {
       const stop = readRegex(i);
       prev = stop > i + 1 ? 's' : '/';
-      if (stop > i + 1) literals.push({ from: i, to: stop, closed: regexClosed });
       return stop;
     }
     const postfix = syn.regex && operand() ? POSTFIX.map(re => closesAt(re, i)).find(end => end >= 0) : undefined;
@@ -421,7 +411,7 @@ function scan(src, syn) {
     i = step(i);
     lastEnd = i;
   }
-  return { found, literals };
+  return found;
 }
 
 function classify(found, syn) {

@@ -8,7 +8,6 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { literalSpans, SYNTAX, syntaxFor } from './comments.mjs';
 
 const DOCS = /(^|\/)(LICENSE|NOTICE|CHANGELOG|README)(\.[a-z]+)?$|\.(md|rst|txt|adoc)$/i;
 const NOT_DOCS = /(^|\/)(AGENTS|CLAUDE)\.md$|(^|\/)requirements[^/]*\.txt$|(^|\/)\.github\/[^/]+\.txt$|(^|\/)(skills|agents|rules)\//i;
@@ -17,7 +16,6 @@ const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)test_[^/]+\.py$|_test\.
 const CODE = /\.(py|pyi|js|mjs|cjs|ts|tsx|jsx|rs|go|sql|sh|ps1|html|css|vue|svelte)$/i;
 const FIXTURE = /(^|\/)(fixtures|__fixtures__|testdata)\//i;
 const SCHEMA_FILE = /(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i;
-const SCHEMA_STATEMENT = /\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i;
 
 const PATH_RULES = [
   [SCHEMA_FILE, 'schema or migration file'],
@@ -27,7 +25,7 @@ const PATH_RULES = [
 ];
 
 const ADDED_OR_REMOVED = [
-  [SCHEMA_STATEMENT, 'SQL schema statement'],
+  [/\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i, 'SQL schema statement'],
   [/\bDELETE\s+FROM\b|\bTRUNCATE\b|\bUPDATE\s+[\w."]+\s+SET\b|\bINSERT\s+(OR\s+\w+\s+)?INTO\b|\bON\s+CONFLICT\b/i, 'SQL that writes data'],
   [/\b(os\.remove|os\.unlink|shutil\.rmtree|\.unlink\(|\.rmdir\(|fs\.(rm|rmSync|unlink|unlinkSync|rmdir)\(|remove_file|remove_dir_all)\b/, 'deletes files'],
   [/\b(requests|httpx|session|client|reqwest|axios)\s*\.\s*(post|put|patch|delete)\s*\(|method\s*[:=]\s*['"](POST|PUT|PATCH|DELETE)['"]|Method::(POST|PUT|PATCH|DELETE)/i, 'outbound call with side effects'],
@@ -44,10 +42,8 @@ const SUPPRESSION = /#\s*noqa|type:\s*ignore|pyright:\s*ignore|eslint-disable|@t
 const TEST_REMOVED = /^\s*(async\s+)?def\s+test_|^\s*#\[(tokio::)?test\]|^\s*(it|test)\s*\(/;
 const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
 
-const MULTILINE_DELIMITER = new Map([[SYNTAX.js, /`/], [SYNTAX.py, /"""|'''/]]);
 const SQL_BLANK_OR_COMMENT = /^\s*(--|$)/;
 const SQL_UNPARSED_QUOTING = /[$\\]|\b[Ee]'/;
-const JSX_TEXT = /\.[jt]sx$/i;
 const SQL_DATA_START = /^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|VALUES)\b/i;
 const SQL_NOT_DATA = [
   /\b(CREATE|ALTER|DROP|GRANT|REVOKE|TRUNCATE|RENAME|EXECUTE|CALL|setval)\b|\bCOMMENT\s+ON\b/i,
@@ -55,8 +51,6 @@ const SQL_NOT_DATA = [
   /\b(pg_catalog|pg_attribute|pg_class|information_schema|sqlite_master|sqlite_schema)\b|\bpg_\w+\s*\(|\bdblink|\b(sys|mysql)["`\]]?\s*\./i,
 ];
 const SQL_INSERT_INTO = /\bINSERT\s+(OR\s+\w+\s+|IGNORE\s+)?INTO\b/gi;
-const QUOTES = ['"', "'", '`'];
-const LINE_CONTINUES = /\\\s*$/;
 
 function isSqlData(lines) {
   if (lines.some(line => SQL_UNPARSED_QUOTING.test(line))) return false;
@@ -66,33 +60,18 @@ function isSqlData(lines) {
   return code.split(';').filter(s => s.trim()).every(statement => SQL_DATA_START.test(statement));
 }
 
-function mayBeInsideMultilineLiteral(line, previous) {
-  return LINE_CONTINUES.test(previous) || line.includes('*/') || QUOTES.some(q => line.split(q).length % 2 === 0);
-}
-
-function suppresses(line, syntax, previous) {
-  const tokens = [...line.matchAll(new RegExp(SUPPRESSION, 'g'))].map(m => m.index);
-  if (!tokens.length || !syntax || MULTILINE_DELIMITER.get(syntax)?.test(line) || mayBeInsideMultilineLiteral(line, previous)) return tokens.length > 0;
-  const literals = literalSpans(line, syntax);
-  if (literals.some(l => !l.closed)) return true;
-  return tokens.some(at => !literals.some(({ from, to }) => from <= at && at < to));
-}
-
 export function parseDiff(diff) {
   const files = [];
   let f = null;
-  let previous = '';
   for (const line of String(diff ?? '').split(/\r?\n/)) {
     const head = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-    if (head) { f = { path: head[2], added: [], addedPrevious: [], removed: [], created: false, deleted: false }; files.push(f); previous = ''; continue; }
+    if (head) { f = { path: head[2], added: [], removed: [], created: false, deleted: false }; files.push(f); continue; }
     if (!f) continue;
     if (line.startsWith('new file mode')) f.created = true;
     else if (line.startsWith('deleted file mode')) f.deleted = true;
     else if (line.startsWith('+++') || line.startsWith('---')) continue;
-    else if (line.startsWith('@@')) previous = '';
-    else if (line.startsWith('+')) { f.added.push(line.slice(1)); f.addedPrevious.push(previous); previous = line.slice(1); }
+    else if (line.startsWith('+')) f.added.push(line.slice(1));
     else if (line.startsWith('-')) f.removed.push(line.slice(1));
-    else if (line.startsWith(' ')) previous = line.slice(1);
   }
   return files;
 }
@@ -126,8 +105,7 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
       if (lost > 0) raise(2, `fewer assertions: ${p}`);
     }
     for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
-    const syntax = JSX_TEXT.test(p) ? null : syntaxFor(p);
-    if (!PROSE.test(p) && !fixture && f.added.some((l, i) => suppresses(l, syntax, f.addedPrevious[i]))) raise(2, `new lint or type suppression: ${p}`);
+    if (!PROSE.test(p) && !fixture && !isTest && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
     if (CODE.test(p) && !isTest) {
