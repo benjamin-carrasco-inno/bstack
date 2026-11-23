@@ -18,8 +18,15 @@ function hereString(text, i) {
 }
 
 const CLOSER = { '(': ')', '{': '}' };
+const BRACKETS = new Set(['(', ')', '{', '}']);
+const GLUED_TO_WORD = /[\w$@]$/;
+const POWERSHELL_OPERATOR = /(^|\s)-[a-z]+$/i;
 
-// Cut a line into segments at ; && || | & newlines and word-initial ( ) { } groups, outside quotes.
+function opensGroup(textBefore) {
+  return !GLUED_TO_WORD.test(textBefore) || POWERSHELL_OPERATOR.test(textBefore);
+}
+
+// Cut a line into segments at ; && || | & newlines and ( ) { } groups, outside quotes.
 export function splitSegments(line) {
   const segments = [];
   let cur = '';
@@ -36,8 +43,9 @@ export function splitSegments(line) {
     const here = hereString(line, i);
     if (here) { cur += line.slice(i, here.end); i = here.end - 1; continue; }
     if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
+    if (ch === '`' && (line[i + 1] === '`' || BRACKETS.has(line[i + 1]))) { cur += ch + line[++i]; continue; }
     if (ch in CLOSER) {
-      const splits = cur === '' || /\s$/.test(cur);
+      const splits = opensGroup(cur);
       groups.push({ closer: CLOSER[ch], splits });
       if (splits) { segments.push(cur); cur = ''; } else cur += ch;
       continue;
