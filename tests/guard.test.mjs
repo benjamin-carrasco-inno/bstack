@@ -678,6 +678,41 @@ test('on a POSIX host /tmp is /tmp, and a temp variable is the environment value
   assert.match(decide(pwsh('cd $env:TMP/repo; git commit -m x'), onHost(linux, overBaselineAt('/tmp/repo'))) ?? '', /cannot tell which repository/);
 });
 
+test('comment ratchet: a temp variable assigned earlier in the line is unresolved, not the temp dir', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', TWO);
+  repo.git('add', 'app.py');
+  const bashDir = repo.dir.replace(/\\/g, '/');
+  const lines = [
+    [`$env:TEMP = '${repo.dir}'; cd $env:TEMP; git commit -m x`, 'PowerShell'],
+    [`$env:TMP = '${repo.dir}'; Set-Location $env:TMP; git commit -m x`, 'PowerShell'],
+    [`export TMPDIR='${bashDir}'; cd "$TMPDIR" && git commit -m x`, 'Bash'],
+    [`TEMP='${bashDir}'; cd $TEMP; git commit -m x`, 'Bash'],
+  ];
+  for (const [line, tool] of lines) assert.match(repo.run(line, tool) ?? '', /cannot tell which repository/, line);
+});
+
+test('no-authoring agents: a temp variable assigned earlier in the line is not the temp dir', () => {
+  for (const agent of NO_AUTHORING) {
+    const psAs = command => psAt(command, { agent_type: agent });
+    const as = command => bashAt(command, { agent_type: agent });
+    blocked(psAs("$env:TEMP='C:\\other\\checkout'; cd $env:TEMP; git checkout -- ."), onHost(GIT_BASH_HOST));
+    blocked(psAs("$env:TEMP='C:\\other\\checkout'; Set-Content $env:TEMP\\app.js x"), onHost(GIT_BASH_HOST));
+    blocked(psAs("$env:TMP='C:\\other\\checkout'; Set-Location $env:TMP; git reset --hard"), onHost(GIT_BASH_HOST));
+    blocked(as('export TMPDIR=/c/other/checkout; cd "$TMPDIR" && git checkout -- .'), onHost(GIT_BASH_HOST));
+    blocked(as('TEMP=/c/other/checkout; echo x > $TEMP/app.js'), onHost(GIT_BASH_HOST));
+    allowed(psAs('cd $env:TEMP; git checkout -- .'), onHost(GIT_BASH_HOST));
+  }
+});
+
+test('set assigns a variable only in cmd; in bash it sets positional parameters', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = command => bashAt(command, { agent_type: agent });
+    allowed(as('set TMPDIR=/c/other/checkout; cd $TMPDIR && echo x > f.txt'), onHost(GIT_BASH_HOST));
+    blocked(as('cmd /c "set GIT_DIR=C:/checkout/.git && git reset --hard"'));
+  }
+});
+
 test('no-authoring agents under PowerShell: /tmp is C:\\tmp, the temp dir is $env:TEMP', () => {
   for (const agent of NO_AUTHORING) {
     const psAs = command => psAt(command, { agent_type: agent });
