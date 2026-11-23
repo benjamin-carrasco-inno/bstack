@@ -579,6 +579,70 @@ test('no-authoring agents: Git Bash drive paths /c/... are the Windows drive', (
   }
 });
 
+const psAt = (command, extra = {}) => ({ tool_name: 'PowerShell', tool_input: { command }, cwd: 'C:\\repo', ...extra });
+const bashAt = (command, extra = {}) => ({ tool_name: 'Bash', tool_input: { command }, cwd: 'C:\\repo', ...extra });
+const BASH_TEMP_RAT = path.join(os.tmpdir(), 'rat');
+
+function onMainAt(dir) {
+  return { ...deps(), git: (cwd, args) => (args.join(' ') === 'rev-parse --abbrev-ref HEAD' ? (cwd === dir ? 'main' : 'feat/x') : '') };
+}
+
+function overBaselineAt(dir) {
+  const blob = 'c'.repeat(40);
+  const answers = {
+    'rev-parse --show-toplevel --git-path index': `${dir}\n.git/index\n`,
+    'cat-file -e :.github/comment-baseline.json': '',
+    'show :.github/comment-baseline.json': '{"files":{"app.py":1}}',
+    'diff --cached --raw -z -M --no-color': `:000000 100644 ${'0'.repeat(40)} ${blob} A\0app.py\0`,
+    'cat-file --batch': Buffer.from(`${blob} blob ${TWO.length}\n${TWO}\n`),
+  };
+  return {
+    ...deps(),
+    exists: () => false,
+    git: (cwd, args) => {
+      const answer = answers[args.join(' ')];
+      if (cwd !== dir || answer === undefined) throw new Error(`not a git repository: ${cwd}`);
+      return answer;
+    },
+  };
+}
+
+test('PowerShell reads /x as the root of the current drive, not as a Git Bash path', () => {
+  blocked(psAt('git -C /c/proj push'), onMainAt('C:\\c\\proj'));
+  allowed(psAt('git -C /c/proj push'), onMainAt('C:\\proj'));
+  blocked(psAt('cd /tmp/rat; git commit -m x'), overBaselineAt('C:\\tmp\\rat'));
+  allowed(psAt('cd /tmp/rat; git commit -m x'), overBaselineAt(BASH_TEMP_RAT));
+  const verdictAt = file => ({ ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : null) });
+  blocked(psAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\c\\x\\v.md'));
+  allowed(psAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\x\\v.md'));
+  blocked(psAt('cmd /c git -C /c/proj push'), onMainAt('C:\\c\\proj'));
+});
+
+test('Bash keeps the Git Bash meaning of /c/..., /tmp and $TMPDIR', () => {
+  blocked(bashAt('git -C /c/proj push'), onMainAt('C:\\proj'));
+  allowed(bashAt('git -C /c/proj push'), onMainAt('C:\\c\\proj'));
+  blocked(bashAt('cd /tmp/rat; git commit -m x'), overBaselineAt(BASH_TEMP_RAT));
+  blocked(bashAt('cd $TMPDIR/rat; git commit -m x'), overBaselineAt(BASH_TEMP_RAT));
+  const verdictAt = file => ({ ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : null) });
+  blocked(bashAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\x\\v.md'));
+  blocked(psAt("bash -c 'git -C /c/proj push'"), onMainAt('C:\\proj'));
+});
+
+test('no-authoring agents under PowerShell: /tmp is C:\\tmp, the temp dir is $env:TEMP', () => {
+  for (const agent of NO_AUTHORING) {
+    const psAs = command => psAt(command, { agent_type: agent });
+    const as = command => bashAt(command, { agent_type: agent });
+    blocked(psAs('Set-Content /tmp/notes.txt x'));
+    blocked(psAs('cd /tmp; Set-Content notes.txt x'));
+    blocked(psAs('Set-Content $TMPDIR/notes.txt x'));
+    allowed(psAs('Set-Content $env:TEMP/notes.txt x'));
+    allowed(psAs('Set-Content /repo/notes.txt x'));
+    allowed(as('echo x > /tmp/notes.txt'));
+    allowed(as('cd /tmp && echo x > notes.txt'));
+    blocked(as('echo x > $env:TEMP/notes.txt'));
+  }
+});
+
 test('ciState treats skipped-only and missing checks as not green', () => {
   assert.equal(ciState([]).ok, false);
   assert.equal(ciState([{ __typename: 'CheckRun', name: 'a', status: 'COMPLETED', conclusion: 'SKIPPED' }]).ok, false);
