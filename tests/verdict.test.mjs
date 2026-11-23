@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { commentArgs, deliver, handle, kindOf, readSettled, retrying } from '../plugins/bstack/scripts/verdict.mjs';
 import { decide } from '../plugins/bstack/scripts/guard.mjs';
-import { parseReport, latestFor } from '../plugins/bstack/scripts/lib/verdicts.mjs';
+import { commentBody, parseReport, latestFor } from '../plugins/bstack/scripts/lib/verdicts.mjs';
 import { pendingStore } from '../plugins/bstack/scripts/lib/pending.mjs';
 
 const SHA = 'c'.repeat(40);
@@ -216,6 +216,50 @@ test('a PR the hook cannot read during an outage is saved under the repo the rep
   assert.equal(saved.length, 1);
   assert.deepEqual([saved[0].repo, saved[0].pr, saved[0].sha, saved[0].kind], ['o/r', '7', SHA, 'verdict']);
   assert.equal(latestFor('verdict', [{ body: saved[0].body }], SHA).result, 'PASS');
+});
+
+test('a saved verdict keeps the time it was judged, so posting it late does not make it newest', () => {
+  const saved = [];
+  const clock = outage(Infinity);
+  deliver(reviewed(), { gh: retrying(clock.gh, { pause: clock.pause }), save: e => saved.push(e), now: () => '2026-11-22T09:00:00.000Z' });
+  assert.equal(saved[0].at, '2026-11-22T09:00:00.000Z');
+  const laterFail = { body: commentBody('verdict', 'FAIL', SHA, 'found a bug'), createdAt: '2026-11-22T10:00:00Z' };
+  const latePosted = { body: saved[0].body, createdAt: '2026-11-22T12:00:00Z' };
+  assert.equal(latestFor('verdict', [laterFail, latePosted], SHA).result, 'FAIL');
+  const earlierFail = { body: commentBody('verdict', 'FAIL', SHA, 'found a bug'), createdAt: '2026-11-22T08:00:00Z' };
+  assert.equal(latestFor('verdict', [earlierFail, latePosted], SHA).result, 'PASS');
+});
+
+const NO_DNS = 'error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com';
+const GRAPHQL_EOF = 'Post "https://api.github.com/graphql": EOF';
+
+test('DNS and dropped-connection failures from gh are retried', () => {
+  for (const message of [NO_DNS, GRAPHQL_EOF]) {
+    let calls = 0;
+    const gh = retrying(() => { if (++calls < 3) throw new Error(`Command failed: gh pr view 7\n${message}\n`); return 'ok'; }, { pause: () => {} });
+    assert.equal(gh('/repo', ['pr', 'view', '7']), 'ok', message);
+  }
+});
+
+test('a PR read that fails on DNS saves the verdict instead of asking the agent to check the PR number', () => {
+  const saved = [];
+  const out = deliver(reviewed(), { gh: () => { throw new Error(`Command failed: gh pr view 7\n${NO_DNS}\n`); }, save: e => saved.push(e) });
+  assert.equal(saved.length, 1);
+  assert.match(out.systemMessage, /saved/);
+});
+
+test('a comment post that fails in any way after the PR read saves the verdict', () => {
+  for (const message of [NO_DNS, GRAPHQL_EOF, 'GraphQL: Something went wrong while executing your query.']) {
+    const saved = [];
+    const gh = (_cwd, args) => {
+      if (args[1] === 'view') return JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, comments: [] });
+      throw new Error(`Command failed: gh pr comment\n${message}\n`);
+    };
+    const out = deliver(reviewed(), { gh, save: e => saved.push(e) });
+    assert.equal(saved.length, 1, message);
+    assert.deepEqual([saved[0].repo, saved[0].pr, saved[0].sha], ['o/r', '7', SHA]);
+    assert.match(out.systemMessage, /saved/);
+  }
 });
 
 test('a transcript that stops growing without a hand-back is read once it is quiet', () => {

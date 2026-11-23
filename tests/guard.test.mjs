@@ -270,6 +270,47 @@ test('agents cannot write saved verdicts', () => {
   blocked(ps(`Set-Content "${dir}\\o_r__5.json" '{}'`));
   blocked(shell('cp forged.json ~/.claude/bstack/pending-verdicts/'));
   allowed(shell('cat ~/.claude/bstack/pending-verdicts/o_r__5.json'));
+  blocked(shell('echo {} > ~/.claude/bstack/pending-verdicts/o_r__5.json'));
+  blocked(ps(`$d = "${dir}"; Set-Content "$d\\x.json" '{}'`));
+});
+
+test('commands that only mention saved verdicts in a message are not refused', () => {
+  allowed(shell('git commit -m "fix(guard): keep pending-verdicts through outages"'));
+  allowed(shell('gh pr create --title "pending-verdicts" --body "The hook saves to ~/.claude/bstack/pending-verdicts/ when GitHub is down."'));
+  allowed(shell('git commit --message="docs: pending-verdicts/ layout"'));
+});
+
+const savedAt = (result, at, sha = SHA) => ({ repo: 'o/r', pr: '5', sha, kind: 'verdict', at, body: commentBody('verdict', result, sha, 'report', at) });
+
+test('a saved verdict older than a verdict already posted for the head is dropped, both ways', () => {
+  const olderPass = withPending([savedAt('PASS', '2026-11-22T09:00:00Z')], { pr: { comments: [verdict('FAIL', SHA, '2026-11-22T10:00:00Z')] } });
+  blocked(shell('gh pr merge 5 --squash'), olderPass.d);
+  assert.deepEqual(olderPass.posted, []);
+  assert.deepEqual(olderPass.removed, ['f0']);
+
+  const olderFail = withPending([savedAt('FAIL', '2026-11-22T09:00:00Z')], { pr: { comments: [verdict('PASS', SHA, '2026-11-22T10:00:00Z')] } });
+  allowed(shell('gh pr merge 5 --squash'), olderFail.d);
+  assert.deepEqual(olderFail.posted, []);
+  assert.deepEqual(olderFail.removed, ['f0']);
+});
+
+test('a saved verdict newer than the posted one is posted and decides the merge', () => {
+  const { d, posted } = withPending([savedAt('PASS', '2026-11-22T11:00:00Z')], { pr: { comments: [verdict('FAIL', SHA, '2026-11-22T10:00:00Z')] } });
+  allowed(shell('gh pr merge 5 --squash'), d);
+  assert.equal(posted.length, 1);
+});
+
+test('a saved entry with an empty body is dropped, not posted', () => {
+  const { d, posted, removed } = withPending([{ ...saved(), body: '' }]);
+  blocked(shell('gh pr merge 5 --squash'), d);
+  assert.deepEqual(posted, []);
+  assert.deepEqual(removed, ['f0']);
+});
+
+test('ciState orders status contexts without startedAt by their own time', () => {
+  const ctx = (state, createdAt) => ({ __typename: 'StatusContext', context: 'ci/legacy', state, createdAt });
+  assert.equal(ciState([ctx('SUCCESS', '2026-11-23T10:05:00Z'), ctx('FAILURE', '2026-11-23T10:00:00Z')]).ok, true);
+  assert.match(ciState([ctx('FAILURE', '2026-11-23T10:05:00Z'), ctx('SUCCESS', '2026-11-23T10:00:00Z')]).detail, /failed: ci\/legacy/);
 });
 
 test('a gh call that times out is retried once with a longer timeout, other errors are not', () => {
