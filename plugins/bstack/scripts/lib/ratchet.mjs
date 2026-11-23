@@ -66,7 +66,7 @@ export function parseCommit(rest) {
 export function commentRatchet({ command, rest, prior, tool }, shellDeps) {
   const opts = parseCommit(rest);
   if (opts.dryRun) return null;
-  const target = commitTarget(command);
+  const target = commitTarget(command, shellDeps.host.paths);
   if (typeof target === 'string') return target;
   const { repo, gitEnv } = target;
   const deps = gitEnv ? { ...shellDeps, git: (cwd, args, o = {}) => shellDeps.git(cwd, args, { ...o, env: { ...gitEnv, ...o.env } }) } : shellDeps;
@@ -99,18 +99,18 @@ export function commentRatchet({ command, rest, prior, tool }, shellDeps) {
 
 const GIT_LOCATION = { gitDir: 'GIT_DIR', workTree: 'GIT_WORK_TREE' };
 
-function commitTarget({ args, expressions, cwd, env = {} }) {
+function commitTarget({ args, expressions, cwd, dialect, env = {} }, paths) {
   const parsed = parseGit(args, expressions);
   if (cwd === null) return unknownRepo('a cd to a path the guard cannot resolve');
   if (!parsed.dirKnown) return unknownRepo(`-C ${parsed.dir}`);
   if (env.GIT_INDEX_FILE !== undefined) return unknownRepo('GIT_INDEX_FILE');
-  const repo = parsed.dir === null ? cwd : path.resolve(cwd, parsed.dir);
+  const repo = parsed.dir === null ? cwd : paths.resolvePath(cwd, parsed.dir, dialect);
   const gitEnv = {};
   for (const [option, name] of Object.entries(GIT_LOCATION)) {
     const value = parsed[option] ?? env[name];
     if (value === undefined || value === null) continue;
     if (UNRESOLVED.test(value)) return unknownRepo(`${name} ${value}`);
-    gitEnv[name] = path.resolve(repo, value);
+    gitEnv[name] = paths.resolvePath(repo, value, dialect);
   }
   return { repo, gitEnv: Object.keys(gitEnv).length ? gitEnv : null };
 }
@@ -140,7 +140,7 @@ function safeBeforeCommit(c, tool, deps) {
     if (READ_ONLY_GIT.has(sub)) return !rest.some(a => a.startsWith('--output'));
     if (!Object.hasOwn(INDEX_REPLAYS, sub) || c.cwd === null || gitDir !== null || workTree !== null) return false;
     if (!dirKnown || GIT_ENV.some(name => c.env?.[name] !== undefined)) return false;
-    const where = dir === null ? c.cwd : path.resolve(c.cwd, dir);
+    const where = dir === null ? c.cwd : deps.host.paths.resolvePath(c.cwd, dir, c.dialect);
     return INDEX_REPLAYS[sub](withoutRedirections(rest), { where, shellCwd: c.cwd, tool }, deps).length > 0;
   }
   if (c.text.startsWith('$')) return QUOTED_ENV_SET.test(c.text) || !c.text.includes('=');
@@ -166,7 +166,7 @@ const NOT_EMULATED = /^(-p|--patch|--pathspec-from-file(=.*)?)$/;
 
 function replay(command, { repo, root, tool }, env, deps) {
   const { dir, sub, rest } = parseGit(command.args);
-  const where = dir ? path.resolve(command.cwd, dir) : command.cwd;
+  const where = dir ? deps.host.paths.resolvePath(command.cwd, dir, command.dialect) : command.cwd;
   if (where !== repo) {
     let top;
     try { top = deps.git(where, ['rev-parse', '--show-toplevel']).trim(); } catch { return; }

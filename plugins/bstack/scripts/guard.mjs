@@ -13,7 +13,7 @@ import { ASSIGNMENT, UNRESOLVED, commandsIn, endsInRedirect, parseGit, redirectT
 import { KINDS, MARKER, latestFor, timeOf } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
-import { contains, isAbsolute, resolvePath } from './lib/paths.mjs';
+import { pathsOn } from './lib/paths.mjs';
 import { riskTier, readRiskPaths } from './risk-tier.mjs';
 
 const DEFAULT_BRANCH = /^(main|master)$/;
@@ -29,17 +29,19 @@ export function decide(input, deps) {
   if (tool !== 'Bash' && tool !== 'PowerShell') return null;
   const line = String(input.tool_input?.command ?? '');
   const dialect = tool === 'PowerShell' ? 'powershell' : 'posix';
-  const host = deps.host ?? REAL_HOST;
-  const root = resolvePath(cwd);
+  const host = withPaths(deps.host ?? REAL_HOST);
+  const hostDeps = { ...deps, host };
+  const root = host.paths.resolvePath(cwd);
   const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
+    const reason = markerRule(c, cwd, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps) : null);
     if (reason) return reason;
   }
   return agentWritesRule(line, dialect, cwd, agent, root, { ...host, tempNames: plainTempNames(line) });
 }
 
 const REAL_HOST = { platform: process.platform, env: process.env, tmpdir: () => os.tmpdir() };
+const withPaths = host => ({ ...host, paths: pathsOn(host.platform) });
 
 const DIR_MOVES = {
   cd: 'go', chdir: 'go', 'set-location': 'go', sl: 'go',
@@ -115,9 +117,9 @@ function changeDir(shell, c, host) {
   } else if (move) {
     if (move === 'push') shell.stack.push(shell.here);
     shell.previous = shell.here;
-    const dir = resolvedDir(target, shell.here.dir, dialect);
+    const dir = resolvedDir(target, shell.here.dir, dialect, host.paths);
     const opaque = target === undefined || c.expressions?.has(at) || OPAQUE.test(target) || HOME.test(target);
-    shell.here = { dir, known: dir !== UNKNOWN_DIR && !opaque && (shell.here.known || isAbsolute(target, dialect)) };
+    shell.here = { dir, known: dir !== UNKNOWN_DIR && !opaque && (shell.here.known || host.paths.isAbsolute(target, dialect)) };
   }
 }
 
@@ -133,12 +135,12 @@ function setVariables(env, c) {
   }
 }
 
-function resolvedDir(target, here, dialect) {
+function resolvedDir(target, here, dialect, paths) {
   if (target === undefined) return here;
   if (UNRESOLVED.test(target)) return UNKNOWN_DIR;
   const literal = target.replace(HOME, os.homedir());
-  if (here === UNKNOWN_DIR && !isAbsolute(literal, dialect)) return UNKNOWN_DIR;
-  return resolvePath(here ?? '', literal, dialect);
+  if (here === UNKNOWN_DIR && !paths.isAbsolute(literal, dialect)) return UNKNOWN_DIR;
+  return paths.resolvePath(here ?? '', literal, dialect);
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
@@ -152,7 +154,7 @@ function markerRule(c, cwd, deps) {
   if (!READ_ONLY.has(c.cmd) && pathArgs(c).some(a => PENDING_PATH.test(a))) return SAVED_VERDICTS;
   if (c.cmd === 'gh') {
     for (const file of bodyFiles(c.args)) {
-      const text = deps.readFile(resolvePath(cwd, file, c.dialect));
+      const text = deps.readFile(deps.host.paths.resolvePath(cwd, file, c.dialect));
       if (text && MARKER.test(text)) return `The body file ${file} contains a bstack verdict line. Verdicts are posted only by the bstack hook.`;
     }
   }
@@ -359,12 +361,13 @@ function writeTarget(word, cwd, shellDialect, host, expression) {
   const { word: inTemp, dialect } = inTempDir(word, shellDialect, host);
   const expanded = inTemp.replace(HOME, os.homedir());
   if (expression || OPAQUE.test(expanded) || hidesParent(expanded)) return undefined;
-  if (cwd === undefined && !isAbsolute(expanded, dialect)) return undefined;
-  return resolvePath(cwd, expanded, dialect);
+  const asProvider = host.platform !== 'win32' && dialect === 'powershell' ? expanded.replace(/\\/g, '/') : expanded;
+  if (cwd === undefined && !host.paths.isAbsolute(asProvider, dialect)) return undefined;
+  return host.paths.resolvePath(cwd, asProvider, dialect);
 }
 
 function owns(root, target, host) {
-  return [root, resolvePath(host.tmpdir())].some(dir => contains(dir, target));
+  return [root, host.paths.resolvePath(host.tmpdir())].some(dir => host.paths.contains(dir, target));
 }
 
 function isExpressionArg(c, value) {
@@ -388,7 +391,7 @@ const CONCLUDES_WITH_COMMIT = /^(merge|cherry-pick|revert|rebase)$/;
 
 function gitRule(c, cwd, deps, line) {
   const { dir, dirKnown, sub, rest } = parseGit(c.args, c.expressions);
-  const repo = !dirKnown ? UNKNOWN_DIR : dir ? resolvePath(cwd, dir, c.dialect) : cwd;
+  const repo = !dirKnown ? UNKNOWN_DIR : dir ? deps.host.paths.resolvePath(cwd, dir, c.dialect) : cwd;
   if (rest.includes('--no-verify') || (sub === 'commit' && rest.some(a => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--')))) {
     return 'Do not skip git hooks (--no-verify / -n). Fix what the hook reports; it is part of the safety net.';
   }

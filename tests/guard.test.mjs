@@ -39,8 +39,10 @@ function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, fil
 
 const shell = (command, extra = {}) => ({ tool_name: 'Bash', tool_input: { command }, cwd: '/repo', ...extra });
 const ps = command => ({ tool_name: 'PowerShell', tool_input: { command }, cwd: 'C:/repo' });
-const blocked = (input, d = deps()) => assert.ok(decide(input, d), `expected block: ${JSON.stringify(input.tool_input)}`);
-const allowed = (input, d = deps()) => assert.equal(decide(input, d), null);
+const WINDOWS_CWD = /^[a-z]:[\\/]/i;
+const onCwdHost = (input, d) => (WINDOWS_CWD.test(input.cwd ?? '') && !d.host ? { ...d, host: GIT_BASH_HOST } : d);
+const blocked = (input, d = deps()) => assert.ok(decide(input, onCwdHost(input, d)), `expected block: ${JSON.stringify(input.tool_input)}`);
+const allowed = (input, d = deps()) => assert.equal(decide(input, onCwdHost(input, d)), null);
 const GIT_BASH_HOST = { platform: 'win32', env: {}, tmpdir: () => 'C:\\Temp' };
 const onHost = (host, d = deps()) => ({ ...d, host });
 const OVER_BASELINE = /app\.py: baseline 1, this commit 2/;
@@ -262,7 +264,7 @@ test('no-authoring agents leave checkouts outside their own cwd untouched', () =
     allowed(as('cp /checkout/src/a.mjs ./a.mjs'));
     allowed(psAs('node --test 2>$null'));
     allowed(psAs('Set-Content src/a.mjs x'));
-    allowed({ ...psAs(`Set-Content "${tmp}" x`), cwd: path.resolve('/repo') });
+    allowed({ ...psAs(`Set-Content "${tmp}" x`), cwd: path.resolve('/repo') }, onHost({ platform: process.platform, env: {}, tmpdir: () => os.tmpdir() }));
     allowed(psAs('Set-Content $env:TEMP/repro.txt x'), onHost(GIT_BASH_HOST));
     allowed(psAs('Copy-Item -Path C:/checkout/src/a.mjs -Destination ./a.mjs'));
     allowed(psAs("Set-Content out.txt -Value @'\nx > C:/checkout/a.mjs\n'@"));
@@ -529,8 +531,8 @@ test('no-authoring agents: more tree-rewriting git and file writers', () => {
     blocked(psAs('Clear-Content C:/checkout/a.mjs'));
     blocked(as('mkdir -p /checkout/new'));
     blocked(psAs('md C:/checkout/new'));
-    blocked(as('xcopy ./a.mjs C:\\checkout\\ /Y'));
-    blocked(as('robocopy ./src C:/checkout/src /MIR'));
+    blocked(as('xcopy ./a.mjs C:\\checkout\\ /Y'), onHost(GIT_BASH_HOST));
+    blocked(as('robocopy ./src C:/checkout/src /MIR'), onHost(GIT_BASH_HOST));
     blocked(as('curl -o /checkout/a.mjs https://example.com/a'));
     blocked(as('curl -sSLo /checkout/a.mjs https://example.com/a'));
     blocked(as('curl --output=/checkout/a.mjs https://example.com/a'));
@@ -542,7 +544,7 @@ test('no-authoring agents: more tree-rewriting git and file writers', () => {
     allowed(as('git update-index --refresh'));
     allowed(psAs('Rename-Item ./a.mjs b.mjs'));
     allowed(as('mkdir -p ./out'));
-    allowed(as('xcopy C:\\checkout\\a.mjs ./copy /Y'));
+    allowed(as('xcopy C:\\checkout\\a.mjs ./copy /Y'), onHost(GIT_BASH_HOST));
     allowed(as('curl -o ./a.html https://example.com/a'));
     allowed(as('curl https://example.com/a'));
     allowed(as('patch -p1 -i fix.patch'));
@@ -627,8 +629,7 @@ test('no-authoring agents: Git Bash drive paths /c/... are the Windows drive', (
     blocked(at('git diff > /d/work/wt/x.diff'));
     blocked(at('cd /c/work && git reset --hard'));
 
-    const drive = /^([a-z]):[\\/](.*)$/i.exec(os.tmpdir());
-    if (drive) allowed(at(`git diff > /${drive[1].toLowerCase()}/${drive[2].replace(/\\/g, '/')}/x.diff`));
+    allowed(at('git diff > /c/Temp/x.diff'));
   }
 });
 

@@ -12,24 +12,37 @@ function inStyleOf(windows, p) {
   return windows && GIT_BASH_DRIVE.test(p) ? path.win32.resolve(driveLetterForm(p)) : p;
 }
 
-export function isAbsolute(p, dialect = 'posix') {
-  return WINDOWS_ABSOLUTE.test(p) || (dialect === 'posix' && POSIX_ABSOLUTE.test(p));
-}
-
-export function resolvePath(base, p = '.', dialect = 'posix') {
-  if (WINDOWS_ABSOLUTE.test(p)) return path.win32.resolve(p);
-  const from = base === undefined || isAbsolute(base) ? base : path.resolve(base);
-  const windows = from !== undefined && styleOf(from) === path.win32;
-  if (windows && dialect !== 'posix') return path.win32.resolve(from, p);
-  if (POSIX_ABSOLUTE.test(p)) return windows && GIT_BASH_DRIVE.test(p) ? path.win32.resolve(driveLetterForm(p)) : path.posix.resolve(posixSlashes(p));
-  if (windows) return path.win32.resolve(from, p);
-  return path.posix.resolve(posixSlashes(from), posixSlashes(p));
-}
-
-export function contains(dir, target) {
-  const style = styleOf(dir);
-  const inStyle = inStyleOf(style === path.win32, target);
-  if (styleOf(inStyle) !== style) return false;
-  const rel = style.relative(dir, inStyle);
+function within(style, dir, target) {
+  const rel = style.relative(dir, target);
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${style.sep}`) && !style.isAbsolute(rel));
+}
+
+const POSIX_HOST = {
+  isAbsolute: p => path.posix.isAbsolute(p),
+  resolvePath: (base, p = '.') => path.posix.resolve(base ?? '', p),
+  contains: (dir, target) => within(path.posix, dir, target),
+};
+
+const WINDOWS_HOST = {
+  isAbsolute(p, dialect = 'posix') {
+    return WINDOWS_ABSOLUTE.test(p) || (dialect === 'posix' && POSIX_ABSOLUTE.test(p));
+  },
+  resolvePath(base, p = '.', dialect = 'posix') {
+    if (WINDOWS_ABSOLUTE.test(p)) return path.win32.resolve(p);
+    const from = base === undefined || WINDOWS_HOST.isAbsolute(base) ? base : path.win32.resolve(base);
+    const windows = from !== undefined && styleOf(from) === path.win32;
+    if (windows && dialect !== 'posix') return path.win32.resolve(from, p);
+    if (POSIX_ABSOLUTE.test(p)) return windows && GIT_BASH_DRIVE.test(p) ? path.win32.resolve(driveLetterForm(p)) : path.posix.resolve(posixSlashes(p));
+    if (windows) return path.win32.resolve(from, p);
+    return path.posix.resolve(posixSlashes(from), posixSlashes(p));
+  },
+  contains(dir, target) {
+    const style = styleOf(dir);
+    const inStyle = inStyleOf(style === path.win32, target);
+    return styleOf(inStyle) === style && within(style, dir, inStyle);
+  },
+};
+
+export function pathsOn(platform) {
+  return platform === 'win32' ? WINDOWS_HOST : POSIX_HOST;
 }
