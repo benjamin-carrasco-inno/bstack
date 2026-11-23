@@ -33,7 +33,7 @@ export function decide(input, deps) {
   const root = resolvePath(cwd);
   const commands = located(commandsIn(line, 0, dialect), cwd, host);
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent, root, host) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
+    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
     if (reason) return reason;
   }
   return agentWritesRule(line, dialect, cwd, agent, root, host);
@@ -160,21 +160,21 @@ function bodyFiles(args) {
 }
 
 // --- reviewer, adversary and comment-critic judge; they never author ---------------------------------
-function agentRule(c, agent, root, host) {
+function agentRule(c, agent) {
   if (!NO_AUTHORING_AGENTS.test(agent)) return null;
   const git = c.cmd === 'git' ? parseGit(c.args).sub : '';
   const gh = c.cmd === 'gh' ? `${c.args[0]} ${c.args[1] ?? ''}` : '';
   if (/^(commit|push|merge|rebase|tag|cherry-pick|am|revert)$/.test(git) || /^pr (merge|comment|review|edit|close|create|ready)|^issue (comment|create|edit|close|reopen|delete|transfer|lock|unlock|pin|unpin|develop)|^label (create|edit|delete|clone)|^api /.test(gh) && !(gh.startsWith('api ') && !hasWriteFields(c.args))) {
     return `The ${agent} agent judges and reproduces; it does not commit, push or post. Report the finding in your final message; the hook posts it.`;
   }
-  return treeRewriteRule(c, agent, root, host);
+  return null;
 }
 
 function agentWritesRule(line, dialect, cwd, agent, root, host) {
   if (!NO_AUTHORING_AGENTS.test(agent)) return null;
   const commands = located(commandsIn(withoutHeredocBodies(line), 0, dialect), cwd, host);
   for (const [k, c] of commands.entries()) {
-    const reason = fileWriteRule(c, agent, root, commands[k + 1], host);
+    const reason = treeRewriteRule(c, agent, root, host) ?? fileWriteRule(c, agent, root, commands[k + 1], host);
     if (reason) return reason;
   }
   return null;
