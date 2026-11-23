@@ -99,8 +99,8 @@ export function commentRatchet({ command, rest, prior, tool }, shellDeps) {
 
 const GIT_LOCATION = { gitDir: 'GIT_DIR', workTree: 'GIT_WORK_TREE' };
 
-function commitTarget({ args, cwd, env = {} }) {
-  const parsed = parseGit(args);
+function commitTarget({ args, expressions, cwd, env = {} }) {
+  const parsed = parseGit(args, expressions);
   if (cwd === null) return unknownRepo('a cd to a path the guard cannot resolve');
   if (!parsed.dirKnown) return unknownRepo(`-C ${parsed.dir}`);
   if (env.GIT_INDEX_FILE !== undefined) return unknownRepo('GIT_INDEX_FILE');
@@ -136,7 +136,7 @@ const QUOTED_ENV_SET = /^\$env:\w+\s*=\s*("[^"]*"|'[^']*')$/i;
 function safeBeforeCommit(c, tool, deps) {
   if ((SUBSTITUTION[tool] ?? SUBSTITUTION.Bash).test(c.text) || writesFile(c.args)) return false;
   if (c.cmd === 'git') {
-    const { dir, dirKnown, gitDir, workTree, sub, rest } = parseGit(c.args);
+    const { dir, dirKnown, gitDir, workTree, sub, rest } = parseGit(c.args, c.expressions);
     if (READ_ONLY_GIT.has(sub)) return !rest.some(a => a.startsWith('--output'));
     if (!Object.hasOwn(INDEX_REPLAYS, sub) || c.cwd === null || gitDir !== null || workTree !== null) return false;
     if (!dirKnown || GIT_ENV.some(name => c.env?.[name] !== undefined)) return false;

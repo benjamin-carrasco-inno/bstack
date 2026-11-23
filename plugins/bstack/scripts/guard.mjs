@@ -29,14 +29,17 @@ export function decide(input, deps) {
   if (tool !== 'Bash' && tool !== 'PowerShell') return null;
   const line = String(input.tool_input?.command ?? '');
   const dialect = tool === 'PowerShell' ? 'powershell' : 'posix';
+  const host = deps.host ?? REAL_HOST;
   const root = resolvePath(cwd);
-  const commands = located(commandsIn(line, 0, dialect), cwd);
+  const commands = located(commandsIn(line, 0, dialect), cwd, host);
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent, root) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
+    const reason = markerRule(c, cwd, deps) ?? agentRule(c, agent, root, host) ?? (c.cmd === 'git' ? gitRule(c, cwd, deps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, deps) : null);
     if (reason) return reason;
   }
-  return agentWritesRule(line, dialect, cwd, agent, root);
+  return agentWritesRule(line, dialect, cwd, agent, root, host);
 }
+
+const REAL_HOST = { platform: process.platform, env: process.env, tmpdir: () => os.tmpdir() };
 
 const DIR_MOVES = {
   cd: 'go', chdir: 'go', 'set-location': 'go', sl: 'go',
@@ -44,28 +47,31 @@ const DIR_MOVES = {
   popd: 'pop', 'pop-location': 'pop',
 };
 const HOME = /^~(?=$|[\\/])/;
-const OPAQUE = /[$`(]|%[^%\s]+%/;
+const OPAQUE = /[$`]|%[^%\s]+%/;
 const GIT_LOCATION_VARIABLE = /^GIT_(DIR|WORK_TREE)$/i;
 const TEMP_PREFIX = {
-  posix: /^(\/tmp|\$\{?(TMPDIR|TEMP|TMP)\}?)(?=$|\/)/,
-  powershell: /^\$env:(TEMP|TMP)(?=$|[\\/])/i,
+  posix: /^(?:\/tmp|\$\{?(?<name>TMPDIR|TEMP|TMP)\}?)(?=$|\/)/,
+  powershell: /^\$env:(?<name>TEMP|TMP)(?=$|[\\/])/i,
 };
 
 const UNKNOWN_DIR = null;
 const PS_ENV = /^\$env:([A-Za-z_]\w*)\s*=\s*(.*)$/is;
 
-function inTempDir(word, dialect) {
-  const prefix = TEMP_PREFIX[dialect];
-  if (!prefix || !prefix.test(word ?? '')) return { word, dialect };
-  return { word: word.replace(prefix, os.tmpdir()), dialect: 'posix' };
+function inTempDir(word, dialect, host) {
+  const prefix = TEMP_PREFIX[dialect]?.exec(word ?? '');
+  if (!prefix) return { word, dialect };
+  const name = prefix.groups.name?.toUpperCase();
+  const dir = host.platform === 'win32' ? host.tmpdir() : name && host.env[name];
+  if (!dir) return { word, dialect };
+  return { word: dir + word.slice(prefix[0].length), dialect: 'posix' };
 }
 
-function located(commands, start) {
+function located(commands, start, host) {
   const scopes = new Map();
   return commands.map(c => {
     const shell = shellState(scopes, c.scope ?? '', start);
     const at = { ...c, cwd: shell.here.dir, cwdKnown: shell.here.known, env: { ...shell.env, ...c.env } };
-    changeDir(shell, c);
+    changeDir(shell, c, host);
     setVariables(shell.env, c);
     return at;
   });
@@ -79,9 +85,10 @@ function shellState(scopes, scope, start) {
   return scopes.get(scope);
 }
 
-function changeDir(shell, c) {
+function changeDir(shell, c, host) {
   const move = DIR_MOVES[c.cmd];
-  const { word: target, dialect } = inTempDir(dirTarget(c.args), c.dialect);
+  const at = c.args.findIndex(a => a === '-' || (!a.startsWith('-') && !/^\/d$/i.test(a)));
+  const { word: target, dialect } = inTempDir(c.args[at], c.dialect, host);
   if (move === 'pop') {
     if (shell.stack.length) [shell.previous, shell.here] = [shell.here, shell.stack.pop()];
   } else if (move && target === '-') {
@@ -90,7 +97,7 @@ function changeDir(shell, c) {
     if (move === 'push') shell.stack.push(shell.here);
     shell.previous = shell.here;
     const dir = resolvedDir(target, shell.here.dir, dialect);
-    const opaque = target === undefined || OPAQUE.test(target) || HOME.test(target);
+    const opaque = target === undefined || c.expressions?.has(at) || OPAQUE.test(target) || HOME.test(target);
     shell.here = { dir, known: dir !== UNKNOWN_DIR && !opaque && (shell.here.known || isAbsolute(target, dialect)) };
   }
 }
@@ -105,10 +112,6 @@ function setVariables(env, c) {
     const value = tokenize(ps[2]);
     env[ps[1].toUpperCase()] = value.length === 1 ? value[0] : '$';
   }
-}
-
-function dirTarget(args) {
-  return args.find(a => a === '-' || (!a.startsWith('-') && !/^\/d$/i.test(a)));
 }
 
 function resolvedDir(target, here, dialect) {
@@ -157,21 +160,21 @@ function bodyFiles(args) {
 }
 
 // --- reviewer, adversary and comment-critic judge; they never author ---------------------------------
-function agentRule(c, agent, root) {
+function agentRule(c, agent, root, host) {
   if (!NO_AUTHORING_AGENTS.test(agent)) return null;
   const git = c.cmd === 'git' ? parseGit(c.args).sub : '';
   const gh = c.cmd === 'gh' ? `${c.args[0]} ${c.args[1] ?? ''}` : '';
   if (/^(commit|push|merge|rebase|tag|cherry-pick|am|revert)$/.test(git) || /^pr (merge|comment|review|edit|close|create|ready)|^issue (comment|create|edit|close|reopen|delete|transfer|lock|unlock|pin|unpin|develop)|^label (create|edit|delete|clone)|^api /.test(gh) && !(gh.startsWith('api ') && !hasWriteFields(c.args))) {
     return `The ${agent} agent judges and reproduces; it does not commit, push or post. Report the finding in your final message; the hook posts it.`;
   }
-  return treeRewriteRule(c, agent, root);
+  return treeRewriteRule(c, agent, root, host);
 }
 
-function agentWritesRule(line, dialect, cwd, agent, root) {
+function agentWritesRule(line, dialect, cwd, agent, root, host) {
   if (!NO_AUTHORING_AGENTS.test(agent)) return null;
-  const commands = located(commandsIn(withoutHeredocBodies(line), 0, dialect), cwd);
+  const commands = located(commandsIn(withoutHeredocBodies(line), 0, dialect), cwd, host);
   for (const [k, c] of commands.entries()) {
-    const reason = fileWriteRule(c, agent, root, commands[k + 1]);
+    const reason = fileWriteRule(c, agent, root, commands[k + 1], host);
     if (reason) return reason;
   }
   return null;
@@ -203,18 +206,18 @@ const GIT_BUILTINS = new Set(`add am annotate apply archive bisect blame branch 
   show-branch show-ref sparse-checkout stash status submodule switch symbolic-ref tag update-index update-ref var
   verify-commit verify-pack verify-tag version whatchanged worktree write-tree`.split(/\s+/));
 
-function treeRewriteRule(c, agent, root) {
+function treeRewriteRule(c, agent, root, host) {
   if (c.cmd !== 'git') return null;
-  const { dir, aliases, sub, rest } = parseGit(c.args);
+  const { dir, dirExpression, aliases, sub, rest } = parseGit(c.args, c.expressions);
   if (aliases) return `The ${agent} agent must not define git aliases on the command line: an alias can run any command, also on another checkout. Run the git command itself.`;
   const rule = TREE_REWRITING_GIT[sub] ?? (sub && !GIT_BUILTINS.has(sub) ? UNKNOWN_GIT : null);
   if (!rule?.rewrites(rest)) return null;
   if (rule.anywhere) return `The ${agent} agent must not run git ${sub}: the stash stack is shared by every worktree of the repo. Read with git stash list or git stash show.`;
   const otherTree = Object.keys(c.env).some(name => GIT_LOCATION_VARIABLE.test(name)) || c.args.some(a => /^--(work-tree|git-dir)\b/.test(a));
   const here = knownCwd(c);
-  const repo = dir ? writeTarget(dir, here, c.dialect) : here;
-  const touched = [repo, ...(rule.paths?.(rest) ?? []).map(p => repo && writeTarget(p, repo, c.dialect))];
-  if (otherTree || touched.some(p => !p || !owns(root, p))) return `The ${agent} agent must not run git ${sub} on a checkout outside its own worktree (${root}), or one the guard cannot locate; it would rewrite someone else's uncommitted work. Read with git diff or git show instead.`;
+  const repo = !dir ? here : dirExpression ? undefined : writeTarget(dir, here, c.dialect, host, false);
+  const touched = [repo, ...(rule.paths?.(rest) ?? []).map(p => repo && writeTarget(p, repo, c.dialect, host))];
+  if (otherTree || touched.some(p => !p || !owns(root, p, host))) return `The ${agent} agent must not run git ${sub} on a checkout outside its own worktree (${root}), or one the guard cannot locate; it would rewrite someone else's uncommitted work. Read with git diff or git show instead.`;
   return null;
 }
 
@@ -332,27 +335,27 @@ function hidesParent(word) {
   return PARENT_SEGMENT.test(word.replace(/\\(.)/g, '$1')) && !PARENT_SEGMENT.test(word);
 }
 
-function writeTarget(word, cwd, shellDialect) {
+function writeTarget(word, cwd, shellDialect, host, expression = word.includes('(')) {
   if (NULL_SINK.test(word)) return null;
-  const { word: inTemp, dialect } = inTempDir(word, shellDialect);
+  const { word: inTemp, dialect } = inTempDir(word, shellDialect, host);
   const expanded = inTemp.replace(HOME, os.homedir());
-  if (OPAQUE.test(expanded) || hidesParent(expanded)) return undefined;
+  if (expression || OPAQUE.test(expanded) || hidesParent(expanded)) return undefined;
   if (cwd === undefined && !isAbsolute(expanded, dialect)) return undefined;
   return resolvePath(cwd, expanded, dialect);
 }
 
-function owns(root, target) {
-  return [root, resolvePath(os.tmpdir())].some(dir => contains(dir, target));
+function owns(root, target, host) {
+  return [root, resolvePath(host.tmpdir())].some(dir => contains(dir, target));
 }
 
-function fileWriteRule(c, agent, root, next) {
+function fileWriteRule(c, agent, root, next, host) {
   const clobbered = next && endsInRedirect(c.text, c.dialect) ? tokenize(next.text).slice(0, 1) : [];
   const words = [...redirectTargets(c.text), ...clobbered,...dotnetWriteTargets(c.text), ...(FILE_WRITERS[c.cmd]?.(c.args, c.dialect) ?? [])];
   for (const word of words) {
-    const target = writeTarget(word, knownCwd(c), c.dialect);
+    const target = writeTarget(word, knownCwd(c), c.dialect, host);
     if (target === null) continue;
     if (target === undefined) return `The ${agent} agent may write files only inside its own worktree or the temp dir, and ${word} cannot be resolved before it runs. Use a literal path.`;
-    if (!owns(root, target)) return `The ${agent} agent may write files only inside its own worktree (${root}) or the temp dir, not ${target}. Report what should change instead of changing it.`;
+    if (!owns(root, target, host)) return `The ${agent} agent may write files only inside its own worktree (${root}) or the temp dir, not ${target}. Report what should change instead of changing it.`;
   }
   return null;
 }
@@ -361,7 +364,7 @@ function fileWriteRule(c, agent, root, next) {
 const CONCLUDES_WITH_COMMIT = /^(merge|cherry-pick|revert|rebase)$/;
 
 function gitRule(c, cwd, deps, line) {
-  const { dir, dirKnown, sub, rest } = parseGit(c.args);
+  const { dir, dirKnown, sub, rest } = parseGit(c.args, c.expressions);
   const repo = !dirKnown ? UNKNOWN_DIR : dir ? resolvePath(cwd, dir, c.dialect) : cwd;
   if (rest.includes('--no-verify') || (sub === 'commit' && rest.some(a => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--')))) {
     return 'Do not skip git hooks (--no-verify / -n). Fix what the hook reports; it is part of the safety net.';

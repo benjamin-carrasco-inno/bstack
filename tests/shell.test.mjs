@@ -104,10 +104,21 @@ test('quotes, substitutions and ref syntax keep their braces and parentheses', (
 });
 
 test('git global options are skipped', () => {
-  assert.deepEqual(parseGit(['-C', 'x', '-c', 'a=b', 'push', 'origin', 'main']), { dir: 'x', gitDir: null, workTree: null, dirKnown: true, aliases: false, sub: 'push', rest: ['origin', 'main'] });
-  assert.deepEqual(parseGit(['-C', 'x', '-C', '..', '-C', '/abs', '-C', 'y', '-c', 'alias.z=reset', 'z']), { dir: '/abs/y', gitDir: null, workTree: null, dirKnown: true, aliases: true, sub: 'z', rest: [] });
-  assert.deepEqual(parseGit(['--git-dir=g', '--work-tree', 'w', 'commit']), { dir: null, gitDir: 'g', workTree: 'w', dirKnown: true, aliases: false, sub: 'commit', rest: [] });
+  assert.deepEqual(parseGit(['-C', 'x', '-c', 'a=b', 'push', 'origin', 'main']), { dir: 'x', gitDir: null, workTree: null, dirKnown: true, dirExpression: false, aliases: false, sub: 'push', rest: ['origin', 'main'] });
+  assert.deepEqual(parseGit(['-C', 'x', '-C', '..', '-C', '/abs', '-C', 'y', '-c', 'alias.z=reset', 'z']), { dir: '/abs/y', gitDir: null, workTree: null, dirKnown: true, dirExpression: false, aliases: true, sub: 'z', rest: [] });
+  assert.deepEqual(parseGit(['--git-dir=g', '--work-tree', 'w', 'commit']), { dir: null, gitDir: 'g', workTree: 'w', dirKnown: true, dirExpression: false, aliases: false, sub: 'commit', rest: [] });
   assert.equal(parseGit(['-C', '', '-C', 'sub', 'push']).dir, 'sub');
   assert.equal(parseGit(['-C', '$X', '-C', 'sub', 'push']).dirKnown, false);
   assert.equal(parseGit(['-C', '$X', '-C', '/abs', 'push']).dirKnown, true);
+});
+
+test('only an unquoted ( makes a -C path an expression', () => {
+  const dirOf = line => { const [c] = commandsIn(line); return parseGit(c.args, c.expressions); };
+  for (const line of ['git -C "C:/dev/repo (1)" push', "git -C 'C:/Program Files (x86)/r' push", 'git -C "/a (1)" -C sub push']) {
+    assert.equal(dirOf(line).dirKnown, true, line);
+  }
+  for (const line of ['git -C @(Get-Location) push', 'git -C C:/x(1) push', 'git -C x(1) -C sub push', 'git -C "$(pwd)" push']) {
+    assert.equal(dirOf(line).dirKnown, false, line);
+  }
+  assert.equal(dirOf('git -C x(1) -C /abs push').dirKnown, true);
 });

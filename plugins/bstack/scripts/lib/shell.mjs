@@ -69,12 +69,14 @@ export function splitSegments(line) {
   return segments.map(s => s.trim()).filter(Boolean);
 }
 
-// Split one segment into words, removing quotes.
-export function tokenize(segment) {
-  const words = [];
+// Split one segment into words, removing quotes. Only an unquoted ( is an expression; PowerShell reads a(b) as two arguments.
+export function words(segment) {
+  const out = [];
   let cur = '';
   let quote = null;
   let started = false;
+  let expression = false;
+  const end = () => { out.push({ text: cur, expression }); cur = ''; started = false; expression = false; };
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i];
     if (quote) {
@@ -86,12 +88,17 @@ export function tokenize(segment) {
     const here = hereString(segment, i);
     if (here) { cur += here.body; started = true; i = here.end - 1; continue; }
     if (ch === '"' || ch === "'") { quote = ch; started = true; continue; }
-    if (/\s/.test(ch)) { if (started) { words.push(cur); cur = ''; started = false; } continue; }
+    if (/\s/.test(ch)) { if (started) end(); continue; }
+    if (ch === '(') expression = true;
     cur += ch;
     started = true;
   }
-  if (started) words.push(cur);
-  return words;
+  if (started) end();
+  return out;
+}
+
+export function tokenize(segment) {
+  return words(segment).map(w => w.text);
 }
 
 export function redirectTargets(segment) {
@@ -174,19 +181,20 @@ export const UNRESOLVED = /[$%`]/;
 export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shellCount = { n: 0 }) {
   const out = [];
   for (const segment of splitSegments(line)) {
-    let words = tokenize(segment);
+    let parsed = words(segment);
     const env = {};
-    while (words.length && (PREFIXES.has(words[0].toLowerCase()) || ASSIGNMENT.test(words[0]))) {
-      const set = ASSIGNMENT.exec(words[0]);
+    while (parsed.length && (PREFIXES.has(parsed[0].text.toLowerCase()) || ASSIGNMENT.test(parsed[0].text))) {
+      const set = ASSIGNMENT.exec(parsed[0].text);
       if (set) env[set[1]] = set[2];
-      words = words.slice(1);
+      parsed = parsed.slice(1);
     }
-    if (!words.length) {
-      if (Object.keys(env).length) out.push({ cmd: '', args: [], text: segment, env, scope });
+    if (!parsed.length) {
+      if (Object.keys(env).length) out.push({ cmd: '', args: [], expressions: new Set(), text: segment, env, scope });
       continue;
     }
-    const cmd = programName(words[0]);
-    const args = words.slice(1);
+    const cmd = programName(parsed[0].text);
+    const args = parsed.slice(1).map(w => w.text);
+    const expressions = new Set(parsed.slice(1).flatMap((w, i) => (w.expression ? [i] : [])));
     if (depth < 3 && SHELLS.has(cmd)) {
       const at = args.findIndex(a => /^(-c|-command|\/c|-encodedcommand)$/i.test(a));
       if (at >= 0) { out.push(...commandsIn(args.slice(at + 1).join(' '), depth + 1, DIALECT_OF_SHELL[cmd] ?? 'posix', `${scope}/${++shellCount.n}`, shellCount)); continue; }
@@ -195,26 +203,31 @@ export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shell
       out.push(...commandsIn(args.join(' '), depth + 1, dialect, scope, shellCount));
       continue;
     }
-    out.push({ cmd, args, text: segment, dialect, env, scope });
+    out.push({ cmd, args, expressions, text: segment, dialect, env, scope });
   }
   return out;
 }
 
 const ABSOLUTE = /^([a-z]:)?[\\/]/i;
-const UNRESOLVED_DIR = /[$%`(]/;
 const ALIAS_KEY = /^alias\./i;
 const GIT_PATH_OPTS = { '--git-dir': 'gitDir', '--work-tree': 'workTree' };
+const NO_EXPRESSIONS = new Set();
 
 // git global options come before the subcommand: git -C dir --git-dir=x -c k=v push ... Each -C is relative to the one before; an empty one is ignored.
-export function parseGit(args) {
+export function parseGit(args, expressions = NO_EXPRESSIONS) {
   const found = { dir: null, gitDir: null, workTree: null };
   let aliases = false;
+  let dirExpression = false;
   let i = 0;
   while (i < args.length && args[i].startsWith('-')) {
     const a = args[i];
     const value = args[i + 1];
     if (a === '-C') {
-      if (value) found.dir = found.dir === null || ABSOLUTE.test(value) ? value : `${found.dir}/${value}`;
+      if (value) {
+        const absolute = found.dir === null || ABSOLUTE.test(value);
+        dirExpression = expressions.has(i + 1) || (!absolute && dirExpression);
+        found.dir = absolute ? value : `${found.dir}/${value}`;
+      }
       i += 2;
       continue;
     }
@@ -227,5 +240,5 @@ export function parseGit(args) {
     if (a === '--namespace') { i += 2; continue; }
     i += 1;
   }
-  return { ...found, dirKnown: found.dir === null || !UNRESOLVED_DIR.test(found.dir), aliases, sub: args[i] ?? '', rest: args.slice(i + 1) };
+  return { ...found, dirKnown: found.dir === null || (!dirExpression && !UNRESOLVED.test(found.dir)), dirExpression, aliases, sub: args[i] ?? '', rest: args.slice(i + 1) };
 }
