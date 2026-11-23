@@ -56,6 +56,15 @@ test('markdown that names a suppression token is not a suppression', () => {
 test('prose in non-source files that names a suppression token is not a suppression', () => {
   assert.equal(tier(file('docs/guide.rst', { add: ['Never add ``type: ignore``.'] })), 0);
   assert.equal(tier(file('plugins/bstack/skills/x/notes.txt', { add: ['Never add `# noqa`.'] })), 1);
+  assert.equal(tier(file('docs/guide.adoc', { add: ['Never add `# noqa`.'] })), 0);
+});
+
+test('a suppression in a source file outside the CODE extensions is tier 2', () => {
+  assert.equal(tier(file('src/util.mts', { add: ['// @ts-ignore'] })), 2);
+  assert.equal(tier(file('src/util.cts', { add: ['// @ts-ignore'] })), 2);
+  assert.equal(tier(file('notebooks/a.ipynb', { add: ['    "import os  # noqa\\n",'] })), 2);
+  assert.equal(tier(file('src/app.pyw', { add: ['x = f()  # type: ignore'] })), 2);
+  assert.equal(tier(file('bin/tool', { add: ['x = f()  # type: ignore'] })), 2);
 });
 
 test('a suppression in a source file is tier 2', () => {
