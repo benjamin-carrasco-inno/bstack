@@ -102,7 +102,7 @@ const GIT_LOCATION = { gitDir: 'GIT_DIR', workTree: 'GIT_WORK_TREE' };
 function commitTarget({ args, cwd, env = {} }) {
   const parsed = parseGit(args);
   if (cwd === null) return unknownRepo('a cd to a path the guard cannot resolve');
-  if (parsed.dir !== null && UNRESOLVED.test(parsed.dir)) return unknownRepo(`-C ${parsed.dir}`);
+  if (!parsed.dirKnown) return unknownRepo(`-C ${parsed.dir}`);
   if (env.GIT_INDEX_FILE !== undefined) return unknownRepo('GIT_INDEX_FILE');
   const repo = parsed.dir === null ? cwd : path.resolve(cwd, parsed.dir);
   const gitEnv = {};
@@ -136,10 +136,10 @@ const QUOTED_ENV_SET = /^\$env:\w+\s*=\s*("[^"]*"|'[^']*')$/i;
 function safeBeforeCommit(c, tool, deps) {
   if ((SUBSTITUTION[tool] ?? SUBSTITUTION.Bash).test(c.text) || writesFile(c.args)) return false;
   if (c.cmd === 'git') {
-    const { dir, gitDir, workTree, sub, rest } = parseGit(c.args);
+    const { dir, dirKnown, gitDir, workTree, sub, rest } = parseGit(c.args);
     if (READ_ONLY_GIT.has(sub)) return !rest.some(a => a.startsWith('--output'));
     if (!Object.hasOwn(INDEX_REPLAYS, sub) || c.cwd === null || gitDir !== null || workTree !== null) return false;
-    if ((dir !== null && UNRESOLVED.test(dir)) || GIT_ENV.some(name => c.env?.[name] !== undefined)) return false;
+    if (!dirKnown || GIT_ENV.some(name => c.env?.[name] !== undefined)) return false;
     const where = dir === null ? c.cwd : path.resolve(c.cwd, dir);
     return INDEX_REPLAYS[sub](withoutRedirections(rest), { where, shellCwd: c.cwd, tool }, deps).length > 0;
   }

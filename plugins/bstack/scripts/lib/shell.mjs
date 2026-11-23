@@ -201,10 +201,11 @@ export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shell
 }
 
 const ABSOLUTE = /^([a-z]:)?[\\/]/i;
+const UNRESOLVED_DIR = /[$%`(]/;
 const ALIAS_KEY = /^alias\./i;
 const GIT_PATH_OPTS = { '--git-dir': 'gitDir', '--work-tree': 'workTree' };
 
-// git global options come before the subcommand: git -C dir --git-dir=x -c k=v push ... Each -C is relative to the one before.
+// git global options come before the subcommand: git -C dir --git-dir=x -c k=v push ... Each -C is relative to the one before; an empty one is ignored.
 export function parseGit(args) {
   const found = { dir: null, gitDir: null, workTree: null };
   let aliases = false;
@@ -213,7 +214,7 @@ export function parseGit(args) {
     const a = args[i];
     const value = args[i + 1];
     if (a === '-C') {
-      if (value !== undefined) found.dir = found.dir === null || ABSOLUTE.test(value) ? value : `${found.dir}/${value}`;
+      if (value) found.dir = found.dir === null || ABSOLUTE.test(value) ? value : `${found.dir}/${value}`;
       i += 2;
       continue;
     }
@@ -226,5 +227,5 @@ export function parseGit(args) {
     if (a === '--namespace') { i += 2; continue; }
     i += 1;
   }
-  return { ...found, aliases, sub: args[i] ?? '', rest: args.slice(i + 1) };
+  return { ...found, dirKnown: found.dir === null || !UNRESOLVED_DIR.test(found.dir), aliases, sub: args[i] ?? '', rest: args.slice(i + 1) };
 }

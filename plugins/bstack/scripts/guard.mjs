@@ -45,18 +45,22 @@ const DIR_MOVES = {
 };
 const HOME = /^~(?=$|[\\/])/;
 const OPAQUE = /[$`(]|%[^%\s]+%/;
-const GIT_LOCATION_VARIABLE = /\bGIT_(DIR|WORK_TREE)\b/i;
+const GIT_LOCATION_VARIABLE = /^GIT_(DIR|WORK_TREE)$/i;
+const TEMP_VARIABLE = /^(\$env:(TEMP|TMP)|\$\{?(TMPDIR|TEMP|TMP)\}?)(?=$|[\\/])/i;
+const POSIX_TEMP = /^\/tmp(?=$|\/)/;
 
 const UNKNOWN_DIR = null;
 const PS_ENV = /^\$env:([A-Za-z_]\w*)\s*=\s*(.*)$/is;
 
+function inTempDir(word) {
+  return word?.replace(TEMP_VARIABLE, os.tmpdir()).replace(POSIX_TEMP, os.tmpdir());
+}
+
 function located(commands, start) {
   const scopes = new Map();
-  let gitRedirected = false;
   return commands.map(c => {
-    gitRedirected ||= GIT_LOCATION_VARIABLE.test(c.text);
     const shell = shellState(scopes, c.scope ?? '', start);
-    const at = { ...c, cwd: shell.here.dir, cwdKnown: shell.here.known, gitRedirected, env: { ...shell.env, ...c.env } };
+    const at = { ...c, cwd: shell.here.dir, cwdKnown: shell.here.known, env: { ...shell.env, ...c.env } };
     changeDir(shell, c);
     setVariables(shell.env, c);
     return at;
@@ -73,7 +77,7 @@ function shellState(scopes, scope, start) {
 
 function changeDir(shell, c) {
   const move = DIR_MOVES[c.cmd];
-  const target = dirTarget(c.args);
+  const target = inTempDir(dirTarget(c.args));
   if (move === 'pop') {
     if (shell.stack.length) [shell.previous, shell.here] = [shell.here, shell.stack.pop()];
   } else if (move && target === '-') {
@@ -89,7 +93,7 @@ function changeDir(shell, c) {
 
 function setVariables(env, c) {
   if (c.cmd === '') Object.assign(env, c.env);
-  if (c.cmd === 'export') {
+  if (c.cmd === 'export' || c.cmd === 'set') {
     for (const set of c.args.map(a => ASSIGNMENT.exec(a)).filter(Boolean)) env[set[1]] = set[2];
   }
   const ps = PS_ENV.exec(c.text);
@@ -202,7 +206,7 @@ function treeRewriteRule(c, agent, root) {
   const rule = TREE_REWRITING_GIT[sub] ?? (sub && !GIT_BUILTINS.has(sub) ? UNKNOWN_GIT : null);
   if (!rule?.rewrites(rest)) return null;
   if (rule.anywhere) return `The ${agent} agent must not run git ${sub}: the stash stack is shared by every worktree of the repo. Read with git stash list or git stash show.`;
-  const otherTree = c.gitRedirected || c.args.some(a => /^--(work-tree|git-dir)\b/.test(a));
+  const otherTree = Object.keys(c.env).some(name => GIT_LOCATION_VARIABLE.test(name)) || c.args.some(a => /^--(work-tree|git-dir)\b/.test(a));
   const here = knownCwd(c);
   const repo = dir ? writeTarget(dir, here) : here;
   const touched = [repo, ...(rule.paths?.(rest) ?? []).map(p => repo && writeTarget(p, repo))];
@@ -317,8 +321,6 @@ function sedInPlaceTargets(args) {
 }
 
 const NULL_SINK = /^(\$null|\/dev\/(null|stdout|stderr)|nul)$/i;
-const TEMP_VARIABLE = /^(\$env:(TEMP|TMP)|\$\{?(TMPDIR|TEMP|TMP)\}?)(?=$|[\\/])/i;
-const POSIX_TEMP = /^\/tmp(?=$|\/)/;
 
 const PARENT_SEGMENT = /(^|[\\/])\.\.($|[\\/])/;
 
@@ -328,7 +330,7 @@ function hidesParent(word) {
 
 function writeTarget(word, cwd) {
   if (NULL_SINK.test(word)) return null;
-  const expanded = word.replace(TEMP_VARIABLE, os.tmpdir()).replace(POSIX_TEMP, os.tmpdir()).replace(HOME, os.homedir());
+  const expanded = inTempDir(word).replace(HOME, os.homedir());
   if (OPAQUE.test(expanded) || hidesParent(expanded)) return undefined;
   if (cwd === undefined && !isAbsolute(expanded)) return undefined;
   return resolvePath(cwd, expanded);
@@ -354,8 +356,8 @@ function fileWriteRule(c, agent, root, next) {
 const CONCLUDES_WITH_COMMIT = /^(merge|cherry-pick|revert|rebase)$/;
 
 function gitRule(c, cwd, deps, line) {
-  const { dir, sub, rest } = parseGit(c.args);
-  const repo = dir ? resolvePath(cwd, dir) : cwd;
+  const { dir, dirKnown, sub, rest } = parseGit(c.args);
+  const repo = !dirKnown ? UNKNOWN_DIR : dir ? resolvePath(cwd, dir) : cwd;
   if (rest.includes('--no-verify') || (sub === 'commit' && rest.some(a => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--')))) {
     return 'Do not skip git hooks (--no-verify / -n). Fix what the hook reports; it is part of the safety net.';
   }
@@ -367,7 +369,8 @@ function gitRule(c, cwd, deps, line) {
   return null;
 }
 
-const PUSH_VALUE_OPTS = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec']);
+const UNKNOWN_BRANCH = null;
+const PUSH_VALUE_OPTS =new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec']);
 
 function pushRule(rest, repo, deps) {
   const flags = [];
@@ -386,12 +389,16 @@ function pushRule(rest, repo, deps) {
     return 'Plain force-push can destroy commits. If you must rewrite your own unshared branch, use --force-with-lease; on a shared branch, merge instead.';
   }
   const refspecs = positional.slice(1);
-  const current = () => { try { return deps.git(repo, ['rev-parse', '--abbrev-ref', 'HEAD']).trim(); } catch { return ''; } };
+  const current = () => {
+    if (repo === UNKNOWN_DIR) return UNKNOWN_BRANCH;
+    try { return deps.git(repo, ['rev-parse', '--abbrev-ref', 'HEAD']).trim(); } catch { return ''; }
+  };
   const targets = refspecs.length ? refspecs.map(r => {
     let dst = r.includes(':') ? r.split(':').pop() : r;
     dst = dst.replace(/^\+/, '').replace(/^refs\/heads\//, '');
     return dst === 'HEAD' || dst === '' ? (r.startsWith(':') ? r.slice(1) : current()) : dst;
   }) : [current()];
+  if (targets.includes(UNKNOWN_BRANCH)) return unlocatedRepo('which branch this push sends');
   if (flags.includes('--delete') || flags.includes('-d')) {
     return targets.some(t => DEFAULT_BRANCH.test(t)) ? 'Never delete the default branch.' : null;
   }
@@ -402,7 +409,12 @@ function pushRule(rest, repo, deps) {
   return null;
 }
 
+function unlocatedRepo(what) {
+  return `bstack cannot tell ${what}: the git -C path is not literal, so the guard cannot locate the repository. Write the path out, or cd there in its own call.`;
+}
+
 function rebaseRule(repo, deps) {
+  if (repo === UNKNOWN_DIR) return unlocatedRepo('whether this rebase rewrites a pushed branch');
   let branch = '';
   let upstream = '';
   try {
