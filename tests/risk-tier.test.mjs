@@ -154,6 +154,45 @@ test('a modified .sql fixture is a schema file, since the diff hides the stateme
   assert.equal(tier(sql(['@@ -1,2 +1,3 @@', '+SELECT a,', '+  b', '+FROM t;'])), 2);
 });
 
+test('an unterminated literal on a line exempts no suppression on that line', () => {
+  const cases = [
+    ['src/About.tsx', "      <p>Back in the '90s we shipped weekly</p> {/* eslint-disable-line react/no-unescaped-entities */}"],
+    ['src/Band.jsx', "  <li>Rock 'n roll</li> {/* eslint-disable-line react/no-unescaped-entities */}"],
+    ['src/A.tsx', "  <Foo label='x' /> 'quote <Bar prop={1} /> {/* @ts-expect-error */}"],
+    ['src/a.py', '  tail of string"; x = f()  # type: ignore'],
+    ['src/a.js', "  tail of string '; foo(); // @ts-ignore"],
+  ];
+  for (const [p, l] of cases) assert.equal(tier(file(p, { add: [l] })), 2, l);
+  assert.equal(tier(file('src/a.js', { add: ['const s = "eslint-disable";'] })), 1);
+  assert.equal(tier(file('src/a.py', { add: ['x = "# noqa"'] })), 1);
+});
+
+test('a .sql fixture that copies rows or touches the catalog is a schema file', () => {
+  const fixtures = [
+    ['SELECT * INTO users_backup FROM users;'],
+    ['SELECT *', 'INTO users_backup', 'FROM users;'],
+    ["UPDATE pg_catalog.pg_attribute SET attnotnull = false WHERE attname = 'id';"],
+    ['SELECT * FROM information_schema.tables;'],
+    ['DELETE FROM sys.objects;'],
+    ['SELECT name FROM sqlite_master;'],
+    ["UPDATE mysql.user SET host = '%';"],
+  ];
+  for (const add of fixtures) assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add })), 2, add.join(' '));
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ['INSERT INTO t (id) SELECT id FROM s;'] })), 1);
+});
+
+test('DDL words inside sql string literals do not make a fixture a schema file', () => {
+  const fixtures = [
+    ["INSERT INTO users (name) VALUES ('Grant');"],
+    ["INSERT INTO notes (body) VALUES ('please comment on this');"],
+    ['INSERT INTO verbs (v) VALUES', "  ('create'), ('drop'), ('rename');"],
+    ["INSERT INTO t (s) VALUES ('it''s CREATE TABLE time');"],
+  ];
+  for (const add of fixtures) assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add })), 1, add.join(' '));
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["SELECT 'x'; DROP TABLE t;"] })), 2);
+  assert.equal(tier(file('tests/fixtures/db/seed.sql', { created: true, add: ["SELECT 'unterminated; DROP TABLE t;"] })), 2);
+});
+
 test('adding tests stays tier 1', () => {
   assert.equal(tier(file('tests/test_api.py', { created: true, add: ['def test_c():', '    assert c()'] })), 1);
 });
