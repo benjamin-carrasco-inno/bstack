@@ -48,29 +48,31 @@ const MULTILINE_DELIMITER = new Map([[SYNTAX.js, /`/], [SYNTAX.py, /"""|'''/]]);
 const SQL_BLANK_OR_COMMENT = /^\s*(--|$)/;
 const SQL_UNPARSED_QUOTING = /[$\\]|\b[Ee]'/;
 const JSX_TEXT = /\.[jt]sx$/i;
-const SQL_STRING = /'(?:[^']|'')*'/g;
 const SQL_DATA_START = /^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|VALUES)\b/i;
 const SQL_NOT_DATA = [
-  /\b(CREATE|ALTER|DROP|GRANT|REVOKE|TRUNCATE|RENAME)\b|\bCOMMENT\s+ON\b/i,
+  /\b(CREATE|ALTER|DROP|GRANT|REVOKE|TRUNCATE|RENAME|EXECUTE|CALL|setval)\b|\bCOMMENT\s+ON\b/i,
   /\bINTO\b/i,
-  /\b(pg_catalog|information_schema|sqlite_master|sqlite_schema)\b|\b(sys|mysql)["`\]]?\s*\./i,
+  /\b(pg_catalog|pg_attribute|pg_class|information_schema|sqlite_master|sqlite_schema)\b|\bpg_\w+\s*\(|\bdblink|\b(sys|mysql)["`\]]?\s*\./i,
 ];
 const SQL_INSERT_INTO = /\bINSERT\s+(OR\s+\w+\s+|IGNORE\s+)?INTO\b/gi;
+const QUOTES = ['"', "'", '`'];
+const LINE_CONTINUES = /\\\s*$/;
 
 function isSqlData(lines) {
   if (lines.some(line => SQL_UNPARSED_QUOTING.test(line))) return false;
-  const code = lines.filter(line => !SQL_BLANK_OR_COMMENT.test(line));
-  const text = code.join('\n').replace(SQL_STRING, '?');
-  if (text.includes("'")) return false;
-  return text.split(';').filter(s => s.trim()).every(statement => {
-    const body = statement.replace(SQL_INSERT_INTO, 'INSERT');
-    return SQL_DATA_START.test(statement) && !SQL_NOT_DATA.some(re => re.test(body));
-  });
+  const everything = lines.join('\n').replace(SQL_INSERT_INTO, 'INSERT');
+  if (SQL_NOT_DATA.some(re => re.test(everything))) return false;
+  const code = lines.filter(line => !SQL_BLANK_OR_COMMENT.test(line)).join('\n');
+  return code.split(';').filter(s => s.trim()).every(statement => SQL_DATA_START.test(statement));
 }
 
-function suppresses(line, syntax) {
+function mayBeInsideMultilineLiteral(line, previous) {
+  return LINE_CONTINUES.test(previous) || line.includes('*/') || QUOTES.some(q => line.split(q).length % 2 === 0);
+}
+
+function suppresses(line, syntax, previous) {
   const tokens = [...line.matchAll(new RegExp(SUPPRESSION, 'g'))].map(m => m.index);
-  if (!tokens.length || !syntax || MULTILINE_DELIMITER.get(syntax)?.test(line)) return tokens.length > 0;
+  if (!tokens.length || !syntax || MULTILINE_DELIMITER.get(syntax)?.test(line) || mayBeInsideMultilineLiteral(line, previous)) return tokens.length > 0;
   const literals = literalSpans(line, syntax);
   if (literals.some(l => !l.closed)) return true;
   return tokens.some(at => !literals.some(({ from, to }) => from <= at && at < to));
@@ -79,15 +81,18 @@ function suppresses(line, syntax) {
 export function parseDiff(diff) {
   const files = [];
   let f = null;
+  let previous = '';
   for (const line of String(diff ?? '').split(/\r?\n/)) {
     const head = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-    if (head) { f = { path: head[2], added: [], removed: [], created: false, deleted: false }; files.push(f); continue; }
+    if (head) { f = { path: head[2], added: [], addedPrevious: [], removed: [], created: false, deleted: false }; files.push(f); previous = ''; continue; }
     if (!f) continue;
     if (line.startsWith('new file mode')) f.created = true;
     else if (line.startsWith('deleted file mode')) f.deleted = true;
     else if (line.startsWith('+++') || line.startsWith('---')) continue;
-    else if (line.startsWith('+')) f.added.push(line.slice(1));
+    else if (line.startsWith('@@')) previous = '';
+    else if (line.startsWith('+')) { f.added.push(line.slice(1)); f.addedPrevious.push(previous); previous = line.slice(1); }
     else if (line.startsWith('-')) f.removed.push(line.slice(1));
+    else if (line.startsWith(' ')) previous = line.slice(1);
   }
   return files;
 }
@@ -122,7 +127,7 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
     }
     for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
     const syntax = JSX_TEXT.test(p) ? null : syntaxFor(p);
-    if (!PROSE.test(p) && !fixture && f.added.some(l => suppresses(l, syntax))) raise(2, `new lint or type suppression: ${p}`);
+    if (!PROSE.test(p) && !fixture && f.added.some((l, i) => suppresses(l, syntax, f.addedPrevious[i]))) raise(2, `new lint or type suppression: ${p}`);
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
     if (CODE.test(p) && !isTest) {
