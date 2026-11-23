@@ -320,6 +320,170 @@ test('no-authoring agents do not switch, add, move or remove worktrees outside t
   allowed(shell('git worktree remove /checkout'));
 });
 
+const NO_AUTHORING = ['bstack:comment-critic', 'bstack:reviewer', 'bstack:adversary'];
+const asAgent = agent => command => ({ ...shell(command), agent_type: agent });
+const psAsAgent = agent => command => ({ ...ps(command), agent_type: agent });
+
+test('no-authoring agents: GIT_DIR and GIT_WORK_TREE count as a checkout outside their cwd', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(as('GIT_DIR=/checkout/.git git reset --hard'));
+    blocked(as('GIT_WORK_TREE=/checkout git checkout -- a.mjs'));
+    blocked(as('export GIT_WORK_TREE=/checkout; git clean -fd'));
+    blocked(psAs("$env:GIT_DIR='C:/checkout/.git'; git reset --hard"));
+    blocked(psAs("$env:GIT_WORK_TREE = 'C:/checkout'; git restore a.mjs"));
+
+    allowed(as('GIT_DIR=/checkout/.git git log --oneline'));
+    allowed(as('GIT_PAGER=cat git reset --hard'));
+  }
+  allowed(shell('GIT_DIR=/checkout/.git git reset --hard'));
+});
+
+test('no-authoring agents: repeated -C options combine like git does', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('git -C /checkout -C . reset --hard'));
+    blocked(as('git -C / -C checkout reset --hard'));
+    blocked(as('git -C sub -C ../.. restore a.mjs'));
+
+    allowed(as('git -C /repo -C sub reset --hard'));
+    allowed(as('git -C /checkout -C /repo/sub reset --hard'));
+  }
+});
+
+test('no-authoring agents: git aliases and unknown subcommands on a checkout outside their cwd', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('git -C /checkout -c alias.wipe="reset --hard" wipe'));
+    blocked(as('git -c alias.wipe="!git -C /checkout reset --hard" wipe'));
+    blocked(as('git --config-env=alias.wipe=WIPE wipe'));
+    blocked(as('git -C /checkout wipe'));
+    blocked(as('cd /checkout && git undo'));
+
+    allowed(as('git wipe'));
+    allowed(as('git --version'));
+    allowed(as('git -c core.pager=cat -C /checkout log --oneline'));
+    for (const read of ['log --oneline', 'show HEAD', 'diff', 'status --short', 'rev-parse HEAD', 'blame a.mjs', 'ls-files', 'branch --show-current', 'grep x']) {
+      allowed(as(`git -C /checkout ${read}`));
+      allowed(as(`git ${read}`));
+    }
+  }
+  allowed(shell('git -C /checkout wipe'));
+});
+
+test('no-authoring agents: a cd they cannot resolve makes the cwd unknown', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(psAs('cd $env:USERPROFILE; git reset --hard'));
+    blocked(as('cd; git reset --hard'));
+    blocked(as('cd ~ && rm -rf src'));
+    blocked(psAs('Set-Location $HOME; Set-Content a.txt x'));
+    blocked(as('pushd $HOME && echo x > a.txt'));
+
+    allowed(psAs('cd $env:USERPROFILE; git status'));
+    allowed(as('cd ~ && cd /repo && rm -rf src'));
+    allowed(as('cd; echo x > /tmp/a.txt'));
+  }
+  allowed(shell('cd; git reset --hard'));
+  allowed(ps('cd $env:USERPROFILE; Set-Content a.txt x'));
+});
+
+test('no-authoring agents: cmd %VAR% targets cannot be resolved', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('cmd /c "echo x > %USERPROFILE%\\a.txt"'));
+    blocked(as('del %USERPROFILE%\\a.txt'));
+    blocked(as('cd %USERPROFILE% && git reset --hard'));
+
+    allowed(as('echo 100% > out.txt'));
+  }
+});
+
+test('no-authoring agents: abbreviated PowerShell parameter names', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(psAs('Set-Content -Lit C:/checkout/a.mjs x'));
+    blocked(psAs('Set-Content -L C:/checkout/a.mjs x'));
+    blocked(psAs('Set-Content -Pa C:/checkout/a.mjs -Va x'));
+    blocked(psAs('Set-Content -Fo C:/checkout/a.mjs x'));
+    blocked(psAs('Out-File -File C:/checkout/a.mjs -InputObject x'));
+    blocked(psAs('Copy-Item ./a.mjs -Dest C:/checkout/a.mjs'));
+    blocked(psAs('Remove-Item -Lit C:/checkout/a.mjs'));
+    blocked(as('cp -d ./a.mjs /checkout/a.mjs'));
+    blocked(as('cp -l ./a.mjs /checkout/a.mjs'));
+
+    allowed(psAs('Set-Content -Lit ./a.mjs x'));
+    allowed(psAs('Copy-Item -Pa C:/checkout/a.mjs -Dest ./a.mjs'));
+    allowed(psAs('Set-Content -Path out.txt -Value $content'));
+    allowed(psAs('Set-Content out.txt $content'));
+  }
+});
+
+test('no-authoring agents: cp -t and --target-directory name the destination', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    blocked(as('cp -t /checkout/src ./a.mjs'));
+    blocked(as('cp --target-directory=/checkout/src ./a.mjs'));
+    blocked(as('cp -t /checkout/src -- ./a.mjs'));
+
+    allowed(as('cp -t ./copy /checkout/src/a.mjs'));
+  }
+});
+
+test('no-authoring agents: escaped .. in a target cannot hide a path outside their cwd', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(psAs('Set-Content .`./checkout/a.mjs x'));
+    blocked(psAs('Remove-Item C:/repo/.`./checkout -Recurse'));
+    blocked(as('rm -rf .\\./checkout'));
+    blocked(as('echo x > .\\./checkout/a.mjs'));
+    blocked(as('git -C .\\. reset --hard'));
+    blocked(psAs('Set-Content (Join-Path .. checkout/a.mjs) x'));
+
+    allowed(as('rm -rf ./build'));
+    allowed(psAs('Set-Content src\\a.mjs x'));
+  }
+});
+
+test('no-authoring agents: more tree-rewriting git and file writers', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(as('git -C /checkout pull'));
+    blocked(as('git -C /checkout read-tree HEAD'));
+    blocked(as('git -C /checkout checkout-index -a -f'));
+    blocked(as('git -C /checkout update-index --assume-unchanged a.mjs'));
+    blocked(psAs('Rename-Item C:/checkout/a.mjs b.mjs'));
+    blocked(psAs('ren C:/checkout/a.mjs b.mjs'));
+    blocked(psAs('Clear-Content C:/checkout/a.mjs'));
+    blocked(as('mkdir -p /checkout/new'));
+    blocked(psAs('md C:/checkout/new'));
+    blocked(as('xcopy ./a.mjs C:\\checkout\\ /Y'));
+    blocked(as('robocopy ./src C:/checkout/src /MIR'));
+    blocked(as('curl -o /checkout/a.mjs https://example.com/a'));
+    blocked(as('curl -sSLo /checkout/a.mjs https://example.com/a'));
+    blocked(as('curl --output=/checkout/a.mjs https://example.com/a'));
+    blocked(as('patch -d /checkout -p1 -i fix.patch'));
+    blocked(as('patch /checkout/a.mjs fix.patch'));
+    blocked(as('cd /checkout && patch -p1 < fix.patch'));
+
+    allowed(as('git pull'));
+    allowed(as('git update-index --refresh'));
+    allowed(psAs('Rename-Item ./a.mjs b.mjs'));
+    allowed(as('mkdir -p ./out'));
+    allowed(as('xcopy C:\\checkout\\a.mjs ./copy /Y'));
+    allowed(as('curl -o ./a.html https://example.com/a'));
+    allowed(as('curl https://example.com/a'));
+    allowed(as('patch -p1 -i fix.patch'));
+  }
+  allowed(shell('git -C /checkout pull'));
+  allowed(ps('Clear-Content C:/checkout/a.mjs'));
+});
+
 test('ciState treats skipped-only and missing checks as not green', () => {
   assert.equal(ciState([]).ok, false);
   assert.equal(ciState([{ __typename: 'CheckRun', name: 'a', status: 'COMPLETED', conclusion: 'SKIPPED' }]).ok, false);
