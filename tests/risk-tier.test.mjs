@@ -93,6 +93,7 @@ test('real suppressions in comments stay tier 2 next to literals', () => {
   assert.equal(tier(file('src/a.js', { add: ['// eslint-disable-next-line'] })), 2);
   assert.equal(tier(file('src/a.py', { add: ['x = f()  # noqa'] })), 2);
   assert.equal(tier(file('src/a.js', { add: ['const s = "x"; // eslint-disable-line'] })), 2);
+  assert.equal(tier(file('src/a.js', { add: ['const s = "eslint-disable"; // eslint-disable-line'] })), 2);
   assert.equal(tier(file('src/a.js', { add: [' * eslint-disable no-console'] })), 2);
   assert.equal(tier(file('src/a.js', { add: ['eslint-disable no-console'] })), 2);
   assert.equal(tier(file('src/a.ts', { add: ['const s = `', '// @ts-ignore'] })), 2);

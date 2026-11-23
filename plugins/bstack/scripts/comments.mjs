@@ -206,7 +206,7 @@ export function countSource(file, text) {
 
 export function countText(text, syntax) {
   const src = text.replace(/^﻿/, '').replace(/\r\n?/g, '\n');
-  const found = findComments(src, syntax);
+  const { found } = scan(src, syntax);
   const lines = { comment: new Set(), suppression: new Set() };
   const { kinds, exempt } = classify(found, syntax);
   kinds.forEach((kind, k) => {
@@ -218,7 +218,9 @@ export function countText(text, syntax) {
   return { comments: lines.comment.size, suppressions: lines.suppression.size };
 }
 
-function findComments(src, syn) {
+export const literalSpans = (text, syntax) => scan(text, syntax).literals;
+
+function scan(src, syn) {
   const n = src.length;
   const newlines = [];
   for (let k = 0; k < n; k++) if (src[k] === '\n') newlines.push(k);
@@ -261,6 +263,7 @@ function findComments(src, syn) {
   };
 
   const found = [];
+  const literals = [];
   let code = false, prev = '', word = '', lastEnd = -1, regexFailsBefore = -1, depth = 0, fieldLevel = 0;
   const push = (from, stop, body, kind) => found.push({ from: lineOf(from), to: lineOf(Math.max(from, stop - 1)), body, kind, header: !code });
   const operand = () => prev === 's' || prev === ')' || prev === ']' || (prev === 'w' && !REGEX_AFTER_WORD.has(word));
@@ -311,6 +314,7 @@ function findComments(src, syn) {
     } else {
       code = true;
       prev = 's';
+      literals.push([token, stop]);
     }
     return stop;
   };
@@ -394,6 +398,7 @@ function findComments(src, syn) {
     if (syn.regex && c === '/' && !selfClose && (prev === '' || REGEX_AFTER.has(prev) || (prev === 'w' && REGEX_AFTER_WORD.has(word)))) {
       const stop = readRegex(i);
       prev = stop > i + 1 ? 's' : '/';
+      if (stop > i + 1) literals.push([i, stop]);
       return stop;
     }
     const postfix = syn.regex && operand() ? POSTFIX.map(re => closesAt(re, i)).find(end => end >= 0) : undefined;
@@ -411,7 +416,7 @@ function findComments(src, syn) {
     i = step(i);
     lastEnd = i;
   }
-  return found;
+  return { found, literals };
 }
 
 function classify(found, syn) {

@@ -8,22 +8,26 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { literalSpans, syntaxFor } from './comments.mjs';
 
 const DOCS = /(^|\/)(LICENSE|NOTICE|CHANGELOG|README)(\.[a-z]+)?$|\.(md|rst|txt|adoc)$/i;
 const NOT_DOCS = /(^|\/)(AGENTS|CLAUDE)\.md$|(^|\/)requirements[^/]*\.txt$|(^|\/)\.github\/[^/]+\.txt$|(^|\/)(skills|agents|rules)\//i;
 const CONFIG = /(^|\/)(\.github\/workflows\/|\.claude\/)|(^|\/)(pyproject\.toml|setup\.cfg|ruff\.toml|\.ruff\.toml|pyrightconfig\.json|eslint\.config\.[cm]?js|\.eslintrc[^/]*|Cargo\.toml|clippy\.toml|rustfmt\.toml|package\.json|tsconfig[^/]*\.json|Dockerfile|docker-compose[^/]*\.ya?ml|\.pre-commit-config\.yaml)$/i;
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)test_[^/]+\.py$|_test\.(py|go|rs)$|\.(test|spec)\.[cm]?[jt]sx?$/i;
 const CODE = /\.(py|pyi|js|mjs|cjs|ts|tsx|jsx|rs|go|sql|sh|ps1|html|css|vue|svelte)$/i;
+const FIXTURE = /(^|\/)(fixtures|__fixtures__|testdata)\//i;
+const SCHEMA_FILE = /(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i;
+const SCHEMA_STATEMENT = /\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i;
 
 const PATH_RULES = [
-  [/(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i, 'schema or migration file'],
+  [SCHEMA_FILE, 'schema or migration file'],
   [/(^|\/)n8n\//i, 'n8n flow code (external consumer)'],
   [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code'],
   [/(import|sync|upsert|ingest|backfill)[^/]*\.(py|rs|js|mjs|ts)$/i, 'importer or sync code'],
 ];
 
 const ADDED_OR_REMOVED = [
-  [/\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i, 'SQL schema statement'],
+  [SCHEMA_STATEMENT, 'SQL schema statement'],
   [/\bDELETE\s+FROM\b|\bTRUNCATE\b|\bUPDATE\s+[\w."]+\s+SET\b|\bINSERT\s+(OR\s+\w+\s+)?INTO\b|\bON\s+CONFLICT\b/i, 'SQL that writes data'],
   [/\b(os\.remove|os\.unlink|shutil\.rmtree|\.unlink\(|\.rmdir\(|fs\.(rm|rmSync|unlink|unlinkSync|rmdir)\(|remove_file|remove_dir_all)\b/, 'deletes files'],
   [/\b(requests|httpx|session|client|reqwest|axios)\s*\.\s*(post|put|patch|delete)\s*\(|method\s*[:=]\s*['"](POST|PUT|PATCH|DELETE)['"]|Method::(POST|PUT|PATCH|DELETE)/i, 'outbound call with side effects'],
@@ -39,6 +43,13 @@ const PROSE = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
 const SUPPRESSION = /#\s*noqa|type:\s*ignore|pyright:\s*ignore|eslint-disable|@ts-(ignore|expect-error|nocheck)|#!?\[allow\(/;
 const TEST_REMOVED = /^\s*(async\s+)?def\s+test_|^\s*#\[(tokio::)?test\]|^\s*(it|test)\s*\(/;
 const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
+
+function suppresses(line, syntax) {
+  const tokens = [...line.matchAll(new RegExp(SUPPRESSION, 'g'))].map(m => m.index);
+  if (!tokens.length || !syntax) return tokens.length > 0;
+  const literals = literalSpans(line, syntax);
+  return tokens.some(at => !literals.some(([from, to]) => from <= at && at < to));
+}
 
 export function parseDiff(diff) {
   const files = [];
@@ -73,7 +84,10 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
     const docs = DOCS.test(p) && !NOT_DOCS.test(p);
     if (!docs) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
     if (extra.some(re => re.test(p))) raise(2, `listed in .github/risk-paths.txt: ${p}`);
-    for (const [re, why] of PATH_RULES) if (re.test(p)) raise(2, `${why}: ${p}`);
+    const fixture = FIXTURE.test(p);
+    const dataFixture = fixture && /\.sql$/i.test(p);
+    for (const [re, why] of PATH_RULES) if (re.test(p) && !(dataFixture && re === SCHEMA_FILE)) raise(2, `${why}: ${p}`);
+    if (dataFixture && [...f.added, ...f.removed].some(l => SCHEMA_STATEMENT.test(l))) raise(2, `SQL schema statement: ${p}`);
 
     const isTest = TEST_PATH.test(p);
     if (isTest && f.deleted) raise(2, `test file deleted: ${p}`);
@@ -83,7 +97,8 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
       if (lost > 0) raise(2, `fewer assertions: ${p}`);
     }
     for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
-    if (!PROSE.test(p) && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
+    const syntax = syntaxFor(p);
+    if (!PROSE.test(p) && !fixture && f.added.some(l => suppresses(l, syntax))) raise(2, `new lint or type suppression: ${p}`);
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
     if (CODE.test(p) && !isTest) {
