@@ -56,7 +56,8 @@ const PS_ENV = /^\$env:([A-Za-z_]\w*)\s*=\s*(.*)$/is;
 
 function inTempDir(word, dialect) {
   const prefix = TEMP_PREFIX[dialect];
-  return prefix ? word?.replace(prefix, os.tmpdir()) : word;
+  if (!prefix || !prefix.test(word ?? '')) return { word, dialect };
+  return { word: word.replace(prefix, os.tmpdir()), dialect: 'posix' };
 }
 
 function located(commands, start) {
@@ -80,7 +81,7 @@ function shellState(scopes, scope, start) {
 
 function changeDir(shell, c) {
   const move = DIR_MOVES[c.cmd];
-  const target = inTempDir(dirTarget(c.args), c.dialect);
+  const { word: target, dialect } = inTempDir(dirTarget(c.args), c.dialect);
   if (move === 'pop') {
     if (shell.stack.length) [shell.previous, shell.here] = [shell.here, shell.stack.pop()];
   } else if (move && target === '-') {
@@ -88,9 +89,9 @@ function changeDir(shell, c) {
   } else if (move) {
     if (move === 'push') shell.stack.push(shell.here);
     shell.previous = shell.here;
-    const dir = resolvedDir(target, shell.here.dir, c.dialect);
+    const dir = resolvedDir(target, shell.here.dir, dialect);
     const opaque = target === undefined || OPAQUE.test(target) || HOME.test(target);
-    shell.here = { dir, known: dir !== UNKNOWN_DIR && !opaque && (shell.here.known || isAbsolute(target, c.dialect)) };
+    shell.here = { dir, known: dir !== UNKNOWN_DIR && !opaque && (shell.here.known || isAbsolute(target, dialect)) };
   }
 }
 
@@ -331,9 +332,10 @@ function hidesParent(word) {
   return PARENT_SEGMENT.test(word.replace(/\\(.)/g, '$1')) && !PARENT_SEGMENT.test(word);
 }
 
-function writeTarget(word, cwd, dialect) {
+function writeTarget(word, cwd, shellDialect) {
   if (NULL_SINK.test(word)) return null;
-  const expanded = inTempDir(word, dialect).replace(HOME, os.homedir());
+  const { word: inTemp, dialect } = inTempDir(word, shellDialect);
+  const expanded = inTemp.replace(HOME, os.homedir());
   if (OPAQUE.test(expanded) || hidesParent(expanded)) return undefined;
   if (cwd === undefined && !isAbsolute(expanded, dialect)) return undefined;
   return resolvePath(cwd, expanded, dialect);
