@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { handle, kindOf, readSettled } from '../plugins/bstack/scripts/verdict.mjs';
+import { commentArgs, handle, kindOf, readSettled } from '../plugins/bstack/scripts/verdict.mjs';
 import { parseReport, latestFor } from '../plugins/bstack/scripts/lib/verdicts.mjs';
 
 const SHA = 'c'.repeat(40);
@@ -81,6 +81,39 @@ test('a report already on the PR is not posted twice', () => {
   const first = handle(input, gh(SHA));
   const withComment = () => JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, comments: [{ body: first.post.body }] });
   assert.deepEqual(handle(input, withComment), {});
+});
+
+function recording(head) {
+  const calls = [];
+  const gh = (cwd, args) => { calls.push({ cwd, args }); return JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: head }); };
+  return { gh, calls };
+}
+
+test('a PR in another repo is read and posted there, whatever the cwd', () => {
+  const prompts = ['PR 7 in o/r. Judge it.', 'Review o/r#7.', 'Review https://github.com/o/r/pull/7 please.'];
+  for (const text of prompts) {
+    const { gh, calls } = recording(SHA);
+    const file = transcript([prompt(text), handback(`Works.\nbstack-verdict: PASS pr=7 sha=${SHA}`), delivered]);
+    const out = handle({ agent_type: 'bstack:reviewer', cwd: '/elsewhere/billedcrop', agent_transcript_path: file }, gh);
+    assert.deepEqual(calls[0].args.slice(0, 5), ['pr', 'view', '7', '-R', 'o/r'], text);
+    assert.deepEqual(commentArgs(out.post, 'body.md'), ['pr', 'comment', 'https://github.com/o/r/pull/7', '-R', 'o/r', '--body-file', 'body.md']);
+  }
+});
+
+test('a repo named only in the report is used too', () => {
+  const { gh, calls } = recording(SHA);
+  handle({ agent_type: 'bstack:reviewer', last_assistant_message: `PR 7 in o/r works.\nbstack-verdict: PASS pr=7 sha=${SHA}` }, gh);
+  assert.deepEqual(calls[0].args.slice(0, 5), ['pr', 'view', '7', '-R', 'o/r']);
+});
+
+test('a repo named for another PR number is not used, and no repo keeps the cwd', () => {
+  for (const text of ['PR 7. It fixes a regression from o/x#3.', 'PR 7. Judge it.']) {
+    const { gh, calls } = recording(SHA);
+    const file = transcript([prompt(text), handback(`bstack-verdict: PASS pr=7 sha=${SHA}`), delivered]);
+    const out = handle({ agent_type: 'bstack:reviewer', cwd: '/repo', agent_transcript_path: file }, gh);
+    assert.ok(!calls[0].args.includes('-R'), text);
+    assert.ok(!commentArgs(out.post, 'body.md').includes('-R'), text);
+  }
 });
 
 test('interrogate reports carry the confirmed count', () => {

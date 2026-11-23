@@ -73,14 +73,35 @@ function reportTexts(input, entries) {
   return [input.last_assistant_message, ...written.reverse()].filter(Boolean);
 }
 
-function promptedPr(entries) {
+function promptText(entries) {
   const first = entries.find(e => e.type === 'user');
   const content = first?.message?.content;
-  const text = typeof content === 'string' ? content : blocks(first).filter(b => b.type === 'text').map(b => b.text).join('\n');
-  return /\bPR\s*#?\d+(?:\s+in\s+[\w.-]+\/[\w.-]*\w)?/i.exec(text)?.[0] ?? 'its PR';
+  return typeof content === 'string' ? content : blocks(first).filter(b => b.type === 'text').map(b => b.text).join('\n');
 }
 
-// Returns { post: { pr, body } }, { block: reason } for the agent, { warn: message } for the user, or {}.
+function promptedPr(entries) {
+  return /\bPR\s*#?\d+(?:\s+in\s+[\w.-]+\/[\w.-]*\w)?/i.exec(promptText(entries))?.[0] ?? 'its PR';
+}
+
+const REPO = String.raw`[\w.-]+\/[\w.-]*\w`;
+const PR_REFS = [
+  { re: new RegExp(String.raw`\bPR\s*#?(\d+)\s+in\s+(${REPO})`, 'gi'), pr: 1, repo: 2 },
+  { re: new RegExp(String.raw`\b(${REPO})#(\d+)\b`, 'g'), pr: 2, repo: 1 },
+  { re: new RegExp(String.raw`github\.com\/(${REPO})\/pull\/(\d+)`, 'gi'), pr: 2, repo: 1 },
+];
+
+function repoFor(pr, texts) {
+  for (const text of texts) {
+    for (const ref of PR_REFS) {
+      for (const m of String(text).matchAll(ref.re)) if (m[ref.pr] === pr) return m[ref.repo];
+    }
+  }
+  return null;
+}
+
+const repoArgs = repo => (repo ? ['-R', repo] : []);
+
+// Returns { post: { pr, repo, body } }, { block: reason } for the agent, { warn: message } for the user, or {}.
 export function handle(input, gh, read = readTranscript) {
   const kind = kindOf(String(input.agent_type ?? ''));
   if (!kind) return {};
@@ -91,16 +112,19 @@ export function handle(input, gh, read = readTranscript) {
     ? { block: `${problem} ${ask}` }
     : { warn: `bstack: nothing was posted for ${where}. ${problem} Run a fresh ${input.agent_type} agent for it.` });
 
-  const report = reportTexts(input, entries).map(text => parseReport(kind, text)).find(Boolean);
+  const texts = reportTexts(input, entries);
+  const report = texts.map(text => parseReport(kind, text)).find(Boolean);
   if (!report) {
     return fail(promptedPr(entries), `The ${input.agent_type} report has no result line.`,
       `End your report with exactly one line:\n${LAST_LINE[kind]}\nThe bstack hook posts it; do not post it yourself.`);
   }
+  const repo = repoFor(report.pr, [...texts, promptText(entries)]);
   let pr;
   try {
-    pr = JSON.parse(gh(input.cwd, ['pr', 'view', report.pr, '--json', 'number,url,headRefOid,comments']));
+    pr = JSON.parse(gh(input.cwd, ['pr', 'view', report.pr, ...repoArgs(repo), '--json', 'number,url,headRefOid,comments']));
   } catch (e) {
-    return fail(`PR ${report.pr}`, `bstack could not read PR ${report.pr} (${String(e.message ?? e).split('\n')[0]}).`,
+    const named = repo ? `PR ${report.pr} in ${repo}` : `PR ${report.pr}`;
+    return fail(named, `bstack could not read ${named} (${String(e.message ?? e).split('\n')[0]}).`,
       'Check the PR number and end with the line again.');
   }
   if (pr.headRefOid !== report.sha) {
@@ -109,8 +133,10 @@ export function handle(input, gh, read = readTranscript) {
   }
   const body = commentBody(kind, report.result, report.sha, report.body);
   if ((pr.comments ?? []).some(c => String(c.body ?? '').trim() === body.trim())) return {};
-  return { post: { pr: pr.url, body } };
+  return { post: { pr: pr.url, repo, body } };
 }
+
+export const commentArgs = (post, file) => ['pr', 'comment', post.pr, ...repoArgs(post.repo), '--body-file', file];
 
 async function main() {
   let raw = '';
@@ -130,7 +156,7 @@ async function main() {
     const file = path.join(os.tmpdir(), `bstack-verdict-${process.pid}-${Date.now()}.md`);
     fs.writeFileSync(file, out.post.body, 'utf8');
     try {
-      gh(input.cwd, ['pr', 'comment', out.post.pr, '--body-file', file]);
+      gh(input.cwd, commentArgs(out.post, file));
       process.stdout.write(JSON.stringify({ systemMessage: `bstack: verdict posted on ${out.post.pr}` }));
     } finally {
       fs.rmSync(file, { force: true });

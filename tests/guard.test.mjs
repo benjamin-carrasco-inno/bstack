@@ -69,6 +69,26 @@ test('push detection survives PowerShell and nesting', () => {
   blocked(ps('git.exe push origin main'));
 });
 
+test('git and gh inside blocks are checked', () => {
+  blocked(ps('if ($?) { git push origin main }'));
+  blocked(ps('if ($?) { git commit --no-verify -m x }'));
+  blocked(ps('git status; if ($?) { gh pr merge 5 --squash --admin }'));
+  blocked(ps('if ($x) { echo a } else { git push origin main }'));
+  blocked(ps('if (git push origin main) { echo ok }'));
+  blocked(ps('if (!(git push origin main)) { echo x }'));
+  blocked(ps('if (-not(git push origin main)) { echo x }'));
+  blocked(shell('! ( git push origin main )'));
+  blocked(shell('if true; then git commit --no-verify -m x; fi'));
+  blocked(shell('while true; do git push origin main; done'));
+  blocked(shell('( git push origin main )'));
+  blocked(shell('{ git push origin main; }'));
+  allowed(ps('git add -A; if ($?) { git commit -m "fix (scope) {x}" }'));
+  allowed(ps('if ($?) { git push -u origin feat/x }'));
+  allowed(shell('if git diff --quiet; then echo same; else git status; fi'));
+  allowed(shell('( cd sub && git log --oneline -5 )'));
+  allowed(shell('git rev-parse @{u} && git log HEAD@{1}'));
+});
+
 test('force-push needs --force-with-lease', () => {
   blocked(shell('git push --force origin feat/x'));
   blocked(shell('git push -f origin feat/x'));
@@ -113,6 +133,25 @@ test('tier 1 merge needs a verdict for the head SHA', () => {
   blocked(shell('gh pr merge 5 --squash'), deps({ pr: { comments: [{ body: `bstack-verdict: PASS sha=${SHA}`, createdAt: '2026-11-22T10:00:00Z' }] } }));
   allowed(shell('gh pr merge 5 --squash --delete-branch'), deps({ pr: { comments: [verdict('PASS')] } }));
   allowed(shell('gh pr merge --squash'), deps({ pr: { comments: [verdict('PASS+NOTES')] } }));
+});
+
+test('a merge in another repo reads the PR, diff and verdict from that repo', () => {
+  for (const command of ['gh pr merge 7 -R o/r --squash', 'gh pr merge 7 --repo=o/r --squash', 'gh pr merge https://github.com/o/r/pull/7 --squash']) {
+    const calls = [];
+    const base = deps({ pr: { number: 7, url: 'https://github.com/o/r/pull/7', comments: [verdict('PASS')] } });
+    const d = { ...base, gh: (cwd, args) => { calls.push(args); return base.gh(cwd, args); } };
+    allowed(shell(command), d);
+    const named = args => args.includes('https://github.com/o/r/pull/7') || args.join(' ').includes('-R o/r');
+    assert.deepEqual(calls.map(a => a[1]), ['view', 'diff'], command);
+    assert.ok(calls.every(named), `${command}: ${JSON.stringify(calls)}`);
+  }
+});
+
+test('a merge whose repo is a shell variable is refused with the name to write out', () => {
+  for (const command of ['gh pr merge 7 -R $R --squash', 'gh pr merge 7 --repo "$REPO" --squash', 'gh pr merge 7 --repo=${R} --squash']) {
+    assert.match(decide(shell(command), deps({ pr: { comments: [verdict('PASS')] } })) ?? '', /write the repository out/i, command);
+  }
+  assert.match(decide(ps('gh pr merge 7 -R $env:R --squash'), deps({ pr: { comments: [verdict('PASS')] } })) ?? '', /write the repository out/i);
 });
 
 test('tier 2 merge also needs a clean interrogate', () => {
@@ -324,6 +363,7 @@ test('comment ratchet: sees what git add, -a and pathspecs in the same call woul
   repo.write('app.py', TWO);
   assert.match(repo.run('git add -A && git commit -m "feat: x"'), /app\.py/);
   assert.match(repo.run('git add app.py; git commit -m "feat: x"', 'PowerShell'), /app\.py/);
+  assert.match(repo.run("git add -A; if ($?) { git commit -m 'x' }", 'PowerShell'), /app\.py/);
   assert.match(repo.run('git commit -am "feat: x"'), /app\.py/);
   assert.match(repo.run('git commit -m "feat: x" -- app.py'), /app\.py/);
   assert.match(repo.run('git commit -m "feat: x" app.py'), /app\.py/);
