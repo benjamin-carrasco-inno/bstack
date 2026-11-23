@@ -135,6 +135,20 @@ test('a .sql fixture of queries and inserts is data', () => {
     'WITH r AS (SELECT id FROM t)', 'SELECT t.id', 'FROM t', '  JOIN r ON r.id = t.id', 'WHERE t.id > 0',
     '  AND t.name IS NOT NULL', 'ORDER BY t.id', 'LIMIT 10;', "UPDATE t SET name = 'c' WHERE id = 1;", 'DELETE FROM t WHERE id = 2;',
   ] })), 1);
+  assert.equal(tier(file('tests/fixtures/comments/sample.sql', { created: true, add: [
+    '-- Report query.', 'SELECT id, -- trailing', "       'it''s -- not a comment' AS quote,", '       "weird--name"',
+    'FROM items', '/* multi', '   line */', "WHERE note <> '/* not */';",
+  ] })), 1);
+});
+
+test('a .sql fixture line counts as a continuation only inside a data statement added in the same run', () => {
+  const sql = lines => ['diff --git a/tests/fixtures/db/q.sql b/tests/fixtures/db/q.sql', '--- a/tests/fixtures/db/q.sql',
+    '+++ b/tests/fixtures/db/q.sql', ...lines].join('\n');
+  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', '+SELECT a,', '+  b', '+FROM t;'])), 1);
+  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', '+SELECT a;', '+  extra int,'])), 2);
+  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', '+SELECT a,', '@@ -9,2 +10,3 @@', '+  extra int,'])), 2);
+  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', '+SELECT a,', ' CREATE TABLE t (', '+  extra int,'])), 2);
+  assert.equal(tier(sql(['@@ -1,2 +1,3 @@', ' CREATE INDEX i ON t', '+(a, b);'])), 2);
 });
 
 test('adding tests stays tier 1', () => {
