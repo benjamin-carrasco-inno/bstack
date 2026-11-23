@@ -190,6 +190,12 @@ test('a repo name in the failed command line does not make the error transient',
   assert.equal(transient(new Error('Command failed: gh pr view 7 -R acme/eof\nerror connecting to api.github.com\n')), true);
 });
 
+test('a connection the remote end resets is transient on Windows and POSIX', () => {
+  for (const reason of ['wsarecv: An existing connection was forcibly closed by the remote host.', 'write: broken pipe', 'read: connection reset by peer']) {
+    assert.equal(transient(new Error(`Command failed: gh pr view 5 -R o/r\nPost "https://api.github.com/graphql": read tcp 127.0.0.1:63016->127.0.0.1:18082: ${reason}\n`)), true, reason);
+  }
+});
+
 test('a verdict that cannot be posted is saved by repo, PR and SHA, and the guard posts it at the next merge', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-pending-'));
   const store = pendingStore(dir);

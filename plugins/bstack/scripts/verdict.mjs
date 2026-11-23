@@ -140,7 +140,7 @@ export function handle(input, gh, read = readTranscript) {
 
 export const commentArgs = (post, file) => ['pr', 'comment', post.pr, ...repoArgs(post.repo), '--body-file', file];
 
-const TRANSIENT = /ETIMEDOUT|timed? ?out|timeout|dial tcp|connectex|connection (reset|refused)|network|no such host|\bEOF\b|TLS handshake|HTTP 50[0234]|error connecting to|check your internet connection|githubstatus\.com/i;
+const TRANSIENT = /ETIMEDOUT|timed? ?out|timeout|dial tcp|connectex|connection (reset|refused)|forcibly closed|broken pipe|wsarecv|wsasend|network|no such host|\bEOF\b|TLS handshake|HTTP 50[0234]|error connecting to|check your internet connection|githubstatus\.com/i;
 const errorOutput = e => String(e?.message ?? e).replace(/^Command failed:[^\n]*\n?/, '').replace(/[\w.-]+\/[\w.-]+/g, '');
 export const transient = e => e?.code === 'ETIMEDOUT' || TRANSIENT.test(errorOutput(e));
 
