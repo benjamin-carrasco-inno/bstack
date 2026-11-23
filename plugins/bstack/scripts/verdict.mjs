@@ -112,6 +112,8 @@ export function handle(input, gh, read = readTranscript) {
   return { post: { pr: pr.url, body } };
 }
 
+export const commentArgs = (post, file) => ['pr', 'comment', post.pr, '--body-file', file];
+
 async function main() {
   let raw = '';
   for await (const chunk of process.stdin) raw += chunk;
@@ -130,7 +132,7 @@ async function main() {
     const file = path.join(os.tmpdir(), `bstack-verdict-${process.pid}-${Date.now()}.md`);
     fs.writeFileSync(file, out.post.body, 'utf8');
     try {
-      gh(input.cwd, ['pr', 'comment', out.post.pr, '--body-file', file]);
+      gh(input.cwd, commentArgs(out.post, file));
       process.stdout.write(JSON.stringify({ systemMessage: `bstack: verdict posted on ${out.post.pr}` }));
     } finally {
       fs.rmSync(file, { force: true });
