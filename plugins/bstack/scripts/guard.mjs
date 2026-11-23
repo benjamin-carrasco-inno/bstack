@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ASSIGNMENT, UNRESOLVED, commandsIn, endsInRedirect, parseGit, redirectTargets, tokenize, withoutHeredocBodies } from './lib/shell.mjs';
+import { ASSIGNMENT, UNRESOLVED, commandsIn, endsInRedirect, parseGit, redirectTargets, tokenize, withoutHeredocBodies, words } from './lib/shell.mjs';
 import { KINDS, MARKER, latestFor, timeOf } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
@@ -235,7 +235,7 @@ function treeRewriteRule(c, agent, root, host) {
   const otherTree = Object.keys(c.env).some(name => GIT_LOCATION_VARIABLE.test(name)) || c.args.some(a => /^--(work-tree|git-dir)\b/.test(a));
   const here = knownCwd(c);
   const repo = !dir ? here : dirExpression ? undefined : writeTarget(dir, here, c.dialect, host, false);
-  const touched = [repo, ...(rule.paths?.(rest) ?? []).map(p => repo && writeTarget(p, repo, c.dialect, host))];
+  const touched = [repo, ...(rule.paths?.(rest) ?? []).map(p => repo && writeTarget(p, repo, c.dialect, host, isExpressionArg(c, p)))];
   if (otherTree || touched.some(p => !p || !owns(root, p, host))) return `The ${agent} agent must not run git ${sub} on a checkout outside its own worktree (${root}), or one the guard cannot locate; it would rewrite someone else's uncommitted work. Read with git diff or git show instead.`;
   return null;
 }
@@ -308,7 +308,7 @@ function patchTargets(args) {
 const DOTNET_FILE_WRITE = /\[(System\.)?IO\.File\]::(Write|Append)\w*\s*\(\s*(?:(['"])(.*?)\3|([^,\s)]+))/gi;
 
 function dotnetWriteTargets(text) {
-  return [...text.matchAll(DOTNET_FILE_WRITE)].map(m => m[4] ?? m[5]);
+  return [...text.matchAll(DOTNET_FILE_WRITE)].map(m => ({ text: m[4] ?? m[5], expression: m[5]?.includes('(') ?? false }));
 }
 
 function namesParameter(flag, names, dialect) {
@@ -354,7 +354,7 @@ function hidesParent(word) {
   return PARENT_SEGMENT.test(word.replace(/\\(.)/g, '$1')) && !PARENT_SEGMENT.test(word);
 }
 
-function writeTarget(word, cwd, shellDialect, host, expression = word.includes('(')) {
+function writeTarget(word, cwd, shellDialect, host, expression) {
   if (NULL_SINK.test(word)) return null;
   const { word: inTemp, dialect } = inTempDir(word, shellDialect, host);
   const expanded = inTemp.replace(HOME, os.homedir());
@@ -367,11 +367,15 @@ function owns(root, target, host) {
   return [root, resolvePath(host.tmpdir())].some(dir => contains(dir, target));
 }
 
+function isExpressionArg(c, value) {
+  return Boolean(value) && c.args.some((a, i) => c.expressions?.has(i) && a.endsWith(value));
+}
+
 function fileWriteRule(c, agent, root, next, host) {
-  const clobbered = next && endsInRedirect(c.text, c.dialect) ? tokenize(next.text).slice(0, 1) : [];
-  const words = [...redirectTargets(c.text), ...clobbered, ...dotnetWriteTargets(c.text), ...(FILE_WRITERS[c.cmd]?.(c.args, c.dialect) ?? [])];
-  for (const word of words) {
-    const target = writeTarget(word, knownCwd(c), c.dialect, host);
+  const clobbered = next && endsInRedirect(c.text, c.dialect) ? words(next.text).slice(0, 1) : [];
+  const byCommand = (FILE_WRITERS[c.cmd]?.(c.args, c.dialect) ?? []).map(text => ({ text, expression: isExpressionArg(c, text) }));
+  for (const { text: word, expression } of [...redirectTargets(c.text), ...clobbered, ...dotnetWriteTargets(c.text), ...byCommand]) {
+    const target = writeTarget(word, knownCwd(c), c.dialect, host, expression);
     if (target === null) continue;
     if (target === undefined) return `The ${agent} agent may write files only inside its own worktree or the temp dir, and ${word} cannot be resolved before it runs. Use a literal path.`;
     if (!owns(root, target, host)) return `The ${agent} agent may write files only inside its own worktree (${root}) or the temp dir, not ${target}. Report what should change instead of changing it.`;

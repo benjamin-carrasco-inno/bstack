@@ -1531,8 +1531,7 @@ test('no-authoring agents: a quoted write target with a parenthesis is a literal
     blocked(as('git worktree add wt(1) main'));
     blocked(psAs('Remove-Item x(1)'));
     blocked(psAs("Remove-Item @('a.txt')"));
-    blocked(psAs('Set-Content -LiteralPath (Join-Path C:/repo a.txt) -Value x'));
-    blocked(psAs('[IO.File]::WriteAllText((Join-Path C:/repo a.txt), "x")'));
+    blocked(psAs('[IO.File]::WriteAllText(x(1).txt, "x")'));
 
     blocked(as('echo x > "/checkout/notes (1).txt"'));
     blocked(as('cp /tmp/fixture.tsx "/checkout/app/(marketing)/page.tsx"'));

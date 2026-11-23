@@ -118,8 +118,8 @@ export function redirectTargets(segment) {
     if (segment[i + 1] === '>') i++;
     if (segment[i + 1] === '&') { i++; continue; }
     if (segment[i + 1] === '|') i++;
-    const [word] = tokenize(segment.slice(i + 1));
-    if (word) targets.push(word);
+    const [word] = words(segment.slice(i + 1));
+    if (word?.text) targets.push(word);
   }
   return targets;
 }
