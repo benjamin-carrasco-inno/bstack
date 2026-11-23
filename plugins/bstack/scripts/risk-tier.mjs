@@ -36,7 +36,6 @@ const WEAKENING_ADDED = [
   [/continue-on-error:\s*true|\|\|\s*true\b/, 'CI step allowed to fail'],
 ];
 const SUPPRESSION = /#\s*noqa|type:\s*ignore|pyright:\s*ignore|eslint-disable|@ts-(ignore|expect-error|nocheck)|#!?\[allow\(/;
-const MARKDOWN = /\.mdx?$/i;
 const TEST_REMOVED = /^\s*(async\s+)?def\s+test_|^\s*#\[(tokio::)?test\]|^\s*(it|test)\s*\(/;
 const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
 
@@ -83,7 +82,7 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
       if (lost > 0) raise(2, `fewer assertions: ${p}`);
     }
     for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
-    if (!MARKDOWN.test(p) && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
+    if (CODE.test(p) && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
     if (CODE.test(p) && !isTest) {
