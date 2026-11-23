@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { commentArgs, handle, kindOf, readSettled } from '../plugins/bstack/scripts/verdict.mjs';
+import { commentArgs, deliver, handle, kindOf, readSettled, retrying } from '../plugins/bstack/scripts/verdict.mjs';
+import { decide } from '../plugins/bstack/scripts/guard.mjs';
 import { parseReport, latestFor } from '../plugins/bstack/scripts/lib/verdicts.mjs';
+import { pendingStore } from '../plugins/bstack/scripts/lib/pending.mjs';
 
 const SHA = 'c'.repeat(40);
 
@@ -137,6 +139,75 @@ test('a hand-back written after the hook starts is still read and posted', () =>
   const input = { agent_type: 'bstack:reviewer', stop_hook_active: false, agent_transcript_path: file };
   const out = handle(input, gh(SHA), f => readSettled(f, { pause }));
   assert.equal(out.post?.pr, 'https://github.com/o/r/pull/7');
+});
+
+const timedOut = () => Object.assign(new Error('spawnSync gh ETIMEDOUT'), { code: 'ETIMEDOUT' });
+
+function outage(ms) {
+  const clock = { now: 0, calls: [] };
+  clock.gh = (cwd, args) => {
+    if (clock.now < ms) { clock.now += 25000; throw timedOut(); }
+    clock.calls.push(args);
+    return args[1] === 'view' ? JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, comments: [] }) : '';
+  };
+  clock.pause = wait => { clock.now += wait; };
+  return clock;
+}
+
+const reviewed = () => ({
+  agent_type: 'bstack:reviewer',
+  cwd: '/repo',
+  agent_transcript_path: transcript([prompt('PR 7 in o/r.'), handback(`Works.\nbstack-verdict: PASS pr=7 sha=${SHA}`), delivered]),
+});
+
+test('a verdict is posted after a 30 s gh outage, with no agent rerun', () => {
+  const clock = outage(30000);
+  const out = deliver(reviewed(), { gh: retrying(clock.gh, { pause: clock.pause }), save: () => assert.fail('nothing should be saved') });
+  assert.match(out.systemMessage, /verdict posted/);
+  assert.deepEqual(clock.calls.map(a => a[1]), ['view', 'comment']);
+});
+
+test('retries stop at once on an error that is not transient', () => {
+  let calls = 0;
+  const gh = retrying(() => { calls++; throw new Error('GraphQL: Could not resolve to a PullRequest with the number of 70.'); }, { pause: () => {} });
+  assert.throws(() => gh('/repo', ['pr', 'view', '70']));
+  assert.equal(calls, 1);
+});
+
+test('a verdict that cannot be posted is saved by repo, PR and SHA, and the guard posts it at the next merge', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-pending-'));
+  const store = pendingStore(dir);
+  const clock = outage(Infinity);
+  const out = deliver(reviewed(), { gh: retrying(clock.gh, { pause: clock.pause }), save: store.save });
+  assert.match(out.systemMessage, /saved/);
+  const [saved] = store.list('o/r', '7');
+  assert.equal(saved.entry.sha, SHA);
+
+  const posted = [];
+  const deps = {
+    gh: (_cwd, args) => {
+      if (args[1] === 'view') return JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, state: 'OPEN', statusCheckRollup: [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }], comments: [] });
+      if (args[1] === 'diff') return 'diff --git a/app/main.py b/app/main.py\n--- a/app/main.py\n+++ b/app/main.py\n+x = 1\n';
+      throw new Error(`unexpected gh ${args.join(' ')}`);
+    },
+    postComment: (_cwd, url, body) => posted.push({ url, body }),
+    pending: store,
+    readFile: () => null,
+    insideBstackSource: () => false,
+  };
+  assert.equal(decide({ tool_name: 'Bash', tool_input: { command: 'gh pr merge 7 -R o/r --squash' }, cwd: '/repo' }, deps), null);
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].url, 'https://github.com/o/r/pull/7');
+  assert.deepEqual(store.list('o/r', '7'), []);
+});
+
+test('a PR the hook cannot read during an outage is saved under the repo the report names', () => {
+  const saved = [];
+  const clock = outage(Infinity);
+  deliver(reviewed(), { gh: retrying(clock.gh, { pause: clock.pause }), save: e => saved.push(e) });
+  assert.equal(saved.length, 1);
+  assert.deepEqual([saved[0].repo, saved[0].pr, saved[0].sha, saved[0].kind], ['o/r', '7', SHA, 'verdict']);
+  assert.equal(latestFor('verdict', [{ body: saved[0].body }], SHA).result, 'PASS');
 });
 
 test('a transcript that stops growing without a hand-back is read once it is quiet', () => {

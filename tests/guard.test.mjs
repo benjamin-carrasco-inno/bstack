@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decide, ciState, realDeps } from '../plugins/bstack/scripts/guard.mjs';
+import { decide, ciState, realDeps, retryOnTimeout } from '../plugins/bstack/scripts/guard.mjs';
 import { commentBody } from '../plugins/bstack/scripts/lib/verdicts.mjs';
 
 const SHA = 'a'.repeat(40);
@@ -32,6 +32,8 @@ function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, fil
     },
     readFile: f => files[f.replace(/\\/g, '/').split('/').pop()] ?? null,
     insideBstackSource: f => f.includes('bstack-src'),
+    pending: { list: () => [], remove: () => {} },
+    postComment: () => { throw new Error('unexpected comment'); },
   };
 }
 
@@ -206,6 +208,84 @@ test('ciState treats skipped-only and missing checks as not green', () => {
   assert.equal(ciState([{ __typename: 'CheckRun', name: 'a', status: 'COMPLETED', conclusion: 'SKIPPED' }]).ok, false);
   assert.equal(ciState([{ __typename: 'StatusContext', context: 'x', state: 'SUCCESS' }]).ok, true);
   assert.equal(ciState(GREEN).ok, true);
+});
+
+const run = (name, conclusion, startedAt, status = 'COMPLETED') => ({ __typename: 'CheckRun', name, workflowName: name, status, conclusion, startedAt });
+
+test('ciState judges only the newest run of each check on the head SHA', () => {
+  const superseded = [
+    run('standards', 'CANCELLED', '2026-11-23T10:00:00Z'),
+    run('check', 'SUCCESS', '2026-11-23T10:00:01Z'),
+    run('standards', 'SUCCESS', '2026-11-23T10:00:05Z'),
+    run('standards', 'SUCCESS', '2026-11-23T10:02:00Z'),
+  ];
+  assert.equal(ciState(superseded).ok, true);
+  allowed(shell('gh pr merge 5 --squash'), deps({ pr: { statusCheckRollup: superseded, comments: [verdict('PASS')] } }));
+  assert.match(ciState([run('standards', 'SUCCESS', '2026-11-23T10:00:00Z'), run('standards', 'FAILURE', '2026-11-23T10:01:00Z')]).detail, /failed: standards/);
+  assert.match(ciState([run('standards', 'SUCCESS', '2026-11-23T10:00:00Z'), run('standards', 'CANCELLED', '2026-11-23T10:01:00Z')]).detail, /failed: standards/);
+  assert.match(ciState([run('standards', 'CANCELLED', '2026-11-23T10:00:00Z'), run('standards', null, '2026-11-23T10:01:00Z', 'IN_PROGRESS')]).detail, /still running: standards/);
+  assert.match(ciState([run('lint', 'SUCCESS', '2026-11-23T10:01:00Z'), run('standards', 'CANCELLED', '2026-11-23T10:00:00Z')]).detail, /failed: standards/);
+});
+
+function withPending(entries, { post = () => {}, pr = {} } = {}) {
+  const removed = [];
+  const posted = [];
+  const d = deps({ pr });
+  d.pending = { list: (repo, number) => (repo === 'o/r' && number === '5' ? entries.map((entry, i) => ({ file: `f${i}`, entry })) : []), remove: f => removed.push(f) };
+  d.postComment = (cwd, url, body) => { post(); posted.push({ url, body }); };
+  return { d, removed, posted };
+}
+const saved = (sha = SHA, kind = 'verdict') => ({ repo: 'o/r', pr: '5', sha, kind, body: commentBody(kind, 'PASS', sha, 'report') });
+
+test('a verdict saved during an outage is posted by the merge gate and unblocks the merge', () => {
+  const { d, removed, posted } = withPending([saved()]);
+  allowed(shell('gh pr merge 5 --squash'), d);
+  assert.deepEqual(posted.map(p => p.url), ['https://github.com/o/r/pull/5']);
+  assert.deepEqual(removed, ['f0']);
+});
+
+test('a saved verdict for an older head is dropped, not posted, and does not unblock', () => {
+  const { d, removed, posted } = withPending([saved(OLD)]);
+  blocked(shell('gh pr merge 5 --squash'), d);
+  assert.deepEqual(posted, []);
+  assert.deepEqual(removed, ['f0']);
+});
+
+test('a saved verdict already on the PR is not posted twice', () => {
+  const { d, removed, posted } = withPending([saved()], { pr: { comments: [{ body: saved().body, createdAt: '2026-11-22T10:00:00Z' }] } });
+  allowed(shell('gh pr merge 5 --squash'), d);
+  assert.deepEqual(posted, []);
+  assert.deepEqual(removed, ['f0']);
+});
+
+test('a saved verdict that still cannot be posted keeps the gate closed and is kept', () => {
+  const { d, removed } = withPending([saved()], { post: () => { throw new Error('spawnSync gh ETIMEDOUT'); } });
+  assert.match(decide(shell('gh pr merge 5 --squash'), d) ?? '', /could not post/i);
+  assert.deepEqual(removed, []);
+});
+
+test('agents cannot write saved verdicts', () => {
+  const dir = path.join(os.homedir(), '.claude', 'bstack', 'pending-verdicts');
+  blocked({ tool_name: 'Write', tool_input: { file_path: path.join(dir, 'o_r__5__x__verdict.json'), content: '{"body":"bstack\\u002dverdict"}' } });
+  blocked(ps(`Set-Content "${dir}\\o_r__5.json" '{}'`));
+  blocked(shell('cp forged.json ~/.claude/bstack/pending-verdicts/'));
+  allowed(shell('cat ~/.claude/bstack/pending-verdicts/o_r__5.json'));
+});
+
+test('a gh call that times out is retried once with a longer timeout, other errors are not', () => {
+  const timeouts = [];
+  const flaky = retryOnTimeout((_cwd, _args, timeout) => {
+    timeouts.push(timeout);
+    if (timeouts.length === 1) throw Object.assign(new Error('spawnSync gh ETIMEDOUT'), { code: 'ETIMEDOUT' });
+    return 'ok';
+  });
+  assert.equal(flaky('/repo', ['pr', 'view']), 'ok');
+  assert.equal(timeouts.length, 2);
+  assert.ok(timeouts[1] > timeouts[0]);
+  let calls = 0;
+  const broken = retryOnTimeout(() => { calls++; throw new Error('HTTP 404'); });
+  assert.throws(() => broken('/repo', ['pr', 'view']));
+  assert.equal(calls, 1);
 });
 
 const GUARD = fileURLToPath(new URL('../plugins/bstack/scripts/guard.mjs', import.meta.url));
