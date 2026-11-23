@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { commandsIn, parseGit } from './lib/shell.mjs';
+import { ASSIGNMENT, UNRESOLVED, commandsIn, parseGit, tokenize } from './lib/shell.mjs';
 import { KINDS, MARKER, latestFor, timeOf } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
@@ -42,25 +42,52 @@ const DIR_MOVES = {
 };
 const HOME = /^~(?=$|[\\/])/;
 
+const UNKNOWN_DIR = null;
+const PS_ENV = /^\$env:([A-Za-z_]\w*)\s*=\s*(.*)$/is;
+
 function located(commands, start) {
-  let here = start;
-  let previous = null;
-  const stack = [];
+  const scopes = new Map();
   return commands.map(c => {
-    const at = { ...c, cwd: here };
-    const move = DIR_MOVES[c.cmd];
-    const target = dirTarget(c.args);
-    if (move === 'pop') {
-      if (stack.length) [previous, here] = [here, stack.pop()];
-    } else if (move && target === '-') {
-      if (previous) [previous, here] = [here, previous];
-    } else if (move) {
-      if (move === 'push') stack.push(here);
-      previous = here;
-      here = resolvedDir(target, here);
-    }
+    const shell = shellState(scopes, c.scope ?? '', start);
+    const at = { ...c, cwd: shell.here, env: { ...shell.env, ...c.env } };
+    changeDir(shell, c);
+    setVariables(shell.env, c);
     return at;
   });
+}
+
+function shellState(scopes, scope, start) {
+  if (!scopes.has(scope)) {
+    const parent = scope ? shellState(scopes, scope.slice(0, scope.lastIndexOf('/')), start) : { here: start, previous: undefined, stack: [], env: {} };
+    scopes.set(scope, { ...parent, stack: [...parent.stack], env: { ...parent.env } });
+  }
+  return scopes.get(scope);
+}
+
+function changeDir(shell, c) {
+  const move = DIR_MOVES[c.cmd];
+  const target = dirTarget(c.args);
+  if (move === 'pop') {
+    if (shell.stack.length) [shell.previous, shell.here] = [shell.here, shell.stack.pop()];
+  } else if (move && target === '-') {
+    if (shell.previous !== undefined) [shell.previous, shell.here] = [shell.here, shell.previous];
+  } else if (move) {
+    if (move === 'push') shell.stack.push(shell.here);
+    shell.previous = shell.here;
+    shell.here = resolvedDir(target, shell.here);
+  }
+}
+
+function setVariables(env, c) {
+  if (c.cmd === '') Object.assign(env, c.env);
+  if (c.cmd === 'export') {
+    for (const set of c.args.map(a => ASSIGNMENT.exec(a)).filter(Boolean)) env[set[1]] = set[2];
+  }
+  const ps = PS_ENV.exec(c.text);
+  if (ps) {
+    const value = tokenize(ps[2]);
+    env[ps[1].toUpperCase()] = value.length === 1 ? value[0] : '$';
+  }
 }
 
 function dirTarget(args) {
@@ -68,8 +95,11 @@ function dirTarget(args) {
 }
 
 function resolvedDir(target, here) {
-  if (target === undefined || target.includes('$')) return here;
-  return path.resolve(here, target.replace(HOME, os.homedir()));
+  if (target === undefined) return here;
+  if (UNRESOLVED.test(target)) return UNKNOWN_DIR;
+  const literal = target.replace(HOME, os.homedir());
+  if (here === UNKNOWN_DIR && !path.isAbsolute(literal)) return UNKNOWN_DIR;
+  return path.resolve(here ?? '', literal);
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
@@ -121,13 +151,16 @@ function agentRule(c, agent) {
 }
 
 // --- git ------------------------------------------------------------------------------------------
+const CONCLUDES_WITH_COMMIT = /^(merge|cherry-pick|revert|rebase)$/;
+
 function gitRule(c, cwd, deps, line) {
   const { dir, sub, rest } = parseGit(c.args);
   const repo = dir ? path.resolve(cwd, dir) : cwd;
   if (rest.includes('--no-verify') || (sub === 'commit' && rest.some(a => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--')))) {
     return 'Do not skip git hooks (--no-verify / -n). Fix what the hook reports; it is part of the safety net.';
   }
-  if (sub === 'commit') return commentRatchet({ repo: dir ? path.resolve(c.cwd, dir) : c.cwd, rest, ...line }, deps);
+  if (sub === 'commit') return commentRatchet({ command: c, rest, ...line }, deps);
+  if (CONCLUDES_WITH_COMMIT.test(sub) && rest.includes('--continue')) return commentRatchet({ command: c, rest: [], ...line }, deps);
   if (sub === 'push') return pushRule(rest, repo, deps);
   if (sub === 'rebase' && !rest.some(a => /^--(abort|continue|skip|quit|edit-todo|show-current-patch)$/.test(a))) return rebaseRule(repo, deps);
   if (sub === 'pull' && rest.some(a => a === '--rebase' || a === '-r' || a.startsWith('--rebase='))) return rebaseRule(repo, deps);

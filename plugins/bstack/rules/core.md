@@ -12,6 +12,7 @@ Change
 - Make the smallest change the evidence supports. Delete before adding. Revert what only "might help".
 - A comment that explains your own code means rename or extract instead (`bstack:comments`; the guard ratchets comment lines down).
 - One pull request is one change.
+- Each push to a PR branch is a billed CI run and a new head to review: commit freely, push when the head is ready to be judged.
 - Never weaken a check to get green: no deleted or skipped tests, no new suppressions, no loosened CI, unless that is the task and the PR says why.
 
 Independence
