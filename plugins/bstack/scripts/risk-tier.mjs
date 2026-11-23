@@ -46,7 +46,8 @@ const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
 
 const MULTILINE_DELIMITER = new Map([[SYNTAX.js, /`/], [SYNTAX.py, /"""|'''/]]);
 const SQL_BLANK_OR_COMMENT = /^\s*(--|$)/;
-const SQL_META_COMMAND = /^\s*\\/;
+const SQL_UNPARSED_QUOTING = /[$\\]|\b[Ee]'/;
+const JSX_TEXT = /\.[jt]sx$/i;
 const SQL_STRING = /'(?:[^']|'')*'/g;
 const SQL_DATA_START = /^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|VALUES)\b/i;
 const SQL_NOT_DATA = [
@@ -57,8 +58,8 @@ const SQL_NOT_DATA = [
 const SQL_INSERT_INTO = /\bINSERT\s+(OR\s+\w+\s+|IGNORE\s+)?INTO\b/gi;
 
 function isSqlData(lines) {
+  if (lines.some(line => SQL_UNPARSED_QUOTING.test(line))) return false;
   const code = lines.filter(line => !SQL_BLANK_OR_COMMENT.test(line));
-  if (code.some(line => SQL_META_COMMAND.test(line))) return false;
   const text = code.join('\n').replace(SQL_STRING, '?');
   if (text.includes("'")) return false;
   return text.split(';').filter(s => s.trim()).every(statement => {
@@ -120,7 +121,7 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
       if (lost > 0) raise(2, `fewer assertions: ${p}`);
     }
     for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
-    const syntax = syntaxFor(p);
+    const syntax = JSX_TEXT.test(p) ? null : syntaxFor(p);
     if (!PROSE.test(p) && !fixture && f.added.some(l => suppresses(l, syntax))) raise(2, `new lint or type suppression: ${p}`);
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
