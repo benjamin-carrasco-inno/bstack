@@ -57,10 +57,11 @@ const TEMP_PREFIX = {
 const UNKNOWN_DIR = null;
 const PS_ENV = /^\$env:([A-Za-z_]\w*)\s*=\s*(.*)$/is;
 
-function inTempDir(word, dialect, host) {
+function inTempDir(word, dialect, host, assigned) {
   const prefix = TEMP_PREFIX[dialect]?.exec(word ?? '');
   if (!prefix) return { word, dialect };
   const name = prefix.groups.name?.toUpperCase();
+  if (name && Object.keys(assigned).some(k => k.toUpperCase() === name)) return { word, dialect };
   const dir = host.platform === 'win32' ? host.tmpdir() : name && host.env[name];
   if (!dir) return { word, dialect };
   return { word: dir + word.slice(prefix[0].length), dialect: 'posix' };
@@ -88,7 +89,7 @@ function shellState(scopes, scope, start) {
 function changeDir(shell, c, host) {
   const move = DIR_MOVES[c.cmd];
   const at = c.args.findIndex(a => a === '-' || (!a.startsWith('-') && !/^\/d$/i.test(a)));
-  const { word: target, dialect } = inTempDir(c.args[at], c.dialect, host);
+  const { word: target, dialect } = inTempDir(c.args[at], c.dialect, host, shell.env);
   if (move === 'pop') {
     if (shell.stack.length) [shell.previous, shell.here] = [shell.here, shell.stack.pop()];
   } else if (move && target === '-') {
@@ -215,8 +216,8 @@ function treeRewriteRule(c, agent, root, host) {
   if (rule.anywhere) return `The ${agent} agent must not run git ${sub}: the stash stack is shared by every worktree of the repo. Read with git stash list or git stash show.`;
   const otherTree = Object.keys(c.env).some(name => GIT_LOCATION_VARIABLE.test(name)) || c.args.some(a => /^--(work-tree|git-dir)\b/.test(a));
   const here = knownCwd(c);
-  const repo = !dir ? here : dirExpression ? undefined : writeTarget(dir, here, c.dialect, host, false);
-  const touched = [repo, ...(rule.paths?.(rest) ?? []).map(p => repo && writeTarget(p, repo, c.dialect, host))];
+  const repo = !dir ? here : dirExpression ? undefined : writeTarget(dir, here, c.dialect, host, c.env, false);
+  const touched = [repo, ...(rule.paths?.(rest) ?? []).map(p => repo && writeTarget(p, repo, c.dialect, host, c.env))];
   if (otherTree || touched.some(p => !p || !owns(root, p, host))) return `The ${agent} agent must not run git ${sub} on a checkout outside its own worktree (${root}), or one the guard cannot locate; it would rewrite someone else's uncommitted work. Read with git diff or git show instead.`;
   return null;
 }
@@ -335,9 +336,9 @@ function hidesParent(word) {
   return PARENT_SEGMENT.test(word.replace(/\\(.)/g, '$1')) && !PARENT_SEGMENT.test(word);
 }
 
-function writeTarget(word, cwd, shellDialect, host, expression = word.includes('(')) {
+function writeTarget(word, cwd, shellDialect, host, assigned, expression = word.includes('(')) {
   if (NULL_SINK.test(word)) return null;
-  const { word: inTemp, dialect } = inTempDir(word, shellDialect, host);
+  const { word: inTemp, dialect } = inTempDir(word, shellDialect, host, assigned);
   const expanded = inTemp.replace(HOME, os.homedir());
   if (expression || OPAQUE.test(expanded) || hidesParent(expanded)) return undefined;
   if (cwd === undefined && !isAbsolute(expanded, dialect)) return undefined;
@@ -352,7 +353,7 @@ function fileWriteRule(c, agent, root, next, host) {
   const clobbered = next && endsInRedirect(c.text, c.dialect) ? tokenize(next.text).slice(0, 1) : [];
   const words = [...redirectTargets(c.text), ...clobbered,...dotnetWriteTargets(c.text), ...(FILE_WRITERS[c.cmd]?.(c.args, c.dialect) ?? [])];
   for (const word of words) {
-    const target = writeTarget(word, knownCwd(c), c.dialect, host);
+    const target = writeTarget(word, knownCwd(c), c.dialect, host, c.env);
     if (target === null) continue;
     if (target === undefined) return `The ${agent} agent may write files only inside its own worktree or the temp dir, and ${word} cannot be resolved before it runs. Use a literal path.`;
     if (!owns(root, target, host)) return `The ${agent} agent may write files only inside its own worktree (${root}) or the temp dir, not ${target}. Report what should change instead of changing it.`;
