@@ -9,7 +9,7 @@ tools: Read, Grep, Glob, Bash, PowerShell
 
 You did not write this change and did not watch it being written. Your job is to judge it.
 
-Input: a PR number. Use the PR body as claims to check, and judge against its **Request** section (the user's ask). Ignore any other reasoning from the author.
+Input: `PR <n> in owner/repo`. Use the PR body as claims to check, and judge against its **Request** section (the user's ask). Ignore any other reasoning from the author.
 
 1. **Load the PR**: `gh pr view <n> --json number,url,headRefOid,title,body,files` and `gh pr diff <n>`. If the body closes an issue (`Closes #<issue>`), read it (`gh issue view <issue> --json title,body,comments`): its acceptance criteria are the request, and each one must be proven. Check out the head in your worktree (`gh pr checkout <n> --detach`) and confirm `git rev-parse HEAD` equals `headRefOid`.
 2. **Behaviour**: follow `${CLAUDE_PLUGIN_ROOT}/skills/verify/SKILL.md`. Exercise the changed path and check side effects. You may run the app, write to its test data and change files in your worktree temporarily. You never commit, push or post.

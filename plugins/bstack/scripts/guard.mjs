@@ -221,6 +221,7 @@ function mergeGate(args, cwd, deps) {
   if (flags.includes('--auto')) return 'Auto-merge is blocked: it would merge later without the verdict check. Wait for CI and the verdict, then gh pr merge <n> --squash --delete-branch.';
   if (flags.includes('--admin')) return '--admin bypasses the repo rules. Merge normally once CI and the verdict are in.';
   if (!flags.some(f => f === '--squash' || f === '-s')) return 'Squash merge only: gh pr merge <n> --squash --delete-branch.';
+  if (repo && /[$%]/.test(repo)) return `The guard cannot see what ${repo} holds, so it cannot read the verdict from that repository. Write the repository out: gh pr merge <n> -R owner/repo --squash --delete-branch.`;
 
   const target = [...(selector ? [selector] : []), ...(repo ? ['-R', repo] : [])];
   let pr;
@@ -234,17 +235,17 @@ function mergeGate(args, cwd, deps) {
   const short = sha.slice(0, 7);
 
   const ci = ciState(pr.statusCheckRollup);
-  if (!ci.ok) return `CI is not green on ${short}: ${ci.detail}. Watch it with gh pr checks ${pr.number} --watch. Flaky: rerun once. Caused by the change: fix it. Never weaken the check.`;
+  if (!ci.ok) return `CI is not green on ${short}: ${ci.detail}. Watch it with gh pr checks ${pr.url} --watch. Flaky: rerun once. Caused by the change: fix it. Never weaken the check.`;
 
   let diff;
-  try { diff = deps.gh(cwd, ['pr', 'diff', String(pr.number), ...(repo ? ['-R', repo] : [])]); }
+  try { diff = deps.gh(cwd, ['pr', 'diff', pr.url, ...(repo ? ['-R', repo] : [])]); }
   catch (e) { return `bstack could not read the PR diff to compute the risk tier (${String(e.message ?? e).split('\n')[0]}). The gate fails closed.`; }
   const risk = riskTier(diff, { extraPaths: readRiskPaths(cwd) });
   if (risk.tier === 0) return null;
 
   const why = risk.reasons.length ? ` (${risk.reasons.slice(0, 3).join('; ')})` : '';
   const verdict = latestFor('verdict', pr.comments, sha);
-  if (!verdict) return `Tier ${risk.tier}${why}: no reviewer verdict for head ${short}. Run the bstack:reviewer agent on PR ${pr.number}; its hook posts the verdict.`;
+  if (!verdict) return `Tier ${risk.tier}${why}: no reviewer verdict for head ${short}. Run the bstack:reviewer agent on ${pr.url}; its hook posts the verdict.`;
   if (verdict.result === 'FAIL') return `The latest verdict for ${short} is FAIL. Fix it in a fresh round, push, and run bstack:reviewer again.`;
   if (risk.tier === 2) {
     const inter = latestFor('interrogate', pr.comments, sha);

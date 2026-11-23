@@ -115,6 +115,25 @@ test('tier 1 merge needs a verdict for the head SHA', () => {
   allowed(shell('gh pr merge --squash'), deps({ pr: { comments: [verdict('PASS+NOTES')] } }));
 });
 
+test('a merge in another repo reads the PR, diff and verdict from that repo', () => {
+  for (const command of ['gh pr merge 7 -R o/r --squash', 'gh pr merge 7 --repo=o/r --squash', 'gh pr merge https://github.com/o/r/pull/7 --squash']) {
+    const calls = [];
+    const base = deps({ pr: { number: 7, url: 'https://github.com/o/r/pull/7', comments: [verdict('PASS')] } });
+    const d = { ...base, gh: (cwd, args) => { calls.push(args); return base.gh(cwd, args); } };
+    allowed(shell(command), d);
+    const named = args => args.includes('https://github.com/o/r/pull/7') || args.join(' ').includes('-R o/r');
+    assert.deepEqual(calls.map(a => a[1]), ['view', 'diff'], command);
+    assert.ok(calls.every(named), `${command}: ${JSON.stringify(calls)}`);
+  }
+});
+
+test('a merge whose repo is a shell variable is refused with the name to write out', () => {
+  for (const command of ['gh pr merge 7 -R $R --squash', 'gh pr merge 7 --repo "$REPO" --squash', 'gh pr merge 7 --repo=${R} --squash']) {
+    assert.match(decide(shell(command), deps({ pr: { comments: [verdict('PASS')] } })) ?? '', /write the repository out/i, command);
+  }
+  assert.match(decide(ps('gh pr merge 7 -R $env:R --squash'), deps({ pr: { comments: [verdict('PASS')] } })) ?? '', /write the repository out/i);
+});
+
 test('tier 2 merge also needs a clean interrogate', () => {
   const d = comments => deps({ diff: DATA_DIFF, pr: { comments } });
   blocked(shell('gh pr merge 5 --squash'), d([verdict('PASS')]));
