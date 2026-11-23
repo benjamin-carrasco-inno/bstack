@@ -75,6 +75,9 @@ test('git and gh inside blocks are checked', () => {
   blocked(ps('git status; if ($?) { gh pr merge 5 --squash --admin }'));
   blocked(ps('if ($x) { echo a } else { git push origin main }'));
   blocked(ps('if (git push origin main) { echo ok }'));
+  blocked(ps('if (!(git push origin main)) { echo x }'));
+  blocked(ps('if (-not(git push origin main)) { echo x }'));
+  blocked(shell('! ( git push origin main )'));
   blocked(shell('if true; then git commit --no-verify -m x; fi'));
   blocked(shell('while true; do git push origin main; done'));
   blocked(shell('( git push origin main )'));
@@ -274,7 +277,7 @@ test('comment ratchet: sees what git add, -a and pathspecs in the same call woul
   repo.write('app.py', TWO);
   assert.match(repo.run('git add -A && git commit -m "feat: x"'), /app\.py/);
   assert.match(repo.run('git add app.py; git commit -m "feat: x"', 'PowerShell'), /app\.py/);
-  assert.match(repo.run("git add -A; if ($?) { git commit -m 'x' }", 'PowerShell') ?? '', /app\.py/);
+  assert.match(repo.run("git add -A; if ($?) { git commit -m 'x' }", 'PowerShell'), /app\.py/);
   assert.match(repo.run('git commit -am "feat: x"'), /app\.py/);
   assert.match(repo.run('git commit -m "feat: x" -- app.py'), /app\.py/);
   assert.match(repo.run('git commit -m "feat: x" app.py'), /app\.py/);

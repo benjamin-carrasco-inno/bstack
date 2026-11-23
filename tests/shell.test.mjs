@@ -39,6 +39,24 @@ test('commands inside PowerShell if, elseif and else blocks are reached', () => 
   assert.deepEqual(gitCalls('Get-ChildItem | ForEach-Object { git -C $_ push origin main }'), ['-C $_ push origin main']);
 });
 
+test('a group glued to an operator is still a group', () => {
+  assert.deepEqual(gitCalls('if (!(git push origin main)) { echo x }'), ['push origin main']);
+  assert.deepEqual(gitCalls('if (-not (git push origin main)) { echo x }'), ['push origin main']);
+  assert.deepEqual(gitCalls('if (-not(git push origin main)) { echo x }'), ['push origin main']);
+  assert.deepEqual(gitCalls('$ok = (git push origin main)'), ['push origin main']);
+  assert.deepEqual(gitCalls('$ok=(git push origin main)'), ['push origin main']);
+  assert.deepEqual(gitCalls('! ( git push origin main )'), ['push origin main']);
+});
+
+test('a PowerShell backtick-escaped bracket neither opens nor closes a group', () => {
+  assert.deepEqual(splitSegments('{ echo `{ } git push origin main }'), ['echo `{', 'git push origin main }']);
+  assert.deepEqual(splitSegments('( echo `) ) ; git status'), ['echo `)', 'git status']);
+});
+
+test('a stray closer after an escaped brace stays text: PowerShell refuses to parse that line and runs none of it', () => {
+  assert.deepEqual(splitSegments('echo `{ } git push origin main'), ['echo `{ } git push origin main']);
+});
+
 test('commands inside bash if, while, for, subshells and groups are reached', () => {
   assert.deepEqual(gitCalls('if true; then git commit --no-verify -m x; fi'), ['commit --no-verify -m x']);
   assert.deepEqual(gitCalls('if git diff --quiet; then echo same; elif true; then git push origin main; else git status; fi'), ['diff --quiet', 'push origin main', 'status']);
