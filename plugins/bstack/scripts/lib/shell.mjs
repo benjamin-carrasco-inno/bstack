@@ -31,14 +31,34 @@ function isArgument(textBefore) {
   return first !== undefined && !PREFIXES.has(first.toLowerCase());
 }
 
-function closingParen(line, open) {
+const DOUBLE_QUOTE_ESCAPE = { posix: '\\', powershell: '`' };
+const escapesInDoubleQuotes = (ch, dialect) => ch === DOUBLE_QUOTE_ESCAPE[dialect];
+
+function quotedSubstitution(line, i, dialect, closes) {
+  if (line.startsWith('$(', i)) {
+    const close = closingParen(line, i + 1, dialect, closes);
+    return close > 0 ? { inner: i + 2, close } : null;
+  }
+  if (line[i] !== '`' || dialect !== 'posix') return null;
+  const close = closingBacktick(line, i);
+  return close > 0 ? { inner: i + 1, close } : null;
+}
+
+function closingParen(line, open, dialect, closes) {
+  if (!closes.has(open)) closes.set(open, scanToClosingParen(line, open, dialect, closes));
+  return closes.get(open);
+}
+
+function scanToClosingParen(line, open, dialect, closes) {
   let depth = 0;
   let quote = null;
   for (let i = open; i < line.length; i++) {
     const ch = line[i];
     if (quote) {
-      if (ch === quote) quote = null;
-      else if (ch === '\\' && quote === '"') i++;
+      const sub = quote === '"' ? quotedSubstitution(line, i, dialect, closes) : null;
+      if (sub) i = sub.close;
+      else if (ch === quote) quote = null;
+      else if (quote === '"' && escapesInDoubleQuotes(ch, dialect)) i++;
       continue;
     }
     const here = hereString(line, i);
@@ -65,19 +85,27 @@ export function splitSegments(line, dialect = 'posix') {
   let cur = '';
   let quote = null;
   const groups = [];
+  const closes = new Map();
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (quote) {
+      const sub = quote === '"' ? quotedSubstitution(line, i, dialect, closes) : null;
+      if (sub) {
+        segments.push(...splitSegments(line.slice(sub.inner, sub.close), dialect));
+        cur += line.slice(i, sub.close + 1);
+        i = sub.close;
+        continue;
+      }
       cur += ch;
       if (ch === quote) quote = null;
-      else if (ch === '\\' && quote === '"' && i + 1 < line.length) cur += line[++i];
+      else if (quote === '"' && escapesInDoubleQuotes(ch, dialect) && i + 1 < line.length) cur += line[++i];
       continue;
     }
     const here = hereString(line, i);
     if (here) { cur += line.slice(i, here.end); i = here.end - 1; continue; }
     if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
     if (ch === '`' && (line[i + 1] === '`' || BRACKETS.has(line[i + 1]))) { cur += ch + line[++i]; continue; }
-    const close = ch === '(' && (!opensGroup(cur) || isArgument(cur)) ? closingParen(line, i)
+    const close = ch === '(' && (!opensGroup(cur) || isArgument(cur)) ? closingParen(line, i, dialect, closes)
       : ch === '`' && dialect === 'posix' ? closingBacktick(line, i) : -1;
     if (close > 0) {
       segments.push(...splitSegments(line.slice(i + 1, close), dialect));
