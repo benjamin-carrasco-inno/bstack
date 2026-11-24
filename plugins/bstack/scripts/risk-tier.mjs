@@ -40,6 +40,7 @@ const WEAKENING_ADDED = [
   [/continue-on-error:\s*true|\|\|\s*true\b/, 'CI step allowed to fail'],
 ];
 const PROSE = /^(?!(.*\/)?CMakeLists\.txt$)(?!(.*\/)?(\.claude|commands)\/).*\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
+const EXECUTED_IN_MARKDOWN = /!`([^`]*)`/g;
 const SUPPRESSION = /#\s*noqa|type:\s*ignore|pyright:\s*ignore|eslint-disable|@ts-(ignore|expect-error|nocheck)|#!?\[allow\(/;
 const TEST_REMOVED = /^\s*(async\s+)?def\s+test_|^\s*#\[(tokio::)?test\]|^\s*(it|test)\s*\(/;
 const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
@@ -97,7 +98,8 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
       const lost = f.removed.filter(l => ASSERT.test(l)).length - f.added.filter(l => ASSERT.test(l)).length;
       if (lost > 0) raise(2, `fewer assertions: ${p}`);
     }
-    if (!PROSE.test(p)) for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
+    const executed = PROSE.test(p) ? f.added.flatMap(l => [...l.matchAll(EXECUTED_IN_MARKDOWN)].map(m => m[1])) : f.added;
+    for (const l of executed) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
     if (!PROSE.test(p) && !fixture && !testOnly && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
