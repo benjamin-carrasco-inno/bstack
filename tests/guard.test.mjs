@@ -716,7 +716,7 @@ test('PowerShell reads /x as the root of the current drive, not as a Git Bash pa
   allowed(psAt('git -C /c/proj push'), onMainAt('C:\\proj'));
   blocked(psAt('cd /tmp/rat; git commit -m x'), overBaselineAt('C:\\tmp\\rat'));
   allowed(psAt('cd /tmp/rat; git commit -m x'), overBaselineAt(BASH_TEMP_RAT));
-  const verdictAt = file => ({ ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : null) });
+  const verdictAt = file => ({ ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : 'just a note') });
   blocked(psAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\c\\x\\v.md'));
   allowed(psAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\x\\v.md'));
   blocked(psAt('cmd /c git -C /c/proj push'), onMainAt('C:\\c\\proj'));
