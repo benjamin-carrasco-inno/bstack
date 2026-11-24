@@ -14,7 +14,7 @@ import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, ti
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
-import { riskTier, readRiskPaths } from './risk-tier.mjs';
+import { ghFileReader, riskTier, readRiskPaths } from './risk-tier.mjs';
 
 const DEFAULT_BRANCH = /^(main|master)$/;
 const READ_ONLY = new Set(['grep', 'rg', 'findstr', 'select-string', 'sls', 'cat', 'type', 'get-content', 'gc', 'jq', 'less', 'head', 'tail', 'wc']);
@@ -756,7 +756,8 @@ function mergeGate(args, cwd, deps, c, line) {
   let diff;
   try { diff = deps.gh(cwd, ['pr', 'diff', pr.url, ...(repo ? ['-R', repo] : [])]); }
   catch (e) { return `bstack could not read the PR diff to compute the risk tier (${String(e.message ?? e).split('\n')[0]}). The gate fails closed.`; }
-  const risk = riskTier(diff, { extraPaths: readRiskPaths(cwd) });
+  const readFile = ghFileReader(args => deps.gh(cwd, args), repoOfUrl(pr.url) ?? repo, sha);
+  const risk = riskTier(diff, { extraPaths: readRiskPaths(cwd), readFile });
   if (risk.tier === 0) return null;
 
   const why = risk.reasons.length ? ` (${risk.reasons.slice(0, 3).join('; ')})` : '';

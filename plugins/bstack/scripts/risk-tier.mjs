@@ -8,9 +8,12 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { repoOfUrl } from './lib/pending.mjs';
 
 const DOCS = /(^|\/)(LICENSE|NOTICE|CHANGELOG|README)(\.[a-z]+)?$|\.(md|rst|txt|adoc)$/i;
-const NOT_DOCS = /(^|\/)(AGENTS|CLAUDE)\.md$|(^|\/)requirements[^/]*\.txt$|(^|\/)\.github\/[^/]+\.txt$|(^|\/)(skills|agents|rules)\//i;
+const BUILD_TXT = /(^|\/)(CMakeLists|requirements[^/]*)\.txt$/i;
+const COMMANDS = /(^|\/)commands\//i;
+const NOT_DOCS = /(^|\/)(AGENTS|CLAUDE)\.md$|(^|\/)\.github\/[^/]+\.txt$|(^|\/)(skills|agents|rules)\//i;
 const CONFIG = /(^|\/)(\.github\/workflows\/|\.claude\/)|(^|\/)(pyproject\.toml|setup\.cfg|ruff\.toml|\.ruff\.toml|pyrightconfig\.json|eslint\.config\.[cm]?js|\.eslintrc[^/]*|Cargo\.toml|clippy\.toml|rustfmt\.toml|package\.json|tsconfig[^/]*\.json|Dockerfile|docker-compose[^/]*\.ya?ml|\.pre-commit-config\.yaml)$/i;
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)test_[^/]+\.py$|_test\.(py|go|rs)$|\.(test|spec)\.[cm]?[jt]sx?$/i;
 const CODE = /\.(py|pyi|js|mjs|cjs|ts|tsx|jsx|rs|go|sql|sh|ps1|html|css|vue|svelte)$/i;
@@ -40,7 +43,26 @@ const WEAKENING_ADDED = [
   [/pytest\.mark\.(skip|xfail)|@unittest\.skip|#\[ignore\]|\b(it|test|describe)\.skip\(|\bx(it|describe)\(/, 'test skipped'],
   [/continue-on-error:\s*true|\|\|\s*true\b/, 'CI step allowed to fail'],
 ];
-const PROSE = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
+const PROSE_EXTENSION = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
+const isProse = p => PROSE_EXTENSION.test(p) && !BUILD_TXT.test(p) && !COMMANDS.test(p);
+const CLAUDE_CODE_EXECUTED_MARKDOWN = [/```!\s*\n?([\s\S]*?)\n?```/dg, /(?<=^|\s)!`([^`]+)`/dgm];
+
+function executedMatch(head, line, re) {
+  if (typeof head !== 'string') return true;
+  const text = head.replace(/\r\n/g, '\n');
+  const executed = CLAUDE_CODE_EXECUTED_MARKDOWN.flatMap(x => [...text.matchAll(x)].map(m => m.indices[1]));
+  let found = false;
+  let start = 0;
+  for (const l of text.split('\n')) {
+    const end = start + l.length;
+    if (l === line) {
+      found = true;
+      if (executed.some(([s, e]) => Math.max(s, start) < Math.min(e, end) && re.test(text.slice(Math.max(s, start), Math.min(e, end))))) return true;
+    }
+    start = end + 1;
+  }
+  return !found;
+}
 const SUPPRESSION = /#\s*noqa|type:\s*ignore|pyright:\s*ignore|eslint-disable|@ts-(ignore|expect-error|nocheck)|#!?\[allow\(/;
 const TEST_REMOVED = /^\s*(async\s+)?def\s+test_|^\s*#\[(tokio::)?test\]|^\s*(it|test)\s*\(/;
 const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
@@ -86,7 +108,9 @@ function globToRegex(glob) {
   return new RegExp(`^${esc}$`);
 }
 
-export function riskTier(diff, { extraPaths = [] } = {}) {
+const readOrNull = (readFile, p) => { try { return readFile?.(p) ?? null; } catch { return null; } };
+
+export function riskTier(diff, { extraPaths = [], readFile } = {}) {
   const files = parseDiff(diff);
   const reasons = new Set();
   let tier = 0;
@@ -95,7 +119,7 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
 
   for (const f of files) {
     const p = f.path.replace(/\\/g, '/');
-    const docs = DOCS.test(p) && !NOT_DOCS.test(p);
+    const docs = DOCS.test(p) && !NOT_DOCS.test(p) && !BUILD_TXT.test(p) && !COMMANDS.test(p);
     if (!docs) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
     if (extra.some(re => re.test(p))) raise(2, `listed in .github/risk-paths.txt: ${p}`);
     const paths = f.oldPath ? [p, f.oldPath.replace(/\\/g, '/')] : [p];
@@ -114,8 +138,11 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
       const lost = f.removed.filter(l => ASSERT.test(l)).length - f.added.filter(l => ASSERT.test(l)).length;
       if (lost > 0) raise(2, `fewer assertions: ${p}`);
     }
-    for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
-    if (!PROSE.test(p) && !fixture && !testOnly && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
+    const prose = isProse(p);
+    let head;
+    const executes = (l, re) => !prose || executedMatch(head === undefined ? (head = readOrNull(readFile, p)) : head, l, re);
+    for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l) && executes(l, re)) raise(2, `${why}: ${p}`);
+    if (!PROSE_EXTENSION.test(p) && !fixture && !testOnly && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
     if (CODE.test(p) && !isTest) {
@@ -136,20 +163,27 @@ export function readRiskPaths(cwd) {
   } catch { return []; }
 }
 
+export const ghFileReader = (gh, repo, sha) => p =>
+  gh(['api', '-H', 'Accept: application/vnd.github.raw', `repos/${repo}/contents/${p.split('/').map(encodeURIComponent).join('/')}?ref=${sha}`]);
+
 function main() {
   const args = process.argv.slice(2);
   const opt = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
-  const run = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', maxBuffer: 64 << 20 });
+  const run = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
   let diff;
-  if (opt('--pr')) diff = run('gh', ['pr', 'diff', opt('--pr')]);
-  else {
+  let readFile = p => fs.readFileSync(path.join(process.cwd(), p), 'utf8');
+  if (opt('--pr')) {
+    diff = run('gh', ['pr', 'diff', opt('--pr')]);
+    const pr = JSON.parse(run('gh', ['pr', 'view', opt('--pr'), '--json', 'url,headRefOid']));
+    readFile = ghFileReader(a => run('gh', a), repoOfUrl(pr.url), pr.headRefOid);
+  } else {
     let base = opt('--base');
     if (!base) {
       try { base = run('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).trim(); } catch { base = 'origin/main'; }
     }
     diff = run('git', ['diff', '--no-color', `${base}...HEAD`]) + run('git', ['diff', '--no-color', 'HEAD']);
   }
-  console.log(JSON.stringify(riskTier(diff, { extraPaths: readRiskPaths(process.cwd()) }), null, 2));
+  console.log(JSON.stringify(riskTier(diff, { extraPaths: readRiskPaths(process.cwd()), readFile }), null, 2));
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
