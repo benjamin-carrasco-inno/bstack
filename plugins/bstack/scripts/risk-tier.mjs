@@ -44,18 +44,33 @@ const SUPPRESSION = /#\s*noqa|type:\s*ignore|pyright:\s*ignore|eslint-disable|@t
 const TEST_REMOVED = /^\s*(async\s+)?def\s+test_|^\s*#\[(tokio::)?test\]|^\s*(it|test)\s*\(/;
 const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
 
+const C_ESCAPES = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13 };
+const unquote = s => {
+  if (!s.startsWith('"')) return s;
+  const bytes = [];
+  for (const [, oct, esc, ch] of s.slice(1, -1).matchAll(/\\([0-7]{3})|\\(.)|([^\\]+)/gsu)) {
+    if (oct) bytes.push(parseInt(oct, 8));
+    else if (esc) bytes.push(C_ESCAPES[esc] ?? esc.charCodeAt(0));
+    else bytes.push(...Buffer.from(ch));
+  }
+  return Buffer.from(bytes).toString('utf8');
+};
+const QUOTED = '"(?:[^"\\\\]|\\\\.)*"';
+const HEAD = new RegExp(`^diff --git (${QUOTED}|a/.+?) (${QUOTED}|b/.+)$`);
+
 export function parseDiff(diff) {
   const files = [];
   let f = null;
   for (const line of String(diff ?? '').split(/\r?\n/)) {
-    const head = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+    const head = HEAD.exec(line);
     if (head) {
-      f = { path: head[2], oldPath: head[1] === head[2] ? null : head[1], added: [], removed: [], created: false, deleted: false };
+      const [a, b] = [unquote(head[1]).slice(2), unquote(head[2]).slice(2)];
+      f = { path: b, oldPath: a === b ? null : a, added: [], removed: [], created: false, deleted: false };
       files.push(f); continue;
     }
     if (!f) continue;
-    const from = /^rename from (.+)$/.exec(line);
-    if (from) f.oldPath = from[1] === f.path ? null : from[1];
+    const from = /^rename from (.+)$/.exec(line)?.[1];
+    if (from) f.oldPath = unquote(from) === f.path ? null : unquote(from);
     else if (line.startsWith('new file mode')) f.created = true;
     else if (line.startsWith('deleted file mode')) f.deleted = true;
     else if (line.startsWith('+++') || line.startsWith('---')) continue;
