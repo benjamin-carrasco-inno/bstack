@@ -139,7 +139,7 @@ test('git global options are skipped', () => {
 });
 
 test('only an unquoted ( makes a -C path an expression', () => {
-  const dirOf = line => { const [c] = commandsIn(line); return parseGit(c.args, c.expressions); };
+  const dirOf = line => { const c = commandsIn(line).find(cmd => cmd.cmd === 'git'); return parseGit(c.args, c.expressions); };
   for (const line of ['git -C "C:/dev/repo (1)" push', "git -C 'C:/Program Files (x86)/r' push", 'git -C "/a (1)" -C sub push']) {
     assert.equal(dirOf(line).dirKnown, true, line);
   }
