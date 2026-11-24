@@ -494,6 +494,7 @@ const ISSUE_34_REFUSED = {
     'cd /checkout && npm test', 'cd /tmp/x && node x.mjs', 'cat x.mjs | node', 'python - < x.py', 'python -m http.server',
     'sqlite3 /tmp/app.db "select 1"', 'sqlite3 -safe /checkout/app.db "select 1"', 'curl https://example.com/', 'npm install -g x',
     'gh pr comment 5 --body hi', 'gh api -X POST repos/o/r/issues -f title=x', 'git push origin feat/x', 'kill -9 -1',
+    'gh api -XDELETE repos/o/r/git/refs/heads/x', 'export GIT_DIR=/checkout/.git', 'set -- x; eval rm /checkout',
   ],
   PowerShell: [
     'Set-Content -Path (Join-Path C:/checkout a) x', "Set-Content ($env:USERPROFILE+'\\a') x", "[IO.File]::Copy('a', 'C:/checkout/a')",
@@ -504,7 +505,7 @@ const ISSUE_34_REFUSED = {
     "$c = 'Remove-Item'; & $c C:/checkout", 'Get-ChildItem C:/checkout | % Delete', '(Get-Item C:/checkout/a).Delete()',
     "[Environment]::SetEnvironmentVariable('X', 'y', 'User')", 'Write-Output "$(Remove-Item C:/checkout -Recurse)"',
     "$env:GIT_DIR = 'C:/checkout/.git'", 'Remove-Item HKCU:\\Software\\x', 'Stop-Process -Name node', 'Start-Process notepad',
-    'Invoke-RestMethod https://example.com/', 'node -e "1"',
+    'Invoke-RestMethod https://example.com/', 'node -e "1"', '.\\x.ps1', '. ./x.ps1', './x.ps1',
   ],
 };
 
@@ -534,12 +535,14 @@ test('#34: no-authoring agents may run what their instructions tell them to', ()
       'curl -sS -X POST -H "Content-Type: application/json" -d \'{"a":1}\' http://127.0.0.1:8000/x -o /dev/null',
       'sqlite3 -safe /tmp/app.db "select count(*) from orders"', 'mkdir -p /tmp/data && rm -rf /tmp/data', 'kill 1234',
       'x=$(git rev-parse HEAD); echo "$x"', 'grep -rn TODO src | head', 'find src -name "*.mjs" | wc -l',
+      'set -euo pipefail; export NODE_ENV=test; npm test', 'node --version && npm --version && cargo --version',
     ]) allowed(as(command), host);
     for (const command of [
       '$sha = git rev-parse HEAD; if ($LASTEXITCODE -ne 0) { exit 1 }', 'Get-Content src/a.mjs | Select-String foo',
       'Get-ChildItem -Recurse -Filter *.mjs | ForEach-Object { $_.Name.Trim() }', 'Invoke-RestMethod http://localhost:8000/health',
       'Set-Content -Path $env:TEMP/x.txt -Value $content', 'New-Item -ItemType Directory -Force C:/repo/tmpdata',
-      '"$((git rev-parse HEAD).Trim())"', 'Stop-Process -Id 1234', 'node --test 2>$null',
+      '"$((git rev-parse HEAD).Trim())"', 'Stop-Process -Id 1234', 'node --test 2>$null', 'pytest "tests/test_x.py::test_a"',
+      "$env:NODE_ENV = 'test'; npm test",
     ]) allowed(psAs(command), host);
   }
 });
