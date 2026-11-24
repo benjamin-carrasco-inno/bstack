@@ -20,9 +20,9 @@ test('a PR without interrogate comments has no rounds', () => {
   assert.equal(prRounds(undefined), null);
 });
 
-test('rounds are distinct head SHAs; findings add up per round', () => {
+test('rounds are distinct blocking head SHAs; findings add up over every head', () => {
   const comments = [comment(sha('a'), 3, 1), chatter, comment(sha('b'), 2, 0)];
-  assert.deepEqual(prRounds(comments), { rounds: 2, confirmed: 5, blocking: 1 });
+  assert.deepEqual(prRounds(comments), { rounds: 1, confirmed: 5, blocking: 1 });
 });
 
 test('two comments for the same head count one round, the newest wins', () => {
