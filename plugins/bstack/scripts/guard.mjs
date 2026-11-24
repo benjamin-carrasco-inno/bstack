@@ -742,7 +742,8 @@ export function retryOnTimeout(run, timeouts = [30000, 60000]) {
   };
 }
 
-const gh = retryOnTimeout((cwd, args, timeout) => execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout, maxBuffer: 64 << 20 }));
+const envWithoutGhRepo = () => Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'GH_REPO'));
+const gh = retryOnTimeout((cwd, args, timeout) => execFileSync('gh', args, { cwd, env: envWithoutGhRepo(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout, maxBuffer: 64 << 20 }));
 
 export const realDeps = {
   git: (cwd, args, { env, input, buffer, timeout = 15000 } = {}) => execFileSync('git', ['-C', cwd, ...args], {
