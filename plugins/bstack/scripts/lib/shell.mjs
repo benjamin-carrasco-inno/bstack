@@ -229,6 +229,7 @@ const NO_EXPRESSIONS = new Set();
 // git global options come before the subcommand: git -C dir --git-dir=x -c k=v push ... Each -C is relative to the one before; an empty one is ignored.
 export function parseGit(args, expressions = NO_EXPRESSIONS) {
   const found = { dir: null, gitDir: null, workTree: null };
+  const config = [];
   let aliases = false;
   let dirExpression = false;
   let i = 0;
@@ -248,10 +249,40 @@ export function parseGit(args, expressions = NO_EXPRESSIONS) {
     const key = GIT_PATH_OPTS[eq > 0 ? a.slice(0, eq) : a];
     if (key && eq > 0) { found[key] = a.slice(eq + 1); i += 1; continue; }
     if (key) { found[key] = value ?? null; i += 2; continue; }
-    if (a === '-c' || a === '--config-env') { aliases ||= ALIAS_KEY.test(value ?? ''); i += 2; continue; }
-    if (a.startsWith('--config-env=')) aliases ||= ALIAS_KEY.test(a.slice(13));
+    if (a === '-c' || a === '--config-env') { aliases ||= ALIAS_KEY.test(value ?? ''); config.push(configKey(value)); i += 2; continue; }
+    if (a.startsWith('--config-env=')) { aliases ||= ALIAS_KEY.test(a.slice(13)); config.push(configKey(a.slice(13))); }
     if (a === '--namespace') { i += 2; continue; }
     i += 1;
   }
-  return { ...found, dirKnown: found.dir === null || (!dirExpression && !UNRESOLVED.test(found.dir)), dirExpression, aliases, sub: args[i] ?? '', rest: args.slice(i + 1) };
+  return { ...found, dirKnown: found.dir === null || (!dirExpression && !UNRESOLVED.test(found.dir)), dirExpression, aliases, config, sub: args[i] ?? '', rest: args.slice(i + 1) };
+}
+
+function configKey(setting = '') {
+  return setting.split('=')[0].toLowerCase();
+}
+
+const DO_DONE = /(?<![\w$.-])(do|done)(?![\w-])/g;
+const BRACED_LOOP = /(?<![\w$.-])(foreach-object|foreach|for|while|until|do|%)(?![\w-])/gi;
+
+export function loopBodies(text) {
+  const bodies = [];
+  const open = [];
+  for (const m of text.matchAll(DO_DONE)) {
+    if (m[1] === 'do') open.push(m.index + 2);
+    else if (open.length) bodies.push(text.slice(open.pop(), m.index));
+  }
+  for (const m of text.matchAll(BRACED_LOOP)) {
+    const start = text.indexOf('{', m.index);
+    if (start >= 0) bodies.push(text.slice(start + 1, closingBrace(text, start)));
+  }
+  return bodies;
+}
+
+function closingBrace(text, start) {
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}' && --depth === 0) return i;
+  }
+  return text.length;
 }

@@ -63,7 +63,7 @@ export function parseCommit(rest) {
   return opts;
 }
 
-export function commentRatchet({ command, rest, prior, tool }, shellDeps) {
+export function commentRatchet({ command, rest, prior, tool, unseen, looped }, shellDeps) {
   const opts = parseCommit(rest);
   if (opts.dryRun) return null;
   const target = commitTarget(command, shellDeps.host.paths);
@@ -77,6 +77,8 @@ export function commentRatchet({ command, rest, prior, tool }, shellDeps) {
   } catch { return null; }
   realIndex = path.resolve(repo, realIndex);
   if (!deps.exists(path.join(root, BASELINE)) && !inIndex(root, {}, deps)) return null;
+  if (unseen) return `bstack cannot see what git am commits: its patches are not in the index when the guard runs, so it cannot check the comment baseline. Apply each patch with git apply --index, then run the commit in its own call.`;
+  if (looped) return `bstack checks the comment baseline once, before the command line runs, so it cannot see what a loop changes between its commits. Run the commit in its own call, once per commit.`;
 
   const replays = prior.filter(p => p.cmd === 'git' && Object.hasOwn(INDEX_REPLAYS, parseGit(p.args).sub));
   const unsafe = prior.find(p => !safeBeforeCommit(p, tool, shellDeps)) ?? (gitEnv ? replays[0] : undefined);
@@ -103,7 +105,8 @@ function commitTarget({ args, expressions, cwd, dialect, env = {} }, paths) {
   const parsed = parseGit(args, expressions);
   if (cwd === null) return unknownRepo('a cd to a path the guard cannot resolve');
   if (!parsed.dirKnown) return unknownRepo(`-C ${parsed.dir}`);
-  if (env.GIT_INDEX_FILE !== undefined) return unknownRepo('GIT_INDEX_FILE');
+  const redirect = redirectsRepo(parsed, env);
+  if (redirect) return unknownRepo(redirect);
   const repo = parsed.dir === null ? cwd : paths.resolvePath(cwd, parsed.dir, dialect);
   const gitEnv = {};
   for (const [option, name] of Object.entries(GIT_LOCATION)) {
@@ -113,6 +116,12 @@ function commitTarget({ args, expressions, cwd, dialect, env = {} }, paths) {
     gitEnv[name] = paths.resolvePath(repo, value, dialect);
   }
   return { repo, gitEnv: Object.keys(gitEnv).length ? gitEnv : null };
+}
+
+const UNFOLLOWED_ENV = ['GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT'];
+
+function redirectsRepo({ config }, env = {}) {
+  return UNFOLLOWED_ENV.find(name => env[name] !== undefined) ?? (config.includes('core.worktree') ? 'core.worktree' : null);
 }
 
 function unknownRepo(what) {
@@ -130,16 +139,17 @@ const READ_ONLY_GIT = new Set(['status', 'diff', 'log', 'show', 'rev-parse', 'ls
 const SUBSTITUTION = { Bash: /\$\(|`|[<>]\(/, PowerShell: /\$\(/ };
 const OUTPUT_REDIRECT = /^.*?[0-9*&]?>[>|]?(&?)(.*)$/s;
 const DISCARD = /^(\/dev\/null|\$null|nul)$/i;
-const GIT_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'];
+const GIT_ENV = ['GIT_DIR', 'GIT_WORK_TREE'];
 const QUOTED_ENV_SET = /^\$env:\w+\s*=\s*("[^"]*"|'[^']*')$/i;
 
 function safeBeforeCommit(c, tool, deps) {
   if ((SUBSTITUTION[tool] ?? SUBSTITUTION.Bash).test(c.text) || writesFile(c.args)) return false;
   if (c.cmd === 'git') {
-    const { dir, dirKnown, gitDir, workTree, sub, rest } = parseGit(c.args, c.expressions);
+    const parsed = parseGit(c.args, c.expressions);
+    const { dir, dirKnown, gitDir, workTree, sub, rest } = parsed;
     if (READ_ONLY_GIT.has(sub)) return !rest.some(a => a.startsWith('--output'));
     if (!Object.hasOwn(INDEX_REPLAYS, sub) || c.cwd === null || gitDir !== null || workTree !== null) return false;
-    if (!dirKnown || GIT_ENV.some(name => c.env?.[name] !== undefined)) return false;
+    if (!dirKnown || GIT_ENV.some(name => c.env?.[name] !== undefined) || redirectsRepo(parsed, c.env)) return false;
     const where = dir === null ? c.cwd : deps.host.paths.resolvePath(c.cwd, dir, c.dialect);
     return INDEX_REPLAYS[sub](withoutRedirections(rest), { where, shellCwd: c.cwd, tool }, deps).length > 0;
   }
