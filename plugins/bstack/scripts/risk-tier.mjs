@@ -97,7 +97,7 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
       const lost = f.removed.filter(l => ASSERT.test(l)).length - f.added.filter(l => ASSERT.test(l)).length;
       if (lost > 0) raise(2, `fewer assertions: ${p}`);
     }
-    for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
+    if (!PROSE.test(p)) for (const l of f.added) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
     if (!PROSE.test(p) && !fixture && !testOnly && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
