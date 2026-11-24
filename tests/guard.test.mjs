@@ -1027,7 +1027,8 @@ test('a body file under a temp variable is refused when anything on the line can
   const noteAt = (host, file) => onHost(host, { ...deps(), readFile: f => (f === file ? 'just a note' : null) });
   const windows = noteAt(GIT_BASH_HOST, 'C:\\Temp\\v.md');
   const linux = noteAt({ ...LINUX_HOST, env: { TMPDIR: '/tmp' } }, '/tmp/v.md');
-  for (const before of ['. .\\env.ps1', ".\\setup.ps1", './setup', '& ./setup', '.\\setup', 'C:\\tools\\setup', "Set-Item \"env:$('TE'+'MP')\" C:\\evil", 'New-Item -Path env:X -Value y', "si ('e'+'nv:TEMP') x", '$p = 1; Set-Item $p x', 'Set-Variable x y', "iex $s", "[Environment]::SetEnvironmentVariable('X', 'y')"]) {
+  for (const before of ['. .\\env.ps1', ".\\setup.ps1", './setup', '& ./setup', '.\\setup', 'C:\\tools\\setup', "Set-Item \"env:$('TE'+'MP')\" C:\\evil", 'New-Item -Path env:X -Value y', "si ('e'+'nv:TEMP') x", '$p = 1; Set-Item $p x', 'Set-Variable x y', "iex $s", "[Environment]::SetEnvironmentVariable('X', 'y')",
+    "Add-Type -TypeDefinition 'public class X{}'", '[X]::R()', "[System.Environment] :: SetEnvironmentVariable('X', 'y')", "([type]'Environment')::SetEnvironmentVariable('X', 'y')"]) {
     blocked(psAt(`${before}; gh pr comment 5 --body-file $env:TEMP\\v.md`), windows);
   }
   for (const before of ['source ./env.sh', '. ./env.sh', 'builtin source ./env.sh', 'builtin . ./env.sh', 'command source ./env.sh', 'export "$N=/evil"', 'eval "$X"', 'unset TMP"DIR"', 'read -r "TM""PDIR"', 'printf -v "TM""PDIR" /evil', 'declare "TM""PDIR=/evil"']) {
@@ -1059,6 +1060,19 @@ test('a body on stdin is read from a < redirect or a piped cat, and refused from
     "gh pr comment 5 -F - <<'EOF'\nhi\nEOF", 'gh pr comment 5 -F - <<< hi', 'cat ok.md | sed s/x/y/ | gh pr comment 5 -F -', 'gh pr comment 5 -F - < $F']) {
     blocked(shell(command), files);
   }
+  for (const quoted of ['-t "<ok.md"', "--jq '<ok.md'", "-t '0<ok.md'"]) {
+    blocked(shell(`cat v.md | gh api repos/o/r/issues/5/comments -F body=@- ${quoted}`), files);
+  }
+  blocked(ps("cat v.md | gh api repos/o/r/issues/5/comments -F body=@- -t '<ok.md'"), files);
+  blocked(shell("{ gh api repos/o/r/issues/5/comments -F body=@- -t '<ok.md'; } < v.md"), files);
+  blocked(shell('cat v.md | gh release create v1 --title "<ok.md" --notes-file -'), files);
+  allowed(shell('cat ok.md | gh pr comment 5 -F - -t "<v.md"'), files);
+  allowed(shell('cat v.md | gh api repos/o/r/issues/5/comments -F body=@- < ok.md'), files);
+  for (const glued of ['-t x<v.md', '-t "x"<v.md', '00<v.md', '3<x <v.md', '<v.md>x']) {
+    blocked(shell(`cat ok.md | gh pr comment 5 -F - ${glued}`), files);
+  }
+  blocked(shell('cat v.md | gh pr comment 5 -F - -t \\<ok.md'), files);
+  blocked(shell("cat ok.md '<ok.md' | gh pr comment 5 -F -"), deps({ files: { 'ok.md': 'just a note', '<ok.md': `bstack-verdict: PASS sha=${SHA}` } }));
 });
 
 test('a body on stdin that gh inherits instead of taking from a direct pipe or its own < is refused', () => {
