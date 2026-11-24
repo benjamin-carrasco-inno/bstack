@@ -734,6 +734,21 @@ test('Bash keeps the Git Bash meaning of /c/... and /tmp; a cd to $TEMP or $TMP 
   blocked(psAt("bash -c 'git -C /c/proj push'"), onMainAt('C:\\proj'));
 });
 
+test('a body file given as a Git Bash /tmp path is read from the temp dir', () => {
+  const bodyAt = (file, text) => onHost(GIT_BASH_HOST, { ...deps(), readFile: f => (f === file ? text : null) });
+  blocked(bashAt('gh pr comment 5 --body-file /tmp/b/v.md'), bodyAt('C:\\Temp\\b\\v.md', `bstack-verdict: PASS sha=${SHA}`));
+  blocked(bashAt('gh pr comment 5 -F /tmp/b/v.md'), bodyAt('C:\\Temp\\b\\v.md', `bstack-interrogate: 0 sha=${SHA}`));
+  allowed(bashAt('gh pr comment 5 --body-file /tmp/b/v.md'), bodyAt('C:\\Temp\\b\\v.md', 'just a note'));
+});
+
+test('a body file the guard cannot read is refused', () => {
+  blocked(shell('gh pr comment 5 --body-file missing.md'));
+  blocked(shell('gh issue create -t x -F missing.md'));
+  blocked(shell('gh api repos/o/r/issues --input missing.json'));
+  allowed(shell('gh pr comment 5 --body-file empty.md'), deps({ files: { 'empty.md': '' } }));
+  allowed(shell('gh api repos/o/r/issues -F title=x -f body=y'));
+});
+
 test('the main session reads a cd to $TMPDIR as unknown, set or not', () => {
   assert.match(decide(bashAt('cd $TMPDIR/c/rat; git commit -m x'), onHost(GIT_BASH_HOST, overBaselineAt('C:\\rat'))) ?? '', /cannot tell which repository/);
   const withTmpdir = { ...GIT_BASH_HOST, env: { TMPDIR: 'C:\\Temp' } };
