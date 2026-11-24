@@ -77,6 +77,12 @@ test('an allowed failure in a command file that Claude Code executes is tier 2',
   assert.equal(tier(file('plugins/x/commands/check.md', { add: ['!`node --test || true`'] })), 2);
 });
 
+test('an allowed failure in an executed line of a markdown file is tier 2', () => {
+  assert.equal(tier(file('plugins/bstack/skills/x/SKILL.md', { add: ['!`npm test || true`'] })), 2);
+  assert.equal(tier(file('docs/x.md', { add: ['Run it: !`node --test || true`'] })), 2);
+  assert.equal(tier(file('plugins/bstack/agents/x.md', { add: ['!`echo ok` then flag a new `|| true`.'] })), 1);
+});
+
 test('a command file is not docs', () => {
   assert.equal(tier(file('.claude/commands/x.md', { add: ['Run the tests.'] })), 1);
   assert.equal(tier(file('plugins/x/commands/x.md', { add: ['Run the tests.'] })), 1);
