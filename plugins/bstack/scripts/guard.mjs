@@ -514,18 +514,20 @@ function rebaseRule(repo, deps) {
 }
 
 // --- gh -------------------------------------------------------------------------------------------
-const GH_COMMANDS = new Set(['auth', 'browse', 'codespace', 'discussion', 'gist', 'issue', 'org', 'pr', 'project', 'release', 'repo', 'skill', 'cache', 'run', 'workflow', 'agent-task', 'alias', 'api', 'attestation', 'completion', 'config', 'copilot', 'extension', 'gpg-key', 'label', 'licenses', 'preview', 'ruleset', 'search', 'secret', 'ssh-key', 'status', 'variable', 'help', 'version']);
-const GH_SINGLE_WORD = new Set(['api', 'browse', 'completion', 'copilot', 'help', 'licenses', 'status', 'version']);
+const GH_COMMANDS = new Set(['auth', 'browse', 'codespace', 'discussion', 'gist', 'issue', 'org', 'pr', 'project', 'release', 'repo', 'skill', 'cache', 'run', 'workflow', 'agent-task', 'alias', 'api', 'attestation', 'completion', 'config', 'extension', 'gpg-key', 'label', 'licenses', 'preview', 'ruleset', 'search', 'secret', 'ssh-key', 'status', 'variable', 'help', 'version']);
+const GH_SINGLE_WORD = new Set(['api', 'browse', 'completion', 'help', 'licenses', 'status', 'version']);
 const GH_TOP_FLAGS = new Set(['--help', '-h', '--version']);
 const GH_HIDDEN_SUBCOMMAND = 'The guard cannot tell which gh command this runs (an alias, an extension, or a flag before the subcommand can hide gh pr merge), so it fails closed. Write the full command with the subcommand first: gh pr merge <n> --squash --delete-branch, gh pr view <n>, and so on.';
+const GH_COPILOT = 'gh copilot starts an agent that can run gh pr merge or git push outside this hook, so the guard cannot gate what it does. Run the gh or git command yourself.';
 
 function ghRule(c, cwd, deps) {
   const { at, flag } = parseGh(c.args);
   const [group, action] = at.map(i => c.args[i]);
+  if (group === 'copilot') return GH_COPILOT;
   if (group === undefined ? flag !== null && !GH_TOP_FLAGS.has(flag) : !GH_COMMANDS.has(group)) return GH_HIDDEN_SUBCOMMAND;
   if (action === undefined && flag !== null && !GH_SINGLE_WORD.has(group) && !GH_TOP_FLAGS.has(flag)) return GH_HIDDEN_SUBCOMMAND;
   const without = n => c.args.filter((_, i) => !at.slice(0, n).includes(i));
-  if (group === 'pr' && action === 'merge') return mergeGate(without(2), cwd, deps);
+  if (group === 'pr' && action === 'merge') return mergeGate(without(2), cwd, deps, c.env);
   if (group === 'api') return apiRule(without(1));
   return null;
 }
@@ -558,24 +560,43 @@ function apiRule(args) {
   return null;
 }
 
-const MERGE_VALUE_OPTS = new Set(['-R', '--repo', '-b', '--body', '-F', '--body-file', '-t', '--subject', '--match-head-commit', '-A', '--author-email']);
+const MERGE_VALUE_OPTS = new Set(['--repo', '--body', '--body-file', '--subject', '--match-head-commit', '--author-email']);
+const MERGE_SHORT_VALUES = new Set(['R', 'b', 'F', 't', 'A']);
 
 
-function mergeGate(args, cwd, deps) {
+function mergeArgs(args) {
   const flags = [];
   let selector = null;
   let repo = null;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (MERGE_VALUE_OPTS.has(a)) { if (a === '-R' || a === '--repo') repo = args[i + 1]; i++; continue; }
+    if (MERGE_VALUE_OPTS.has(a)) { if (a === '--repo') repo = args[i + 1]; i++; continue; }
     if (a.startsWith('--repo=')) { repo = a.slice(7); continue; }
-    if (/^-R./.test(a)) { repo = a.slice(2); continue; }
+    if (/^-[^-]/.test(a)) {
+      const valued = [...a.slice(1)].findIndex(ch => MERGE_SHORT_VALUES.has(ch)) + 1;
+      flags.push(...[...a.slice(1, valued || a.length)].map(ch => `-${ch}`));
+      if (!valued) continue;
+      const value = valued + 1 < a.length ? a.slice(valued + 1).replace(/^=/, '') : args[++i];
+      if (a[valued] === 'R') repo = value;
+      continue;
+    }
     if (a.startsWith('-')) flags.push(a); else selector ??= a;
   }
+  return { flags, selector, repo };
+}
+
+function envRepo(env, host) {
+  const named = vars => Object.entries(vars ?? {}).find(([k]) => (host.platform === 'win32' ? k.toUpperCase() : k) === 'GH_REPO');
+  return (named(env) ?? named(host.env))?.[1] || null;
+}
+
+function mergeGate(args, cwd, deps, env) {
+  const { flags, selector, repo: flagRepo } = mergeArgs(args);
   if (flags.includes('--auto')) return 'Auto-merge is blocked: it would merge later without the verdict check. Wait for CI and the verdict, then gh pr merge <n> --squash --delete-branch.';
   if (flags.includes('--admin')) return '--admin bypasses the repo rules. Merge normally once CI and the verdict are in.';
   if (!flags.some(f => f === '--squash' || f === '-s')) return 'Squash merge only: gh pr merge <n> --squash --delete-branch.';
-  if (repo && /[$%]/.test(repo)) return `The guard cannot see what ${repo} holds, so it cannot read the verdict from that repository. Write the repository out: gh pr merge <n> -R owner/repo --squash --delete-branch.`;
+  const repo = flagRepo || envRepo(env, deps.host);
+  if (repo && /[$%`()]/.test(repo)) return `The guard cannot see what ${flagRepo ? repo : `GH_REPO=${repo}`} holds, so it cannot read the verdict from that repository. Write the repository out: gh pr merge <n> -R owner/repo --squash --delete-branch.`;
 
   const target = [...(selector ? [selector] : []), ...(repo ? ['-R', repo] : [])];
   let pr;
