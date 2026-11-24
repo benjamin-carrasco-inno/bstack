@@ -252,7 +252,18 @@ test('a short-flag cluster that ends in R names the merge repo', () => {
   assert.match(mergeReads(shell('gh pr merge 7 -sdR $R')).reason ?? '', /write the repository out/i);
 });
 
-test('GH_REPO from the line or the hook environment names the merge repo, and -R wins', () => {
+test('a squash flag with a false value is not a squash merge', () => {
+  for (const command of ['gh pr merge 7 -s=false --merge -R o/r', 'gh pr merge 7 -s=0 --rebase -R o/r', 'gh pr merge 7 -ds=false --merge -R o/r', 'gh pr merge 7 --squash=false --merge -R o/r', 'gh pr merge 7 -s -s=false --merge -R o/r']) {
+    assert.match(mergeReads(shell(command)).reason ?? '', /Squash merge only/, command);
+  }
+  for (const command of ['gh pr merge 7 -s -R o/r', 'gh pr merge 7 -s=true -R o/r', 'gh pr merge 7 -ds=T -R o/r', 'gh pr merge 7 --squash=1 -R o/r', 'gh pr merge 7 --squash=false -s -R o/r']) {
+    const { reason, views } = mergeReads(shell(command));
+    assert.equal(reason, null, command);
+    assert.deepEqual(views, ['pr view 7 -R o/r --json number,url,headRefOid,state,statusCheckRollup,comments'], command);
+  }
+});
+
+test('GH_REPO from a prefix on the merge command or the hook environment names the merge repo, and -R wins', () => {
   const readsFrom = (input, repo, host) => {
     const { reason, views } = mergeReads(input, host);
     assert.equal(reason, null, JSON.stringify(input.tool_input));
@@ -260,14 +271,30 @@ test('GH_REPO from the line or the hook environment names the merge repo, and -R
   };
   readsFrom(shell('GH_REPO=o/r gh pr merge 7 --squash'), 'o/r');
   readsFrom(shell('env GH_REPO=o/r gh pr merge 7 --squash'), 'o/r');
-  readsFrom(shell('export GH_REPO=o/r; gh pr merge 7 --squash'), 'o/r');
-  readsFrom(ps("$env:GH_REPO='o/r'; gh pr merge 7 --squash"), 'o/r');
   readsFrom(shell('gh pr merge 7 --squash'), 'o/r', linuxHost({ GH_REPO: 'o/r' }));
+  readsFrom(ps('gh pr merge 7 --squash'), 'o/r', { ...GIT_BASH_HOST, env: { Gh_Repo: 'o/r' } });
   readsFrom(shell('GH_REPO=o/r gh pr merge 7 --squash'), 'o/r', linuxHost({ GH_REPO: 'x/y' }));
   readsFrom(shell('GH_REPO=x/y gh pr merge 7 -R o/r --squash'), 'o/r');
   readsFrom(shell('gh pr merge 7 --squash -dR o/r'), 'o/r', linuxHost({ GH_REPO: 'x/y' }));
-  const { views } = mergeReads(shell('export GH_REPO=; gh pr merge 7 --squash'), linuxHost({ GH_REPO: 'x/y' }));
+  readsFrom(shell('export GH_REPO=x/y; gh pr merge 7 --squash -R o/r'), 'o/r');
+  readsFrom(ps("$env:GH_REPO='x/y'; gh pr merge 7 --squash -R o/r"), 'o/r');
+  const { views } = mergeReads(shell('GH_REPO= gh pr merge 7 --squash'), linuxHost({ GH_REPO: 'x/y' }));
   assert.deepEqual(views, ['pr view 7 --json number,url,headRefOid,state,statusCheckRollup,comments']);
+});
+
+test('GH_REPO named anywhere else on the line refuses a merge without -R', () => {
+  const refused = (input, host) => assert.match(mergeReads(input, host).reason ?? '', /GH_REPO outside.*-R owner\/repo/s, JSON.stringify(input.tool_input));
+  refused(shell('export GH_REPO=o/r; gh pr merge 7 --squash'));
+  refused(ps("$env:GH_REPO='o/r'; gh pr merge 7 --squash"));
+  refused(ps("$env:gh_repo='o/r'; gh pr merge 7 --squash"));
+  refused(shell('GH_REPO=o/good; gh pr merge 7 --squash'));
+  refused(shell('export GH_REPO=o/good; unset GH_REPO; gh pr merge 7 --squash'));
+  refused(shell('unset GH_REPO; gh pr merge 7 --squash'), linuxHost({ GH_REPO: 'o/good' }));
+  refused(shell('(export GH_REPO=o/good); gh pr merge 7 --squash'));
+  refused(ps("$env:GH_REPO='o/good'; Remove-Item Env:GH_REPO; gh pr merge 7 --squash"));
+  refused(shell('export GH_REPO=; gh pr merge 7 --squash'), linuxHost({ GH_REPO: 'x/y' }));
+  refused(shell('export GH_RE\\PO=o/good; gh pr merge 7 --squash'));
+  refused(shell('GH_REPO=o/good sudo gh pr merge 7 --squash'));
 });
 
 test('a GH_REPO the guard cannot resolve refuses the merge', () => {
