@@ -94,8 +94,9 @@ test('a fenced block that is not executed, or executes nothing weakened, keeps i
   assert.equal(tier(file('docs/x.md', { add: ['```bash', 'npm test || true', '```'] })), 0);
 });
 
-test('a commands directory outside .claude and plugins is docs', () => {
-  assert.equal(tier(file('docs/commands/usage.md', { add: ['Run the tests, never with `|| true`.'] })), 0);
+test('a commands directory at the root of a single-plugin repo is executed, not docs', () => {
+  assert.equal(tier(file('commands/check.md', { add: ['!`npm test || true`'] })), 2);
+  assert.equal(tier(file('commands/check.md', { add: ['Run the tests.'] })), 1);
 });
 
 test('a command file is not docs', () => {
