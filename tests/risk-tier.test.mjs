@@ -83,6 +83,21 @@ test('an allowed failure in an executed line of a markdown file is tier 2', () =
   assert.equal(tier(file('plugins/bstack/agents/x.md', { add: ['!`echo ok` then flag a new `|| true`.'] })), 1);
 });
 
+test('an allowed failure in a fenced block that Claude Code executes is tier 2', () => {
+  assert.equal(tier(file('plugins/bstack/skills/x/SKILL.md', { add: ['```!', 'npm test || true', '```'] })), 2);
+  assert.equal(tier(file('docs/x.md', { add: ['```!', 'node --test || true', '```'] })), 2);
+  assert.equal(tier(file('docs/x.md', { add: ['```! npm test || true```'] })), 2);
+});
+
+test('a fenced block that is not executed, or executes nothing weakened, keeps its tier', () => {
+  assert.equal(tier(file('plugins/bstack/skills/x/SKILL.md', { add: ['```!', 'npm test', '```'] })), 1);
+  assert.equal(tier(file('docs/x.md', { add: ['```bash', 'npm test || true', '```'] })), 0);
+});
+
+test('a commands directory outside .claude and plugins is docs', () => {
+  assert.equal(tier(file('docs/commands/usage.md', { add: ['Run the tests, never with `|| true`.'] })), 0);
+});
+
 test('a command file is not docs', () => {
   assert.equal(tier(file('.claude/commands/x.md', { add: ['Run the tests.'] })), 1);
   assert.equal(tier(file('plugins/x/commands/x.md', { add: ['Run the tests.'] })), 1);
