@@ -127,6 +127,8 @@ test('a refspec the guard cannot resolve counts as the current branch', () => {
   blocked(ps('git -C (Get-Location) push origin $b'), onMain);
   blocked(ps('git -C (Get-Location) push origin $b'), onFeature);
   allowed(shell('git push origin feat/y'), onMain);
+  allowed(shell('git push origin $b:feat/y'), onMain);
+  blocked(shell('git push origin feat/y:$b'), onMain);
   blocked(shell('git push origin HEAD'), onMain);
 });
 
