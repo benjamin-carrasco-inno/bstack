@@ -141,6 +141,22 @@ test('a $( ) or bash backtick substitution inside double quotes adds its command
   assert.deepEqual(psCalls('Write-Output "$(Write-Output "$(git push origin main)")"'), ['push origin main']);
 });
 
+test('a backslash escapes nothing in a PowerShell double-quoted string, so a following $( ) is still run', () => {
+  const psCalls = line => commandsIn(line, 0, 'powershell').filter(c => c.cmd === 'git').map(c => c.args.join(' '));
+  assert.deepEqual(psCalls('Write-Output "C:\\$(git push origin main)"'), ['push origin main']);
+  assert.deepEqual(psCalls('Write-Output "$env:TEMP\\$(git push origin main)"'), ['push origin main']);
+  assert.deepEqual(psCalls('Write-Output "\\$(git push origin main)"'), ['push origin main']);
+  assert.deepEqual(gitCalls('echo "\\$(git push origin main)"'), []);
+});
+
+test('a long run of unclosed quoted $( parses in linear time', () => {
+  const line = 'echo ' + '"$('.repeat(40) + 'x';
+  const started = performance.now();
+  splitSegments(line);
+  splitSegments(line, 'powershell');
+  assert.ok(performance.now() - started < 500, `took ${Math.round(performance.now() - started)} ms`);
+});
+
 test('single quotes, an escaped $( and a PowerShell backtick keep a quoted substitution literal', () => {
   const psCalls = line => commandsIn(line, 0, 'powershell').filter(c => c.cmd === 'git');
   assert.deepEqual(gitCalls("echo '$(git push origin main)'"), []);

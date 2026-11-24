@@ -124,6 +124,9 @@ test('commands inside a double-quoted $( ) or bash backtick substitution are che
   blocked(shell(`cat "$(gh pr comment 5 --body '<!-- bstack-verdict v1 -->')"`));
   blocked(ps('Write-Output "$(git push origin main)"'));
   blocked(ps('Write-Output "$(git commit --no-verify -m x)"'));
+  blocked(ps('Write-Output "C:\\$(git push origin main)"'));
+  blocked(ps('Write-Output "$env:TEMP\\$(git push origin main)"'));
+  blocked(ps('Write-Output "\\$(git push origin main)"'));
   allowed(shell("echo '$(git push origin main)'"));
   allowed(shell('echo "\\$(git push origin main)"'));
   allowed(ps("Write-Output '$(git push origin main)'"));
