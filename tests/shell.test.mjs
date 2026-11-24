@@ -129,6 +129,29 @@ test('a $( ), backtick or argument ( ) substitution adds its commands and stays 
   assert.deepEqual(gitCalls('f() { git push origin main; }'), ['push origin main']);
 });
 
+test('a $( ) or bash backtick substitution inside double quotes adds its commands, nested to any depth', () => {
+  const psCalls = line => commandsIn(line, 0, 'powershell').filter(c => c.cmd === 'git').map(c => c.args.join(' '));
+  assert.deepEqual(gitCalls('echo "$(git push origin main)"'), ['push origin main']);
+  assert.deepEqual(gitCalls('echo "a `git push origin main` b"'), ['push origin main']);
+  assert.deepEqual(gitCalls('git commit -m "$(git log -1)"'), ['log -1', 'commit -m $(git log -1)']);
+  assert.deepEqual(gitCalls('echo "$(echo ")"; git push origin main)"'), ['push origin main']);
+  assert.deepEqual(gitCalls('echo "$(echo "$(echo ")"; git push origin main)")"'), ['push origin main']);
+  assert.deepEqual(gitCalls('echo "$(echo "`git push origin main`")"'), ['push origin main']);
+  assert.deepEqual(psCalls('Write-Output "$(git push origin main)"'), ['push origin main']);
+  assert.deepEqual(psCalls('Write-Output "$(Write-Output "$(git push origin main)")"'), ['push origin main']);
+});
+
+test('single quotes, an escaped $( and a PowerShell backtick keep a quoted substitution literal', () => {
+  const psCalls = line => commandsIn(line, 0, 'powershell').filter(c => c.cmd === 'git');
+  assert.deepEqual(gitCalls("echo '$(git push origin main)'"), []);
+  assert.deepEqual(gitCalls("echo '`git push origin main`'"), []);
+  assert.deepEqual(gitCalls('echo "\\$(git push origin main)"'), []);
+  assert.deepEqual(gitCalls('echo "\\`git push origin main\\`"'), []);
+  assert.deepEqual(psCalls("Write-Output '$(git push origin main)'"), []);
+  assert.deepEqual(psCalls('Write-Output "`git push origin main`"'), []);
+  assert.deepEqual(psCalls('Write-Output "`$(git push origin main)"'), []);
+});
+
 test('git global options are skipped', () => {
   assert.deepEqual(parseGit(['-C', 'x', '-c', 'a=b', 'push', 'origin', 'main']), { dir: 'x', gitDir: null, workTree: null, dirKnown: true, dirExpression: false, aliases: false, config: ['a'], sub: 'push', rest: ['origin', 'main'] });
   assert.deepEqual(parseGit(['-C', 'x', '-C', '..', '-C', '/abs', '-C', 'y', '-c', 'alias.z=reset', 'z']), { dir: '/abs/y', gitDir: null, workTree: null, dirKnown: true, dirExpression: false, aliases: true, config: ['alias.z'], sub: 'z', rest: [] });
