@@ -30,7 +30,7 @@ export function decide(input, deps) {
   const line = String(input.tool_input?.command ?? '');
   const dialect = tool === 'PowerShell' ? 'powershell' : 'posix';
   const host = withPaths(deps.host ?? REAL_HOST);
-  const hostDeps = { ...deps, host };
+  const hostDeps = { ...deps, host: { ...host, tempNames: plainTempNames(line) } };
   const root = host.paths.resolvePath(cwd);
   const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
   const looped = loopBodies(line).some(body => commandsIn(body, 0, dialect).some(createsCommit));
@@ -38,7 +38,7 @@ export function decide(input, deps) {
     const reason = markerRule(c, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps) : null);
     if (reason) return reason;
   }
-  return agentWritesRule(line, dialect, cwd, agent, root, { ...host, tempNames: plainTempNames(line) });
+  return agentWritesRule(line, dialect, cwd, agent, root, hostDeps.host);
 }
 
 const REAL_HOST = { platform: process.platform, env: process.env, tmpdir: () => os.tmpdir() };
@@ -154,7 +154,7 @@ function markerRule(c, deps) {
   }
   if (!READ_ONLY.has(c.cmd) && pathArgs(c).some(a => PENDING_PATH.test(a))) return SAVED_VERDICTS;
   if (c.cmd === 'gh') {
-    const host = { ...deps.host, tempNames: plainTempNames(c.text) };
+    const { host } = deps;
     for (const file of bodyFiles(c.args)) {
       const { word, dialect } = inTempDir(file, c.dialect, host);
       const target = resolvedDir(word, c.cwdKnown ? c.cwd : UNKNOWN_DIR, dialect, host.paths);
