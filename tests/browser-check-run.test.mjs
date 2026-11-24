@@ -1,9 +1,11 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import http from 'node:http';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,13 +54,42 @@ const routes = {
   '/delay': (req, res) => setTimeout(() => html(fixture('defects.html'))(req, res), Number(new URL(req.url, 'http://x').searchParams.get('ms'))),
   '/hanging-image': html('<!doctype html><html lang="en"><title>Hanging image</title><img src="/never" alt=""></html>'),
   '/never': () => server.emit('never-requested'),
+  '/settings': (_, res) => res.writeHead(302, { location: '/login' }).end(),
+  '/login': html(fixture('clean.html')),
 };
-const server = http.createServer((req, res) => (routes[new URL(req.url, 'http://x').pathname] ?? ((_, r) => r.writeHead(404).end('not found')))(req, res));
+const route = (req, res) => (routes[new URL(req.url, 'http://x').pathname] ?? ((_, r) => r.writeHead(404).end('not found')))(req, res);
+const server = http.createServer(route);
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
+
+const der = (tag, ...parts) => {
+  const body = Buffer.concat(parts);
+  const length = body.length < 0x80 ? [body.length] : body.length < 0x100 ? [0x81, body.length] : [0x82, body.length >> 8, body.length & 0xff];
+  return Buffer.concat([Buffer.from([tag, ...length]), body]);
+};
+const sequence = (...parts) => der(0x30, ...parts);
+function selfSignedCertificate() {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const ecdsaWithSha256 = sequence(Buffer.from('06082a8648ce3d040302', 'hex'));
+  const commonName = sequence(der(0x31, sequence(Buffer.from('0603550403', 'hex'), der(0x0c, Buffer.from('127.0.0.1')))));
+  const utcTime = date => der(0x17, Buffer.from(`${date.toISOString().replace(/[-:T]/g, '').slice(2, 14)}Z`));
+  const day = 86400000;
+  const validity = sequence(utcTime(new Date(Date.now() - day)), utcTime(new Date(Date.now() + day)));
+  const serialOne = Buffer.from('020101', 'hex');
+  const tbs = sequence(serialOne, ecdsaWithSha256, commonName, validity, commonName, publicKey.export({ type: 'spki', format: 'der' }));
+  const signature = der(0x03, Buffer.from([0]), crypto.sign('sha256', tbs, privateKey));
+  const cert = sequence(tbs, ecdsaWithSha256, signature).toString('base64').match(/.{1,64}/g).join('\n');
+  return { cert: `-----BEGIN CERTIFICATE-----\n${cert}\n-----END CERTIFICATE-----\n`, key: privateKey.export({ type: 'pkcs8', format: 'pem' }) };
+}
+const secureServer = https.createServer(selfSignedCertificate(), route);
+await new Promise(resolve => secureServer.listen(0, '127.0.0.1', resolve));
+const secureOrigin = `https://127.0.0.1:${secureServer.address().port}`;
+
 after(() => {
-  server.closeAllConnections();
-  server.close();
+  for (const s of [server, secureServer]) {
+    s.closeAllConnections();
+    s.close();
+  }
 });
 
 const GIVE_UP_MS = 60000;
@@ -109,6 +140,20 @@ test('browser check runner exits 2 when a page does not load', { skip: noBrowser
   const run = await runAsync([origin, '/clean', '/missing']);
   assert.equal(run.status, 2);
   assert.match(run.stderr, /pages did not load: \/missing \(404\)/);
+});
+
+test('browser check runner exits 2 and names where it landed when the start page or another page redirects to login', { skip: noBrowser }, async () => {
+  for (const args of [['/settings'], ['/clean', '/settings']]) {
+    const run = await runAsync([origin, ...args]);
+    assert.equal(run.status, 2, `${args.join(' ')}: ${run.stdout}`);
+    assert.match(run.stderr, /\/settings redirected to \/login; .*no session/, args.join(' '));
+  }
+});
+
+test('browser check runner checks a local HTTPS origin with a self-signed certificate', { skip: noBrowser }, async () => {
+  const run = await runAsync([secureOrigin, '/clean']);
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { findings: [], breakpoints: [] });
 });
 
 test('browser check runner waits for a start page that answers after 1000 ms', { skip: noBrowser }, async () => {
