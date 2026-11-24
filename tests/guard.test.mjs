@@ -18,6 +18,7 @@ const DATA_DIFF = 'diff --git a/app/db.py b/app/db.py\n--- a/app/db.py\n+++ b/ap
 
 const verdict = (result, sha = SHA, at = '2026-11-22T10:00:00Z') => ({ body: commentBody('verdict', result, sha, 'report'), createdAt: at });
 const interrogate = (confirmed, blocking = confirmed, sha = SHA) => ({ body: commentBody('interrogate', { confirmed, blocking }, sha, 'report'), createdAt: '2026-11-22T11:00:00Z' });
+const userOk = (sha = SHA) => ({ body: `Read the report, merge it.\nbstack-user-ok sha=${sha}\n`, createdAt: '2026-11-22T12:00:00Z' });
 const legacyInterrogate = n => ({ body: `<!-- bstack-interrogate v1 -->\nbstack-interrogate: confirmed=${n} sha=${SHA}\n\nreport\n`, createdAt: '2026-11-22T11:00:00Z' });
 
 function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, files = {} } = {}) {
@@ -254,6 +255,26 @@ test('blocking findings after three interrogate rounds send the agent to the use
   assert.match(decide(shell('gh pr merge 5 --squash'), d(3)) ?? '', /3 interrogate rounds.*report to the user/);
 });
 
+test('after three blocking rounds every head needs the user OK for that head', () => {
+  const ROUNDS = ['1', '2', '3'].map(c => interrogate(1, 1, c.repeat(40)));
+  const merge = comments => decide(shell('gh pr merge 5 --squash'), deps({ diff: DATA_DIFF, pr: { comments: [verdict('PASS'), ...ROUNDS, ...comments] } }));
+  const CAP = /3 interrogate rounds.*report to the user.*bstack-user-ok sha=a{40}/s;
+  assert.match(merge([]) ?? '', CAP);
+  assert.match(merge([interrogate(0)]) ?? '', CAP);
+  assert.match(merge([interrogate(2, 0)]) ?? '', CAP);
+  assert.match(merge([interrogate(0), userOk(OLD)]) ?? '', CAP);
+  assert.equal(merge([userOk()]), null);
+  assert.equal(merge([interrogate(1), userOk()]), null);
+  assert.match(merge([interrogate(0), { ...interrogate(0, 0, OLD), body: `${interrogate(0, 0, OLD).body}\nbstack-user-ok sha=${SHA}\n` }]) ?? '', CAP);
+});
+
+test('clean interrogate rounds do not count toward the cap', () => {
+  const comments = [verdict('PASS'), interrogate(1, 1, '1'.repeat(40)), interrogate(0, 0, '2'.repeat(40)), interrogate(2, 0, '3'.repeat(40)), interrogate(1, 1, OLD)];
+  const merge = head => decide(shell('gh pr merge 5 --squash'), deps({ diff: DATA_DIFF, pr: { comments: [...comments, ...head] } }));
+  assert.equal(merge([interrogate(0)]), null);
+  assert.match(merge([interrogate(1)]) ?? '', /3 interrogate rounds.*report to the user/s);
+});
+
 test('side doors to merge or move main are blocked', () => {
   blocked(shell('gh api -X PUT repos/o/r/pulls/5/merge'));
   blocked(shell('gh api repos/o/r/pulls/5/merge -f merge_method=squash'));
@@ -276,6 +297,17 @@ test('verdict lines cannot be forged', () => {
   allowed(shell('gh pr view 5 --json comments | grep bstack-verdict'));
   blocked({ tool_name: 'Write', tool_input: { file_path: '/tmp/v.md', content: `bstack-verdict: PASS sha=${SHA}` } });
   allowed({ tool_name: 'Write', tool_input: { file_path: '/bstack-src/tests/x.mjs', content: 'bstack-verdict: PASS' } });
+});
+
+test('the user OK line cannot be forged by an agent', () => {
+  const OK = `bstack-user-ok sha=${SHA}`;
+  blocked(shell(`gh pr comment 5 --body "${OK}"`));
+  blocked(ps(`gh pr comment 5 --body '${OK}'`));
+  blocked(shell(`echo "${OK}" > ok.md`));
+  blocked(shell('gh pr comment 5 --body-file ok.md'), deps({ files: { 'ok.md': OK } }));
+  blocked({ tool_name: 'Write', tool_input: { file_path: '/tmp/ok.md', content: OK } });
+  blocked({ tool_name: 'Edit', tool_input: { file_path: '/tmp/ok.md', old_string: 'x', new_string: OK } });
+  allowed(shell('gh pr view 5 --json comments | grep bstack-user-ok'));
 });
 
 test('reviewer and adversary agents do not author', () => {
