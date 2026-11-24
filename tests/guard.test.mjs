@@ -96,6 +96,24 @@ test('git and gh inside blocks are checked', () => {
   allowed(shell('git rev-parse @{u} && git log HEAD@{1}'));
 });
 
+test('commands inside $( ), backticks and PowerShell ( ) arguments are checked, and the outer command is still read', () => {
+  blocked(shell('echo $(git push origin main)'));
+  blocked(shell('echo `git push origin main`'));
+  blocked(shell('echo $(git commit --no-verify -m x)'));
+  blocked(ps('echo $(git push origin main)'));
+  blocked(ps('Write-Output (git push origin main)'));
+  blocked(ps('git -C (Get-Location) push origin main'));
+  blocked(ps('git -C (Join-Path C:/repo sub) push origin main'));
+  blocked(ps('git -C (Get-Location) commit --no-verify -m x'));
+  blocked(ps('git push origin (git push origin main)'));
+  allowed(ps('git push origin (git branch --show-current)'));
+  allowed(shell('git log -1 $(git rev-parse HEAD)'));
+  for (const agent of ['bstack:reviewer', 'bstack:adversary']) {
+    blocked({ ...shell('echo $(git push origin feat/x)'), agent_type: agent });
+    blocked({ ...ps('Write-Output (git commit -m x)'), agent_type: agent });
+  }
+});
+
 test('force-push needs --force-with-lease', () => {
   blocked(shell('git push --force origin feat/x'));
   blocked(shell('git push -f origin feat/x'));
@@ -1463,6 +1481,60 @@ test('comment ratchet: merge, cherry-pick, revert and rebase --continue are chec
   assert.throws(() => execFileSync('git', ['-C', repo.dir, 'revert', '--no-edit', target], { stdio: 'ignore' }));
   repo.write('c.py', '# note\nc = 0\n');
   assert.match(repo.run('git add c.py && git revert --continue') ?? '', /c\.py: baseline 0, this commit 1/);
+});
+
+test('comment ratchet: git am --continue is checked like git commit, and git am applying patches fails closed', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  repo.write('app.py', `${ONE}x = 1\n`);
+  assert.equal(repo.run('git add app.py && git am --continue'), null);
+  repo.write('app.py', TWO);
+  for (const line of ['git add app.py && git am --continue', 'git add app.py && git am --resolved']) {
+    assert.match(repo.run(line) ?? '', /app\.py: baseline 1, this commit 2/, line);
+  }
+  for (const line of ['git am 0001-x.patch', 'git am -3 < mbox', 'git am --skip']) {
+    assert.match(repo.run(line) ?? '', /cannot see what git am commits/, line);
+  }
+  assert.equal(repo.run('git am --abort'), null);
+  assert.equal(repo.run('git am --show-current-patch'), null);
+  const plain = fixture({ 'app.py': ONE });
+  assert.equal(plain.run('git am 0001-x.patch'), null, 'a repo without a baseline is not affected');
+});
+
+test('comment ratchet: core.worktree, GIT_COMMON_DIR and GIT_CONFIG_* are refused like GIT_INDEX_FILE', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  const lines = [
+    ['git -c core.worktree=/elsewhere commit -m x', 'Bash'],
+    ['git -c Core.WorkTree=/elsewhere commit -m x', 'Bash'],
+    ['git --config-env=core.worktree=WT commit -m x', 'Bash'],
+    ['GIT_COMMON_DIR=/elsewhere/.git git commit -m x', 'Bash'],
+    ['export GIT_COMMON_DIR=/elsewhere/.git; git commit -m x', 'Bash'],
+    ["GIT_CONFIG_PARAMETERS=\"'core.worktree'='/elsewhere'\" git commit -m x", 'Bash'],
+    ['GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.worktree GIT_CONFIG_VALUE_0=/elsewhere git commit -m x', 'Bash'],
+    ["$env:GIT_COMMON_DIR = 'C:/elsewhere/.git'; git commit -m x", 'PowerShell'],
+    ['git -c core.worktree=/elsewhere am --continue', 'Bash'],
+  ];
+  for (const [line, tool] of lines) assert.match(repo.run(line, tool) ?? '', /which repository/, line);
+  assert.equal(repo.run('git -c user.name=x commit -m x'), null);
+});
+
+test('comment ratchet: a commit inside a loop body is refused, a loop before or a word in a message is not', () => {
+  const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
+  const refused = [
+    ['while true; do git commit -m x; done', 'Bash'],
+    ['until false; do git commit -m x; echo "# n" >> app.py; git add app.py; done', 'Bash'],
+    ['for f in a b; do\n  git commit -m x\ndone', 'Bash'],
+    ['bash -c "while true; do git commit -m x; done"', 'Bash'],
+    ['while ($true) { git commit -m x }', 'PowerShell'],
+    ['do { git commit -m x } while ($true)', 'PowerShell'],
+    ["foreach ($f in @('a')) { git commit -m x }", 'PowerShell'],
+    ['1..2 | ForEach-Object { git commit -m x }', 'PowerShell'],
+    ['for ($i = 0; $i -lt 2; $i++) { git am --continue }', 'PowerShell'],
+  ];
+  for (const [line, tool] of refused) assert.match(repo.run(line, tool) ?? '', /in its own call/, line);
+  assert.equal(repo.run('git commit -m "fix: do not loop when done"'), null);
+  assert.equal(repo.run("git commit -m 'while ($x) { done }'", 'PowerShell'), null);
+  const plain = fixture({ 'app.py': ONE });
+  assert.equal(plain.run('while true; do git commit -m x; done'), null, 'a repo without a baseline is not affected');
 });
 
 test('comment ratchet: interactive adds are not replayed, so no editor runs inside the guard', () => {

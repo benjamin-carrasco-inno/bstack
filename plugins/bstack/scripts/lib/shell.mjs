@@ -26,8 +26,41 @@ function opensGroup(textBefore) {
   return !GLUED_TO_WORD.test(textBefore) || POWERSHELL_OPERATOR.test(textBefore);
 }
 
-// Cut a line into segments at ; && || | & newlines and ( ) { } groups, outside quotes.
-export function splitSegments(line) {
+function isArgument(textBefore) {
+  const first = words(textBefore)[0]?.text;
+  return first !== undefined && !PREFIXES.has(first.toLowerCase());
+}
+
+function closingParen(line, open) {
+  let depth = 0;
+  let quote = null;
+  for (let i = open; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else if (ch === '\\' && quote === '"') i++;
+      continue;
+    }
+    const here = hereString(line, i);
+    if (here) { i = here.end - 1; continue; }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '`' && (line[i + 1] === '`' || BRACKETS.has(line[i + 1]))) i++;
+    else if (ch === '(') depth++;
+    else if (ch === ')' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+function closingBacktick(line, open) {
+  for (let i = open + 1; i < line.length; i++) {
+    if (line[i] === '\\') i++;
+    else if (line[i] === '`') return i;
+  }
+  return -1;
+}
+
+// Cut a line into segments at ; && || | & newlines and ( ) { } groups, outside quotes; a substitution's commands come first.
+export function splitSegments(line, dialect = 'posix') {
   const segments = [];
   let cur = '';
   let quote = null;
@@ -44,6 +77,14 @@ export function splitSegments(line) {
     if (here) { cur += line.slice(i, here.end); i = here.end - 1; continue; }
     if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
     if (ch === '`' && (line[i + 1] === '`' || BRACKETS.has(line[i + 1]))) { cur += ch + line[++i]; continue; }
+    const close = ch === '(' && (!opensGroup(cur) || isArgument(cur)) ? closingParen(line, i)
+      : ch === '`' && dialect === 'posix' ? closingBacktick(line, i) : -1;
+    if (close > 0) {
+      segments.push(...splitSegments(line.slice(i + 1, close), dialect));
+      cur += line.slice(i, close + 1);
+      i = close;
+      continue;
+    }
     if (ch in CLOSER) {
       const splits = opensGroup(cur);
       groups.push({ closer: CLOSER[ch], splits });
@@ -76,7 +117,8 @@ export function words(segment) {
   let quote = null;
   let started = false;
   let expression = false;
-  const end = () => { out.push({ text: cur, expression }); cur = ''; started = false; expression = false; };
+  let depth = 0;
+  const end = () => { out.push({ text: cur, expression }); cur = ''; started = false; expression = false; depth = 0; };
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i];
     if (quote) {
@@ -88,8 +130,9 @@ export function words(segment) {
     const here = hereString(segment, i);
     if (here) { cur += here.body; started = true; i = here.end - 1; continue; }
     if (ch === '"' || ch === "'") { quote = ch; started = true; continue; }
-    if (/\s/.test(ch)) { if (started) end(); continue; }
-    if (ch === '(') expression = true;
+    if (/\s/.test(ch) && depth === 0) { if (started) end(); continue; }
+    if (ch === '(') { expression = true; depth++; }
+    if (ch === ')' && depth > 0) depth--;
     cur += ch;
     started = true;
   }
@@ -193,7 +236,7 @@ export const UNRESOLVED = /[$%`]/;
 // Every simple command in a line, including commands nested in bash -c, pwsh -Command and cmd /c.
 export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shellCount = { n: 0 }) {
   const out = [];
-  for (const segment of splitSegments(line)) {
+  for (const segment of splitSegments(line, dialect)) {
     let parsed = words(segment);
     const env = {};
     while (parsed.length && (PREFIXES.has(parsed[0].text.toLowerCase()) || ASSIGNMENT.test(parsed[0].text))) {
@@ -229,6 +272,7 @@ const NO_EXPRESSIONS = new Set();
 // git global options come before the subcommand: git -C dir --git-dir=x -c k=v push ... Each -C is relative to the one before; an empty one is ignored.
 export function parseGit(args, expressions = NO_EXPRESSIONS) {
   const found = { dir: null, gitDir: null, workTree: null };
+  const config = [];
   let aliases = false;
   let dirExpression = false;
   let i = 0;
@@ -248,10 +292,40 @@ export function parseGit(args, expressions = NO_EXPRESSIONS) {
     const key = GIT_PATH_OPTS[eq > 0 ? a.slice(0, eq) : a];
     if (key && eq > 0) { found[key] = a.slice(eq + 1); i += 1; continue; }
     if (key) { found[key] = value ?? null; i += 2; continue; }
-    if (a === '-c' || a === '--config-env') { aliases ||= ALIAS_KEY.test(value ?? ''); i += 2; continue; }
-    if (a.startsWith('--config-env=')) aliases ||= ALIAS_KEY.test(a.slice(13));
+    if (a === '-c' || a === '--config-env') { aliases ||= ALIAS_KEY.test(value ?? ''); config.push(configKey(value)); i += 2; continue; }
+    if (a.startsWith('--config-env=')) { aliases ||= ALIAS_KEY.test(a.slice(13)); config.push(configKey(a.slice(13))); }
     if (a === '--namespace') { i += 2; continue; }
     i += 1;
   }
-  return { ...found, dirKnown: found.dir === null || (!dirExpression && !UNRESOLVED.test(found.dir)), dirExpression, aliases, sub: args[i] ?? '', rest: args.slice(i + 1) };
+  return { ...found, dirKnown: found.dir === null || (!dirExpression && !UNRESOLVED.test(found.dir)), dirExpression, aliases, config, sub: args[i] ?? '', rest: args.slice(i + 1) };
+}
+
+function configKey(setting = '') {
+  return setting.split('=')[0].toLowerCase();
+}
+
+const DO_DONE = /(?<![\w$.-])(do|done)(?![\w-])/g;
+const BRACED_LOOP = /(?<![\w$.-])(foreach-object|foreach|for|while|until|do|%)(?![\w-])/gi;
+
+export function loopBodies(text) {
+  const bodies = [];
+  const open = [];
+  for (const m of text.matchAll(DO_DONE)) {
+    if (m[1] === 'do') open.push(m.index + 2);
+    else if (open.length) bodies.push(text.slice(open.pop(), m.index));
+  }
+  for (const m of text.matchAll(BRACED_LOOP)) {
+    const start = text.indexOf('{', m.index);
+    if (start >= 0) bodies.push(text.slice(start + 1, closingBrace(text, start)));
+  }
+  return bodies;
+}
+
+function closingBrace(text, start) {
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}' && --depth === 0) return i;
+  }
+  return text.length;
 }

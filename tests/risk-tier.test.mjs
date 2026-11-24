@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { riskTier } from '../plugins/bstack/scripts/risk-tier.mjs';
+import { parseDiff, riskTier } from '../plugins/bstack/scripts/risk-tier.mjs';
 
 const file = (p, { add = [], del = [], created = false, deleted = false } = {}) =>
   [`diff --git a/${p} b/${p}`, created ? 'new file mode 100644' : '', deleted ? 'deleted file mode 100644' : '', `--- a/${p}`, `+++ b/${p}`,
@@ -186,6 +186,26 @@ test('a rename within test fixtures keeps the fixture exemptions', () => {
 
 test('a source file renamed into a test dir loses no suppression check', () => {
   assert.equal(tier(renamed('src/a.js', 'tests/fixtures/a.js', ['+// eslint-disable-next-line'], { headers: true })), 2);
+});
+
+const quoted = (a, b, lines) => [`diff --git ${a} ${b}`, `--- ${a}`, `+++ ${b}`, '@@ -1 +1,2 @@', ...lines].join('\n');
+
+test('a quoted path with a space is parsed with its real path', () => {
+  const [f] = parseDiff(quoted('"a/docs/my guide.md"', '"b/docs/my guide.md"', ['+words']));
+  assert.equal(f?.path, 'docs/my guide.md');
+  assert.equal(f.oldPath, null);
+  assert.equal(parseDiff('diff --git a/docs/my guide.md b/docs/my guide.md\n+words')[0]?.path, 'docs/my guide.md');
+});
+
+test('an octal-escaped non-ASCII path is decoded', () => {
+  const [f] = parseDiff(quoted('"a/docs/s\\303\\246t \\"x\\".md"', '"b/docs/s\\303\\246t \\"x\\".md"', ['+words']));
+  assert.equal(f?.path, 'docs/sæt "x".md');
+  const [r] = parseDiff(quoted('a/old.py', '"b/n\\303\\246w.py"', ['+x = 1']));
+  assert.deepEqual([r?.path, r?.oldPath], ['næw.py', 'old.py']);
+});
+
+test('risky code under a quoted path raises the tier', () => {
+  assert.equal(tier(quoted('"a/app/my db.py"', '"b/app/my db.py"', ['+conn.execute("DELETE FROM orders WHERE id = ?")'])), 2);
 });
 
 test('adding tests stays tier 1', () => {
