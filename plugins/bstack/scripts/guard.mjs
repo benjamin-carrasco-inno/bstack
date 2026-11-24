@@ -414,7 +414,7 @@ function gitRule(c, cwd, deps, line) {
   }
   const commits = commitKind(sub, rest);
   if (commits) return commentRatchet({ command: c, rest: commits === 'commit' ? rest : [], unseen: commits === 'patches', ...line }, deps);
-  if (sub === 'push') return pushRule(rest, repo, deps);
+  if (sub === 'push') return pushRule(rest, i => c.expressions?.has(c.args.length - rest.length + i), repo, deps);
   if (sub === 'rebase' && !rest.some(a => /^--(abort|continue|skip|quit|edit-todo|show-current-patch)$/.test(a))) return rebaseRule(repo, deps);
   if (sub === 'pull' && rest.some(a => a === '--rebase' || a === '-r' || a.startsWith('--rebase='))) return rebaseRule(repo, deps);
   return null;
@@ -423,13 +423,17 @@ function gitRule(c, cwd, deps, line) {
 const UNKNOWN_BRANCH = null;
 const PUSH_VALUE_OPTS = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec']);
 
-function pushRule(rest, repo, deps) {
+function pushRule(rest, isExpression, repo, deps) {
   const flags = [];
   const positional = [];
+  const unresolved = new Set();
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (PUSH_VALUE_OPTS.has(a)) { i++; continue; }
-    if (a.startsWith('-')) flags.push(a); else positional.push(a);
+    if (a.startsWith('-')) { flags.push(a); continue; }
+    const dst = a.split(':').pop();
+    if (UNRESOLVED.test(dst) || /[()]/.test(dst) || (isExpression(i) && !a.includes(':'))) unresolved.add(positional.length);
+    positional.push(a);
   }
   if (flags.some(f => f === '--all' || f === '--mirror' || f === '--branches')) {
     return 'Push one branch at a time (no --all/--mirror), so the default branch only changes through a merged PR.';
@@ -444,7 +448,8 @@ function pushRule(rest, repo, deps) {
     if (repo === UNKNOWN_DIR) return UNKNOWN_BRANCH;
     try { return deps.git(repo, ['rev-parse', '--abbrev-ref', 'HEAD']).trim(); } catch { return ''; }
   };
-  const targets = refspecs.length ? refspecs.map(r => {
+  const targets = refspecs.length ? refspecs.map((r, i) => {
+    if (unresolved.has(i + 1)) return current();
     let dst = r.includes(':') ? r.split(':').pop() : r;
     dst = dst.replace(/^\+/, '').replace(/^refs\/heads\//, '');
     return dst === 'HEAD' || dst === '' ? (r.startsWith(':') ? r.slice(1) : current()) : dst;
