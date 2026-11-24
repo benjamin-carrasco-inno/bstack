@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { INTERROGATE_ROUNDS, latestFor, shaOf } from './lib/verdicts.mjs';
+import { INTERROGATE_ROUNDS, blockingRounds, latestFor, shaOf } from './lib/verdicts.mjs';
 
 const sum = (rows, key) => rows.reduce((n, r) => n + r[key], 0);
 const round1 = n => Number(n.toFixed(1));
@@ -15,7 +15,7 @@ export function prRounds(comments) {
   const heads = new Set((comments ?? []).map(c => shaOf('interrogate', c.body)).filter(Boolean));
   if (!heads.size) return null;
   const results = [...heads].map(head => latestFor('interrogate', comments, head));
-  return { rounds: heads.size, confirmed: sum(results, 'confirmed'), blocking: sum(results, 'blocking') };
+  return { rounds: blockingRounds(comments), confirmed: sum(results, 'confirmed'), blocking: sum(results, 'blocking') };
 }
 
 export function summarize(rows) {
@@ -58,8 +58,10 @@ export function mergedPrs({ since, until, repo }) {
 function main() {
   const opts = options(process.argv.slice(2));
   const rows = mergedPrs(opts)
-    .map(pr => ({ number: pr.number, title: pr.title, ...prRounds(pr.comments) }))
-    .filter(r => r.rounds)
+    .flatMap(pr => {
+      const interrogated = prRounds(pr.comments);
+      return interrogated ? [{ number: pr.number, title: pr.title, ...interrogated }] : [];
+    })
     .sort((a, b) => a.number - b.number);
   console.log(`Merged ${opts.since}..${opts.until}${opts.repo ? ` in ${opts.repo}` : ''}`);
   console.log(report(rows));

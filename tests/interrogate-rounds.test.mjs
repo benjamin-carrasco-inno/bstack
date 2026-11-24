@@ -20,9 +20,9 @@ test('a PR without interrogate comments has no rounds', () => {
   assert.equal(prRounds(undefined), null);
 });
 
-test('rounds are distinct head SHAs; findings add up per round', () => {
+test('rounds are distinct blocking head SHAs; findings add up over every head', () => {
   const comments = [comment(sha('a'), 3, 1), chatter, comment(sha('b'), 2, 0)];
-  assert.deepEqual(prRounds(comments), { rounds: 2, confirmed: 5, blocking: 1 });
+  assert.deepEqual(prRounds(comments), { rounds: 1, confirmed: 5, blocking: 1 });
 });
 
 test('two comments for the same head count one round, the newest wins', () => {
@@ -47,6 +47,15 @@ test('summary: PRs, mean rounds, cap share, blocking per round', () => {
 test('the cap is the one the guard enforces', () => {
   assert.equal(INTERROGATE_ROUNDS, 3);
   assert.equal(summarize([{ number: 1, rounds: INTERROGATE_ROUNDS, confirmed: 0, blocking: 0 }]).capShare, 1);
+});
+
+test('only heads with blocking findings count toward the cap, as in the guard', () => {
+  const clean = prRounds([comment(sha('a'), 0, 0), comment(sha('b'), 2, 0), comment(sha('c'), 1, 0)]);
+  assert.deepEqual(clean, { rounds: 0, confirmed: 3, blocking: 0 });
+  assert.equal(summarize([{ number: 1, ...clean }]).capShare, 0);
+  const blocked = prRounds([comment(sha('a'), 1, 1), comment(sha('b'), 2, 1), comment(sha('c'), 1, 1)]);
+  assert.deepEqual(blocked, { rounds: INTERROGATE_ROUNDS, confirmed: 4, blocking: 3 });
+  assert.equal(summarize([{ number: 1, ...blocked }]).capShare, 1);
 });
 
 test('summary of nothing does not divide by zero', () => {
