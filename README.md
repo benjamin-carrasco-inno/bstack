@@ -29,6 +29,7 @@ Requirements: Node 18+ on `PATH` (the hooks are Node scripts), git, and the GitH
 | `bstack:triage` | Sorts incoming issues: checks the claim, finds duplicates and work already done, writes acceptance criteria, labels the state. |
 | `bstack:audit` | Review and clean up a whole repo: map, find, prove, present once, fix through small gated PRs. |
 | `bstack:verify` | Run the app safely on test data and prove behaviour on the real surface. |
+| `bstack:frontend` | UI rules for web apps: container-query-first layout, tokens with Automatic.css 4 names, component boundaries, basic accessibility. Ships a starter token sheet. |
 | `bstack:interrogate` | Adversarial review for risky changes; findings count only when reproduced. |
 | `bstack:comments` | Comment cleanup judged by a critic agent, not the author. See [Comments](#comments). |
 | `bstack:correct` | Turn repeated mistakes into checks (weekly or after a revert). |
