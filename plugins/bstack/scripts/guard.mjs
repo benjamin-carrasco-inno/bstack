@@ -66,20 +66,21 @@ const PLAIN_TEMP_READ = /^(?:\$\{\w+\}|\$(?:env:)?\w+)(?:\s*(?:$|[;|&\n])|['"\\/
 const NO_TEMP_NAMES = new Set();
 
 const ENV_CHANGERS = new Set(['.', 'source', 'eval', 'export', 'declare', 'typeset', 'local', 'readonly', 'read', 'unset', 'mapfile', 'readarray', 'let', 'getopts', 'for',
-  'set', 'set-variable', 'sv', 'new-variable', 'nv', 'remove-variable', 'rv', 'clear-variable', 'clv', 'invoke-expression', 'iex', 'import-module', 'ipmo']);
+  'set', 'set-variable', 'sv', 'new-variable', 'nv', 'remove-variable', 'rv', 'clear-variable', 'clv', 'invoke-expression', 'iex', 'import-module', 'ipmo', 'add-type']);
 const DYNAMIC_COMMAND = /[$`]|%[^%]+%/;
 const POWERSHELL_SCRIPT = /\.psm?1$/;
 const INVOKED_BY_PATH = /[\\/]|^\./;
-const ENVIRONMENT_CLASS = /Environment\]::/i;
+const STATIC_MEMBER = /::/;
 const LEADING_ENV_READ = /^\$(\{env:\w+\}|env:\w+)/i;
 const REACHES_ENV_DRIVE = /env:|environment::|[$`]/i;
 const LITERAL_ASSIGNMENT = /^\$(\{[^}]+\}|[\w:]+)\s*=\s*('[^']*'|"[^"$`]*"|[\w.\\/:-]+)$/;
 
 function changesEnv(c) {
   if (c.dialect === 'powershell' && LITERAL_ASSIGNMENT.test(c.text)) return false;
-  if (ENV_CHANGERS.has(c.cmd) || DYNAMIC_COMMAND.test(c.cmd) || POWERSHELL_SCRIPT.test(c.cmd) || ENVIRONMENT_CLASS.test(c.text)) return true;
+  if (ENV_CHANGERS.has(c.cmd) || DYNAMIC_COMMAND.test(c.cmd) || POWERSHELL_SCRIPT.test(c.cmd)) return true;
   if (c.cmd === 'printf') return c.args.some(a => a.startsWith('-v'));
   if (c.dialect !== 'powershell') return false;
+  if (STATIC_MEMBER.test(c.text)) return true;
   if (INVOKED_BY_PATH.test(c.program ?? '')) return true;
   const paths = (FILE_WRITERS[c.cmd] ?? ITEM_PATHS[c.cmd])?.(c.args, c.dialect) ?? [];
   return paths.some(p => isExpressionArg(c, p) || REACHES_ENV_DRIVE.test(p.replace(LEADING_ENV_READ, '')));
@@ -210,21 +211,26 @@ function bodyFileReason({ file, at }, deps) {
   return null;
 }
 
-const INPUT_REDIRECT = /^0?<(.*)$/s;
+const STDIN_FD = /^0*$/;
+const OTHER_FD = /^\d+$/;
+const REDIRECT_CHAR = /[<>]/;
 const UNREADABLE_INPUT = /^[<&(>]/;
 const STDIN_READERS = new Set(['cat', 'type', 'get-content', 'gc']);
 const READER_VALUED = ['encoding', 'totalcount', 'head', 'first', 'tail', 'last', 'readcount', 'delimiter', 'stream', 'filter', 'include', 'exclude'];
 
 function inputRedirects(text) {
-  const tokens = tokenize(text);
+  const all = words(text);
   const files = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const m = INPUT_REDIRECT.exec(tokens[i]);
-    if (!m) continue;
-    if (UNREADABLE_INPUT.test(m[1])) return null;
-    const file = m[1] || tokens[++i];
-    if (!file) return null;
-    files.push(file);
+  for (let i = 0; i < all.length; i++) {
+    const { text: word, unquoted } = all[i];
+    const at = unquoted.indexOf('<');
+    if (at < 0) continue;
+    const fd = unquoted.slice(0, at);
+    if (REDIRECT_CHAR.test(fd + unquoted.slice(at + 1))) return null;
+    if (!STDIN_FD.test(fd)) { if (OTHER_FD.test(fd)) continue; return null; }
+    const target = at + 1 < word.length ? { text: word.slice(at + 1), unquoted: unquoted.slice(at + 1) } : all[++i];
+    if (!target?.text || REDIRECT_CHAR.test(target.unquoted) || UNREADABLE_INPUT.test(target.text)) return null;
+    files.push(target.text);
   }
   return files;
 }
@@ -241,11 +247,13 @@ function stdinFiles(c) {
 function readerFiles(reader) {
   const files = inputRedirects(reader.text);
   if (!files) return null;
+  const all = words(reader.text);
+  const args = all.slice(all.length - reader.args.length);
   let operands = false;
-  for (let i = 0; i < reader.args.length; i++) {
-    const a = reader.args[i];
+  for (let i = 0; i < args.length; i++) {
+    const { text: a, unquoted } = args[i];
     if (a === '-') return null;
-    if (/^(\d*[<>]|&>)/.test(a)) { if (/^(\d*[<>]{1,2}|&>>?)$/.test(a)) i++; continue; }
+    if (/^(\d*[<>]|&>)/.test(unquoted)) { if (/^(\d*[<>]{1,2}|&>>?)$/.test(unquoted)) i++; continue; }
     if (operands || !a.startsWith('-')) files.push(a);
     else if (a === '--') operands = true;
     else if (reader.dialect === 'powershell' && namesParameter(a, READER_VALUED, 'powershell')) i++;

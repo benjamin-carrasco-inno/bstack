@@ -217,33 +217,38 @@ function expandsAt(segment, i, dialect, quoted) {
   return segment[i] === '$' && !escaped && after.test(segment[i + 1] ?? '');
 }
 
+const QUOTED_CHAR = '\0';
+
 // Split one segment into words, removing quotes. Only an unquoted ( is an expression; PowerShell reads a(b) as two arguments.
 export function words(segment, dialect = 'posix') {
   const out = [];
   let cur = '';
+  let unquoted = '';
   let quote = null;
   let started = false;
   let expression = false;
   let expands = false;
   let depth = 0;
-  const end = () => { out.push({ text: cur, expression, expands }); cur = ''; started = false; expression = false; expands = false; depth = 0; };
+  const end = () => { out.push({ text: cur, unquoted, expression, expands }); cur = ''; unquoted = ''; started = false; expression = false; expands = false; depth = 0; };
+  const addQuoted = text => { cur += text; unquoted += QUOTED_CHAR.repeat(text.length); };
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i];
     if (quote) {
       if (ch === quote) { quote = null; continue; }
-      if (ch === '\\' && quote === '"' && /["\\$`]/.test(segment[i + 1] ?? '')) { cur += segment[++i]; continue; }
+      if (ch === '\\' && quote === '"' && /["\\$`]/.test(segment[i + 1] ?? '')) { addQuoted(segment[++i]); continue; }
       if (quote === '"' && expandsAt(segment, i, dialect, true)) expands = true;
-      cur += ch;
+      addQuoted(ch);
       continue;
     }
     const here = hereString(segment, i);
-    if (here) { expands ||= segment[i + 1] === '"' && /\$[\w{(]/.test(here.body); cur += here.body; started = true; i = here.end - 1; continue; }
+    if (here) { expands ||= segment[i + 1] === '"' && /\$[\w{(]/.test(here.body); addQuoted(here.body); started = true; i = here.end - 1; continue; }
     if (expandsAt(segment, i, dialect, false)) expands = true;
     if (ch === '"' || ch === "'") { quote = ch; started = true; continue; }
     if (/\s/.test(ch) && depth === 0) { if (started) end(); continue; }
     if (ch === '(') { expression = true; depth++; }
     if (ch === ')' && depth > 0) depth--;
     cur += ch;
+    unquoted += ch;
     started = true;
   }
   if (started) end();
