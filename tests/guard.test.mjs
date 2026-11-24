@@ -16,7 +16,8 @@ const DOCS_DIFF = 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/RE
 const DATA_DIFF = 'diff --git a/app/db.py b/app/db.py\n--- a/app/db.py\n+++ b/app/db.py\n+conn.execute("DELETE FROM orders")\n';
 
 const verdict = (result, sha = SHA, at = '2026-11-22T10:00:00Z') => ({ body: commentBody('verdict', result, sha, 'report'), createdAt: at });
-const interrogate = (n, sha = SHA) => ({ body: commentBody('interrogate', n, sha, 'report'), createdAt: '2026-11-22T11:00:00Z' });
+const interrogate = (confirmed, blocking = confirmed, sha = SHA) => ({ body: commentBody('interrogate', { confirmed, blocking }, sha, 'report'), createdAt: '2026-11-22T11:00:00Z' });
+const legacyInterrogate = n => ({ body: `<!-- bstack-interrogate v1 -->\nbstack-interrogate: confirmed=${n} sha=${SHA}\n\nreport\n`, createdAt: '2026-11-22T11:00:00Z' });
 
 function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, files = {} } = {}) {
   return {
@@ -202,6 +203,25 @@ test('tier 2 merge also needs a clean interrogate', () => {
   blocked(shell('gh pr merge 5 --squash'), d([verdict('PASS')]));
   blocked(shell('gh pr merge 5 --squash'), d([verdict('PASS'), interrogate(2)]));
   allowed(shell('gh pr merge 5 --squash'), d([verdict('PASS'), interrogate(0)]));
+});
+
+test('only blocking interrogate findings block a merge', () => {
+  const d = comments => deps({ diff: DATA_DIFF, pr: { comments } });
+  allowed(shell('gh pr merge 5 --squash'), d([verdict('PASS'), interrogate(3, 0)]));
+  assert.match(decide(shell('gh pr merge 5 --squash'), d([verdict('PASS'), interrogate(3, 1)])) ?? '', /1 blocking/);
+});
+
+test('an interrogate marker without a blocking count blocks on every confirmed finding', () => {
+  const d = comments => deps({ diff: DATA_DIFF, pr: { comments } });
+  blocked(shell('gh pr merge 5 --squash'), d([verdict('PASS'), legacyInterrogate(1)]));
+  allowed(shell('gh pr merge 5 --squash'), d([verdict('PASS'), legacyInterrogate(0)]));
+});
+
+test('blocking findings after three interrogate rounds send the agent to the user', () => {
+  const rounds = n => [...Array(n)].map((_, i) => interrogate(1, 1, i === n - 1 ? SHA : String(i).repeat(40)));
+  const d = n => deps({ diff: DATA_DIFF, pr: { comments: [verdict('PASS'), ...rounds(n)] } });
+  assert.doesNotMatch(decide(shell('gh pr merge 5 --squash'), d(2)) ?? '', /report to the user/);
+  assert.match(decide(shell('gh pr merge 5 --squash'), d(3)) ?? '', /3 interrogate rounds.*report to the user/);
 });
 
 test('side doors to merge or move main are blocked', () => {

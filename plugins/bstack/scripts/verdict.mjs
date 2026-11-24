@@ -18,7 +18,7 @@ export function kindOf(agentType) {
 
 const LAST_LINE = {
   verdict: 'bstack-verdict: <PASS|PASS+NOTES|FAIL> pr=<number> sha=<40-char head sha>',
-  interrogate: 'bstack-interrogate: confirmed=<number> pr=<number> sha=<40-char head sha>',
+  interrogate: 'bstack-interrogate: confirmed=<number> blocking=<number> pr=<number> sha=<40-char head sha>',
 };
 
 function readTranscript(file) {

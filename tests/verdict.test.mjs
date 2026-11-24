@@ -49,12 +49,13 @@ test('a report handed back through SubagentHandback is posted on the first stop'
 test('the newest report in the transcript wins', () => {
   const file = transcript([
     prompt('PR 7 in o/r.'),
-    handback(`bstack-interrogate: confirmed=2 pr=7 sha=${SHA}`),
-    said(`Re-ran both.\nbstack-interrogate: confirmed=0 pr=7 sha=${SHA}`),
-    handback(`Re-ran both.\nbstack-interrogate: confirmed=0 pr=7 sha=${SHA}`),
+    handback(`bstack-interrogate: confirmed=2 blocking=2 pr=7 sha=${SHA}`),
+    said(`Re-ran both.\nbstack-interrogate: confirmed=1 blocking=0 pr=7 sha=${SHA}`),
+    handback(`Re-ran both.\nbstack-interrogate: confirmed=1 blocking=0 pr=7 sha=${SHA}`),
   ]);
   const out = handle({ agent_type: 'bstack:adversary', agent_transcript_path: file }, gh(SHA));
-  assert.match(out.post.body, /^bstack-interrogate: confirmed=0 sha=/m);
+  assert.match(out.post.body, /^bstack-interrogate: confirmed=1 blocking=0 sha=/m);
+  assert.deepEqual(latestFor('interrogate', [{ body: out.post.body }], SHA), { confirmed: 1, blocking: 0 });
 });
 
 test('a missing line or a moved head sends the agent back once, then warns the user', () => {
@@ -119,9 +120,14 @@ test('a repo named for another PR number is not used, and no repo keeps the cwd'
 });
 
 test('interrogate reports carry the confirmed count', () => {
-  const r = parseReport('interrogate', `Tried 5 attacks.\nbstack-interrogate: confirmed=0 pr=#7 sha=${SHA}`);
-  assert.equal(r.result, 0);
+  const r = parseReport('interrogate', `Tried 5 attacks.\nbstack-interrogate: confirmed=2 blocking=1 pr=#7 sha=${SHA}`);
+  assert.deepEqual(r.result, { confirmed: 2, blocking: 1 });
   assert.equal(r.pr, '7');
+});
+
+test('an interrogate report without a blocking count counts every confirmed finding as blocking', () => {
+  const r = parseReport('interrogate', `bstack-interrogate: confirmed=2 pr=7 sha=${SHA}`);
+  assert.deepEqual(r.result, { confirmed: 2, blocking: 2 });
 });
 
 test('the last verdict line wins and backticks are tolerated', () => {
