@@ -56,6 +56,7 @@ const routes = {
   '/never': () => server.emit('never-requested'),
   '/settings': (_, res) => res.writeHead(302, { location: '/login' }).end(),
   '/login': html(fixture('clean.html')),
+  '/query': (req, res) => html(fixture(req.url.endsWith('?v=bad') ? 'defects.html' : 'clean.html'))(req, res),
 };
 const route = (req, res) => (routes[new URL(req.url, 'http://x').pathname] ?? ((_, r) => r.writeHead(404).end('not found')))(req, res);
 const server = http.createServer(route);
@@ -136,6 +137,12 @@ test('browser check runner passes the clean fixture with exit 0', { skip: noBrow
   assert.deepEqual(JSON.parse(run.stdout), { findings: [], breakpoints: [] });
 });
 
+test('browser check runner given a page URL with a query and no paths checks that page with its query', { skip: noBrowser }, async () => {
+  const run = await runAsync([`${origin}/query?v=bad`]);
+  assert.equal(run.status, 1, run.stdout + run.stderr);
+  assert.equal(JSON.parse(run.stdout).findings.length, 5);
+});
+
 test('browser check runner exits 2 when a page does not load', { skip: noBrowser }, async () => {
   const run = await runAsync([origin, '/clean', '/missing']);
   assert.equal(run.status, 2);
@@ -165,7 +172,7 @@ test('browser check runner waits for a start page that answers after 1000 ms', {
 test('browser check runner gives up at --timeout on a page that never finishes loading and removes its profile', { skip: noBrowser }, async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
   const run = await runAsync([origin, '/hanging-image', '--timeout', '5'], { TMPDIR: tmp, TEMP: tmp, TMP: tmp });
-  const left = fs.readdirSync(tmp).filter(name => name.startsWith('browser-check-'));
+  const left = fs.readdirSync(tmp);
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   assert.equal(run.status, 2, run.stderr);
   assert.match(run.stderr, /no result within 5 s/);
