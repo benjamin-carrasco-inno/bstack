@@ -36,7 +36,8 @@ function parseArgs(argv) {
   if (!URL.canParse(args.origin ?? '') || !/^https?:$/.test(new URL(args.origin).protocol)) throw new Error(USAGE);
   if (args.widths?.some(w => !Number.isInteger(w) || w < 1)) throw new Error(`--widths takes positive integers, such as 375,768,1280\n${USAGE}`);
   if (!(args.timeoutSeconds > 0 && args.timeoutSeconds <= 86400)) throw new Error(`--timeout takes seconds above 0 and up to 86400\n${USAGE}`);
-  if (!args.paths.length) args.paths.push(new URL(args.origin).pathname);
+  const { pathname, search } = new URL(args.origin);
+  if (!args.paths.length) args.paths.push(pathname + search);
   return args;
 }
 
@@ -51,7 +52,7 @@ function findBrowser(explicit) {
 }
 
 function launch(exe, profile) {
-  const child = spawn(exe, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--ignore-certificate-errors', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  const child = spawn(exe, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--ignore-certificate-errors', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, TMP: profile, TEMP: profile, TMPDIR: profile } });
   const endpoint = new Promise((resolve, reject) => {
     let log = '';
     child.stderr.on('data', chunk => {
