@@ -114,6 +114,22 @@ test('commands inside $( ), backticks and PowerShell ( ) arguments are checked, 
   }
 });
 
+test('a refspec the guard cannot resolve counts as the current branch', () => {
+  const onMain = deps({ branch: 'main' });
+  const onFeature = deps({ branch: 'feat/x' });
+  for (const input of [
+    shell('git push origin $(git branch --show-current)'), shell('git push origin $b'), shell('git push origin `git branch --show-current`'),
+    ps('git push origin (git branch --show-current)'), ps('git push origin $b'), shell('cmd /c git push origin %B%'),
+  ]) {
+    blocked(input, onMain);
+    allowed(input, onFeature);
+  }
+  blocked(ps('git -C (Get-Location) push origin $b'), onMain);
+  blocked(ps('git -C (Get-Location) push origin $b'), onFeature);
+  allowed(shell('git push origin feat/y'), onMain);
+  blocked(shell('git push origin HEAD'), onMain);
+});
+
 test('force-push needs --force-with-lease', () => {
   blocked(shell('git push --force origin feat/x'));
   blocked(shell('git push -f origin feat/x'));
