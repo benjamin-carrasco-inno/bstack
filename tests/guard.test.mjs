@@ -214,7 +214,7 @@ test('a repo flag before pr merge hits the same merge gate', () => {
 });
 
 test('a gh word that is not a known command is refused as a possible merge alias', () => {
-  for (const command of ['gh m 5', 'gh m 5 --squash', 'gh -R o/r m 5', 'gh co 5', 'gh --bogus pr merge 5 --squash']) {
+  for (const command of ['gh m 5', 'gh m 5 --squash', 'gh -R o/r m 5', 'gh co 5', 'gh --bogus pr merge 5 --squash', 'gh pr --squash=true merge 5', 'gh -R o/r pr --delete-branch=true merge 5 --squash']) {
     assert.match(decide(shell(command), deps({ pr: { comments: [verdict('PASS')] } })) ?? '', /gh pr merge/, command);
   }
   allowed(shell('gh -R o/r pr view 5'));
@@ -223,6 +223,8 @@ test('a gh word that is not a known command is refused as a possible merge alias
   allowed(shell('gh --version'));
   allowed(shell('gh help pr'));
   allowed(shell('gh alias list'));
+  allowed(shell('gh api -X GET repos/o/r/pulls'));
+  allowed(shell('gh status --org o'));
   allowed(shell(`gh -R o/r pr view 5 --json comments --jq '.comments[].body' | grep bstack-verdict`));
 });
 
