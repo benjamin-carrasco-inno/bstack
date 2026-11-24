@@ -1,7 +1,7 @@
 // The verdict format shared by the SubagentStop hook (which posts verdicts) and the guard (which reads
 // them before a merge). Only the hook may write the marker; the guard blocks it in agent commands.
 
-export const MARKER = /bstack-(verdict|interrogate)/i;
+export const MARKER = /bstack-(verdict|interrogate|user-ok)/i;
 
 export const KINDS = {
   verdict: {
@@ -45,6 +45,20 @@ export function commentBody(kind, result, sha, report, judgedAt) {
 export const timeOf = c => Date.parse(JUDGED_AT.exec(String(c.body ?? '').split('\n')[2] ?? '')?.[1] ?? c.createdAt ?? 0) || 0;
 
 export const shaOf = (kind, body) => (String(body ?? '').startsWith(KINDS[kind].tag) ? KINDS[kind].line.exec(String(body))?.groups.sha ?? null : null);
+
+export const blockingRounds = comments => new Set((comments ?? [])
+  .filter(c => shaOf('interrogate', c.body) && findings(KINDS.interrogate.line.exec(String(c.body))).blocking > 0)
+  .map(c => shaOf('interrogate', c.body))).size;
+
+// The user writes `bstack-user-ok sha=<head>` on GitHub; the guard refuses the line from agents,
+// and a hook comment quoting an agent's report never counts.
+const USER_OK = /^\s*bstack-user-ok sha=([0-9a-f]{40})\s*$/gim;
+const HOOK_TAG = '<!-- bstack-';
+
+export const userOkFor = (comments, sha) => (comments ?? []).some(c => {
+  const body = String(c.body ?? '');
+  return !body.includes(HOOK_TAG) && [...body.matchAll(USER_OK)].some(m => m[1].toLowerCase() === sha);
+});
 
 // The newest result of a kind for exactly this head SHA, from `gh pr view --json comments`.
 export function latestFor(kind, comments, sha) {

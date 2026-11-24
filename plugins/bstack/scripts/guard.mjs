@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ASSIGNMENT, UNRESOLVED, commandsIn, endsInRedirect, loopBodies, parseGit, redirectTargets, tokenize, withoutHeredocBodies, words } from './lib/shell.mjs';
-import { KINDS, MARKER, latestFor, shaOf, timeOf } from './lib/verdicts.mjs';
+import { KINDS, MARKER, blockingRounds, latestFor, shaOf, timeOf, userOkFor } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
@@ -151,7 +151,7 @@ function markerRule(c, deps) {
   const [ghGroup, ghAction] = c.cmd === 'gh' ? ghSubcommand(c.args) : [];
   const readOnlyGh = c.cmd === 'gh' && (/^(view|checks|diff|list|status)$/.test(ghAction ?? '') || (ghGroup === 'api' && !hasWriteFields(c.args)));
   if (MARKER.test(c.text) && !READ_ONLY.has(c.cmd) && !readOnlyGh) {
-    return 'Verdict and interrogate lines are posted by the bstack hook when the bstack:reviewer or bstack:adversary agent finishes. Run that agent instead of writing the line yourself.';
+    return 'Verdict and interrogate lines are posted by the bstack hook when the bstack:reviewer or bstack:adversary agent finishes, and only the user writes the user-OK line on GitHub. Run that agent or ask the user instead of writing the line yourself.';
   }
   if (!READ_ONLY.has(c.cmd) && pathArgs(c).some(a => PENDING_PATH.test(a))) return SAVED_VERDICTS;
   if (c.cmd === 'gh') {
@@ -161,7 +161,7 @@ function markerRule(c, deps) {
       const target = resolvedDir(word, c.cwdKnown ? c.cwd : UNKNOWN_DIR, dialect, host.paths);
       const text = target === UNKNOWN_DIR ? null : deps.readFile(target);
       if (text === null) return `The guard cannot read the body file ${file} to check it for a bstack verdict line. Give a literal path to a file that exists.`;
-      if (MARKER.test(text)) return `The body file ${file} contains a bstack verdict line. Verdicts are posted only by the bstack hook.`;
+      if (MARKER.test(text)) return `The body file ${file} contains a bstack verdict or user-OK line. Only the bstack hook and the user write those.`;
     }
   }
   return null;
@@ -605,15 +605,14 @@ function mergeGate(args, cwd, deps) {
   if (!verdict) return `Tier ${risk.tier}${why}: no reviewer verdict for head ${short}. Run the bstack:reviewer agent on ${pr.url}; its hook posts the verdict.`;
   if (verdict.result === 'FAIL') return `The latest verdict for ${short} is FAIL. Fix it in a fresh round, push, and run bstack:reviewer again.`;
   if (risk.tier === 2) {
+    const rounds = blockingRounds(pr.comments);
+    if (rounds >= INTERROGATE_ROUNDS) {
+      if (userOkFor(pr.comments, sha)) return null;
+      return `${rounds} interrogate rounds found blocking findings: stop and report to the user what is fixed, what is open and your recommendation. The guard merges ${short} only after the user comments this line on the PR: bstack-user-ok sha=${sha}`;
+    }
     const inter = latestFor('interrogate', pr.comments, sha);
     if (!inter) return `Tier 2${why}: run bstack:interrogate on head ${short} before merging, and get the user's OK if a revert cannot undo it.`;
-    if (inter.blocking > 0) {
-      const rounds = new Set(pr.comments.map(c => shaOf('interrogate', c.body)).filter(Boolean)).size;
-      const next = rounds >= INTERROGATE_ROUNDS
-        ? `${rounds} interrogate rounds are done: stop and report to the user what is fixed, what is open and your recommendation.`
-        : 'Fix them through the bug-fix playbook, then review again.';
-      return `Interrogate found ${inter.blocking} blocking finding(s) on ${short}. ${next}`;
-    }
+    if (inter.blocking > 0) return `Interrogate found ${inter.blocking} blocking finding(s) on ${short}. Fix them through the bug-fix playbook, then review again.`;
   }
   return null;
 }
@@ -690,7 +689,7 @@ function writeRule(input, deps) {
   if (!MARKER.test(text)) return null;
   const file = String(input.file_path ?? input.notebook_path ?? '');
   if (deps.insideBstackSource(file)) return null;
-  return 'Files must not carry bstack verdict lines: verdicts are posted only by the bstack hook.';
+  return 'Files must not carry bstack verdict or user-OK lines: only the bstack hook and the user write those.';
 }
 
 // --- wiring -----------------------------------------------------------------------------------------
