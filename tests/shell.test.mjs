@@ -113,9 +113,20 @@ test('quotes, substitutions and ref syntax keep their braces and parentheses', (
   assert.deepEqual(gitCalls(`git commit -m 'feat(guard): {a} (b)'`), ['commit -m feat(guard): {a} (b)']);
   assert.deepEqual(gitCalls('git rev-parse @{u}'), ['rev-parse @{u}']);
   assert.deepEqual(gitCalls('git push origin HEAD@{0}:refs/heads/x'), ['push origin HEAD@{0}:refs/heads/x']);
-  assert.deepEqual(gitCalls('git push origin $(git branch --show-current)'), ['push origin $(git branch --show-current)']);
+  assert.deepEqual(gitCalls('git push origin $(git branch --show-current)'), ['branch --show-current', 'push origin $(git branch --show-current)']);
   assert.deepEqual(gitCalls('( git log ${REF} $(date) )'), ['log ${REF} $(date)']);
   assert.deepEqual(gitCalls('git log ) }'), ['log ) }']);
+});
+
+test('a $( ), backtick or argument ( ) substitution adds its commands and stays one word of the outer command', () => {
+  assert.deepEqual(gitCalls('echo $(git push origin main)'), ['push origin main']);
+  assert.deepEqual(gitCalls('echo `git push origin main`'), ['push origin main']);
+  assert.deepEqual(gitCalls('echo $(cd x; git push origin $(git branch --show-current))'), ['branch --show-current', 'push origin $(git branch --show-current)']);
+  assert.deepEqual(gitCalls('git -C (Get-Location) push origin main'), ['-C (Get-Location) push origin main']);
+  assert.deepEqual(gitCalls('git push origin (git branch --show-current)'), ['branch --show-current', 'push origin (git branch --show-current)']);
+  assert.deepEqual(commandsIn('git -C (Join-Path a b) push').find(c => c.cmd === 'git').args, ['-C', '(Join-Path a b)', 'push']);
+  assert.deepEqual(commandsIn('echo `git push origin main`', 0, 'powershell').map(c => c.cmd), ['echo']);
+  assert.deepEqual(gitCalls('f() { git push origin main; }'), ['push origin main']);
 });
 
 test('git global options are skipped', () => {
@@ -128,7 +139,7 @@ test('git global options are skipped', () => {
 });
 
 test('only an unquoted ( makes a -C path an expression', () => {
-  const dirOf = line => { const [c] = commandsIn(line); return parseGit(c.args, c.expressions); };
+  const dirOf = line => { const c = commandsIn(line).find(cmd => cmd.cmd === 'git'); return parseGit(c.args, c.expressions); };
   for (const line of ['git -C "C:/dev/repo (1)" push', "git -C 'C:/Program Files (x86)/r' push", 'git -C "/a (1)" -C sub push']) {
     assert.equal(dirOf(line).dirKnown, true, line);
   }
