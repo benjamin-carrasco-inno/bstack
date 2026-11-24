@@ -10,7 +10,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DOCS = /(^|\/)(LICENSE|NOTICE|CHANGELOG|README)(\.[a-z]+)?$|\.(md|rst|txt|adoc)$/i;
-const NOT_DOCS = /(^|\/)(AGENTS|CLAUDE)\.md$|(^|\/)requirements[^/]*\.txt$|(^|\/)\.github\/[^/]+\.txt$|(^|\/)(skills|agents|rules|commands|\.claude)\//i;
+const CLAUDE_CODE_DIR = /(^|\/)(\.claude|plugins\/[^/]+\/commands)\//i;
+const NOT_DOCS = /(^|\/)(AGENTS|CLAUDE)\.md$|(^|\/)requirements[^/]*\.txt$|(^|\/)\.github\/[^/]+\.txt$|(^|\/)(skills|agents|rules)\//i;
 const CONFIG = /(^|\/)(\.github\/workflows\/|\.claude\/)|(^|\/)(pyproject\.toml|setup\.cfg|ruff\.toml|\.ruff\.toml|pyrightconfig\.json|eslint\.config\.[cm]?js|\.eslintrc[^/]*|Cargo\.toml|clippy\.toml|rustfmt\.toml|package\.json|tsconfig[^/]*\.json|Dockerfile|docker-compose[^/]*\.ya?ml|\.pre-commit-config\.yaml)$/i;
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)test_[^/]+\.py$|_test\.(py|go|rs)$|\.(test|spec)\.[cm]?[jt]sx?$/i;
 const CODE = /\.(py|pyi|js|mjs|cjs|ts|tsx|jsx|rs|go|sql|sh|ps1|html|css|vue|svelte)$/i;
@@ -39,8 +40,10 @@ const WEAKENING_ADDED = [
   [/pytest\.mark\.(skip|xfail)|@unittest\.skip|#\[ignore\]|\b(it|test|describe)\.skip\(|\bx(it|describe)\(/, 'test skipped'],
   [/continue-on-error:\s*true|\|\|\s*true\b/, 'CI step allowed to fail'],
 ];
-const PROSE = /^(?!(.*\/)?CMakeLists\.txt$)(?!(.*\/)?(\.claude|commands)\/).*\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
-const EXECUTED_IN_MARKDOWN = /!`([^`]*)`/g;
+const PROSE_EXTENSION = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
+const isProse = p => PROSE_EXTENSION.test(p) && !CLAUDE_CODE_DIR.test(p) && !/(^|\/)CMakeLists\.txt$/i.test(p);
+const CLAUDE_CODE_EXECUTED_MARKDOWN = [/```!\s*\n?([\s\S]*?)\n?```/g, /(?<=^|\s)!`([^`]+)`/gm];
+const executedInMarkdown = text => CLAUDE_CODE_EXECUTED_MARKDOWN.flatMap(re => [...text.matchAll(re)].map(m => m[1]));
 const SUPPRESSION = /#\s*noqa|type:\s*ignore|pyright:\s*ignore|eslint-disable|@ts-(ignore|expect-error|nocheck)|#!?\[allow\(/;
 const TEST_REMOVED = /^\s*(async\s+)?def\s+test_|^\s*#\[(tokio::)?test\]|^\s*(it|test)\s*\(/;
 const ASSERT = /\bassert|expect\(|assert_eq!|assert!\(/;
@@ -66,7 +69,7 @@ export function parseDiff(diff) {
     const head = HEAD.exec(line);
     if (head) {
       const [a, b] = [unquote(head[1]).slice(2), unquote(head[2]).slice(2)];
-      f = { path: b, oldPath: a === b ? null : a, added: [], removed: [], created: false, deleted: false };
+      f = { path: b, oldPath: a === b ? null : a, added: [], addedHunks: [[]], removed: [], created: false, deleted: false };
       files.push(f); continue;
     }
     if (!f) continue;
@@ -75,7 +78,8 @@ export function parseDiff(diff) {
     else if (line.startsWith('new file mode')) f.created = true;
     else if (line.startsWith('deleted file mode')) f.deleted = true;
     else if (line.startsWith('+++') || line.startsWith('---')) continue;
-    else if (line.startsWith('+')) f.added.push(line.slice(1));
+    else if (line.startsWith('@@')) f.addedHunks.push([]);
+    else if (line.startsWith('+')) { f.added.push(line.slice(1)); f.addedHunks.at(-1).push(line.slice(1)); }
     else if (line.startsWith('-')) f.removed.push(line.slice(1));
   }
   return files;
@@ -95,7 +99,7 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
 
   for (const f of files) {
     const p = f.path.replace(/\\/g, '/');
-    const docs = DOCS.test(p) && !NOT_DOCS.test(p);
+    const docs = DOCS.test(p) && !NOT_DOCS.test(p) && !CLAUDE_CODE_DIR.test(p);
     if (!docs) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
     if (extra.some(re => re.test(p))) raise(2, `listed in .github/risk-paths.txt: ${p}`);
     const paths = f.oldPath ? [p, f.oldPath.replace(/\\/g, '/')] : [p];
@@ -113,9 +117,10 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
       const lost = f.removed.filter(l => ASSERT.test(l)).length - f.added.filter(l => ASSERT.test(l)).length;
       if (lost > 0) raise(2, `fewer assertions: ${p}`);
     }
-    const executed = PROSE.test(p) ? f.added.flatMap(l => [...l.matchAll(EXECUTED_IN_MARKDOWN)].map(m => m[1])) : f.added;
+    const prose = isProse(p);
+    const executed = prose ? f.addedHunks.flatMap(h => executedInMarkdown(h.join('\n'))) : f.added;
     for (const l of executed) for (const [re, why] of WEAKENING_ADDED) if (re.test(l)) raise(2, `${why}: ${p}`);
-    if (!PROSE.test(p) && !fixture && !testOnly && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
+    if (!prose && !fixture && !testOnly && f.added.some(l => SUPPRESSION.test(l))) raise(2, `new lint or type suppression: ${p}`);
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
     if (CODE.test(p) && !isTest) {
