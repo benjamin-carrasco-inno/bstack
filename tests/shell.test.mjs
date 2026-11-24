@@ -113,9 +113,20 @@ test('quotes, substitutions and ref syntax keep their braces and parentheses', (
   assert.deepEqual(gitCalls(`git commit -m 'feat(guard): {a} (b)'`), ['commit -m feat(guard): {a} (b)']);
   assert.deepEqual(gitCalls('git rev-parse @{u}'), ['rev-parse @{u}']);
   assert.deepEqual(gitCalls('git push origin HEAD@{0}:refs/heads/x'), ['push origin HEAD@{0}:refs/heads/x']);
-  assert.deepEqual(gitCalls('git push origin $(git branch --show-current)'), ['push origin $(git branch --show-current)']);
+  assert.deepEqual(gitCalls('git push origin $(git branch --show-current)'), ['branch --show-current', 'push origin $(git branch --show-current)']);
   assert.deepEqual(gitCalls('( git log ${REF} $(date) )'), ['log ${REF} $(date)']);
   assert.deepEqual(gitCalls('git log ) }'), ['log ) }']);
+});
+
+test('a $( ), backtick or argument ( ) substitution adds its commands and stays one word of the outer command', () => {
+  assert.deepEqual(gitCalls('echo $(git push origin main)'), ['push origin main']);
+  assert.deepEqual(gitCalls('echo `git push origin main`'), ['push origin main']);
+  assert.deepEqual(gitCalls('echo $(cd x; git push origin $(git branch --show-current))'), ['branch --show-current', 'push origin $(git branch --show-current)']);
+  assert.deepEqual(gitCalls('git -C (Get-Location) push origin main'), ['-C (Get-Location) push origin main']);
+  assert.deepEqual(gitCalls('git push origin (git branch --show-current)'), ['branch --show-current', 'push origin (git branch --show-current)']);
+  assert.deepEqual(commandsIn('git -C (Join-Path a b) push').find(c => c.cmd === 'git').args, ['-C', '(Join-Path a b)', 'push']);
+  assert.deepEqual(commandsIn('echo `git push origin main`', 0, 'powershell').map(c => c.cmd), ['echo']);
+  assert.deepEqual(gitCalls('f() { git push origin main; }'), ['push origin main']);
 });
 
 test('git global options are skipped', () => {

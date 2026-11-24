@@ -96,6 +96,24 @@ test('git and gh inside blocks are checked', () => {
   allowed(shell('git rev-parse @{u} && git log HEAD@{1}'));
 });
 
+test('commands inside $( ), backticks and PowerShell ( ) arguments are checked, and the outer command is still read', () => {
+  blocked(shell('echo $(git push origin main)'));
+  blocked(shell('echo `git push origin main`'));
+  blocked(shell('echo $(git commit --no-verify -m x)'));
+  blocked(ps('echo $(git push origin main)'));
+  blocked(ps('Write-Output (git push origin main)'));
+  blocked(ps('git -C (Get-Location) push origin main'));
+  blocked(ps('git -C (Join-Path C:/repo sub) push origin main'));
+  blocked(ps('git -C (Get-Location) commit --no-verify -m x'));
+  blocked(ps('git push origin (git push origin main)'));
+  allowed(ps('git push origin (git branch --show-current)'));
+  allowed(shell('git log -1 $(git rev-parse HEAD)'));
+  for (const agent of ['bstack:reviewer', 'bstack:adversary']) {
+    blocked({ ...shell('echo $(git push origin feat/x)'), agent_type: agent });
+    blocked({ ...ps('Write-Output (git commit -m x)'), agent_type: agent });
+  }
+});
+
 test('force-push needs --force-with-lease', () => {
   blocked(shell('git push --force origin feat/x'));
   blocked(shell('git push -f origin feat/x'));
