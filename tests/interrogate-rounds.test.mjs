@@ -49,6 +49,15 @@ test('the cap is the one the guard enforces', () => {
   assert.equal(summarize([{ number: 1, rounds: INTERROGATE_ROUNDS, confirmed: 0, blocking: 0 }]).capShare, 1);
 });
 
+test('only heads with blocking findings count toward the cap, as in the guard', () => {
+  const clean = prRounds([comment(sha('a'), 0, 0), comment(sha('b'), 2, 0), comment(sha('c'), 1, 0)]);
+  assert.deepEqual(clean, { rounds: 0, confirmed: 3, blocking: 0 });
+  assert.equal(summarize([{ number: 1, ...clean }]).capShare, 0);
+  const blocked = prRounds([comment(sha('a'), 1, 1), comment(sha('b'), 2, 1), comment(sha('c'), 1, 1)]);
+  assert.deepEqual(blocked, { rounds: INTERROGATE_ROUNDS, confirmed: 4, blocking: 3 });
+  assert.equal(summarize([{ number: 1, ...blocked }]).capShare, 1);
+});
+
 test('summary of nothing does not divide by zero', () => {
   assert.deepEqual(summarize([]), { prs: 0, meanRounds: 0, capShare: 0, blockingPerRound: 0 });
 });
