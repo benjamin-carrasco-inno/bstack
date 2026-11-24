@@ -45,12 +45,21 @@ const WEAKENING_ADDED = [
 ];
 const PROSE_EXTENSION = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
 const isProse = p => PROSE_EXTENSION.test(p) && !BUILD_TXT.test(p) && !COMMANDS.test(p);
-const CLAUDE_CODE_EXECUTED_MARKDOWN = [/```!\s*\n?([\s\S]*?)\n?```/dg, /(?<=^|\s)!`([^`]+)`/dgm, /^﻿?---\n([\s\S]*?)\n---(?=\n|$)/dg];
+const CLAUDE_CODE_FRONTMATTER = /^﻿?---\s*\n([\s\S]*?)---\s*\n?/d;
+const CLAUDE_CODE_EXECUTED_BODY = [/```!\s*\n?([\s\S]*?)\n?```/dg, /(?<=^|\s)!`([^`]+)`/dgm];
+
+function executedRegions(text) {
+  const frontmatter = text.match(CLAUDE_CODE_FRONTMATTER);
+  const bodyStart = frontmatter ? frontmatter[0].length : 0;
+  const body = text.slice(bodyStart);
+  const inBody = CLAUDE_CODE_EXECUTED_BODY.flatMap(x => [...body.matchAll(x)].map(m => m.indices[1].map(i => i + bodyStart)));
+  return frontmatter ? [frontmatter.indices[1], ...inBody] : inBody;
+}
 
 function executedMatch(head, line, re) {
   if (typeof head !== 'string') return true;
   const text = head.replace(/\r\n/g, '\n');
-  const executed = CLAUDE_CODE_EXECUTED_MARKDOWN.flatMap(x => [...text.matchAll(x)].map(m => m.indices[1]));
+  const executed = executedRegions(text);
   let found = false;
   let start = 0;
   for (const l of text.split('\n')) {
