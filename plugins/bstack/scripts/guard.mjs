@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ASSIGNMENT, UNRESOLVED, commandsIn, endsInRedirect, parseGit, redirectTargets, tokenize, withoutHeredocBodies, words } from './lib/shell.mjs';
+import { ASSIGNMENT, UNRESOLVED, commandsIn, endsInRedirect, loopBodies, parseGit, redirectTargets, tokenize, withoutHeredocBodies, words } from './lib/shell.mjs';
 import { KINDS, MARKER, latestFor, timeOf } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
@@ -33,8 +33,9 @@ export function decide(input, deps) {
   const hostDeps = { ...deps, host };
   const root = host.paths.resolvePath(cwd);
   const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
+  const looped = loopBodies(line).some(body => commandsIn(body, 0, dialect).some(createsCommit));
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, cwd, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps) : null);
+    const reason = markerRule(c, cwd, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps) : null);
     if (reason) return reason;
   }
   return agentWritesRule(line, dialect, cwd, agent, root, { ...host, tempNames: plainTempNames(line) });
@@ -387,7 +388,23 @@ function fileWriteRule(c, agent, root, next, host) {
 }
 
 // --- git ------------------------------------------------------------------------------------------
-const CONCLUDES_WITH_COMMIT = /^(merge|cherry-pick|revert|rebase)$/;
+const CONCLUDES_WITH_COMMIT = /^(merge|cherry-pick|revert|rebase|am)$/;
+const AM_CONTINUE = /^(--resolved|-r)$/;
+const AM_WITHOUT_COMMIT = /^(--abort|--quit|--show-current-patch(=.*)?)$/;
+
+function commitKind(sub, rest) {
+  if (sub === 'commit') return 'commit';
+  if (CONCLUDES_WITH_COMMIT.test(sub) && rest.includes('--continue')) return 'continue';
+  if (sub !== 'am') return null;
+  if (rest.some(a => AM_CONTINUE.test(a))) return 'continue';
+  return rest.some(a => AM_WITHOUT_COMMIT.test(a)) ? null : 'patches';
+}
+
+function createsCommit(c) {
+  if (c.cmd !== 'git') return false;
+  const { sub, rest } = parseGit(c.args, c.expressions);
+  return commitKind(sub, rest) !== null;
+}
 
 function gitRule(c, cwd, deps, line) {
   const { dir, dirKnown, sub, rest } = parseGit(c.args, c.expressions);
@@ -395,8 +412,8 @@ function gitRule(c, cwd, deps, line) {
   if (rest.includes('--no-verify') || (sub === 'commit' && rest.some(a => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) && !a.startsWith('--')))) {
     return 'Do not skip git hooks (--no-verify / -n). Fix what the hook reports; it is part of the safety net.';
   }
-  if (sub === 'commit') return commentRatchet({ command: c, rest, ...line }, deps);
-  if (CONCLUDES_WITH_COMMIT.test(sub) && rest.includes('--continue')) return commentRatchet({ command: c, rest: [], ...line }, deps);
+  const commits = commitKind(sub, rest);
+  if (commits) return commentRatchet({ command: c, rest: commits === 'commit' ? rest : [], unseen: commits === 'patches', ...line }, deps);
   if (sub === 'push') return pushRule(rest, repo, deps);
   if (sub === 'rebase' && !rest.some(a => /^--(abort|continue|skip|quit|edit-todo|show-current-patch)$/.test(a))) return rebaseRule(repo, deps);
   if (sub === 'pull' && rest.some(a => a === '--rebase' || a === '-r' || a.startsWith('--rebase='))) return rebaseRule(repo, deps);

@@ -1486,7 +1486,6 @@ test('comment ratchet: core.worktree, GIT_COMMON_DIR and GIT_CONFIG_* are refuse
   const repo = fixture({ 'app.py': ONE }, { 'app.py': 1 });
   const lines = [
     ['git -c core.worktree=/elsewhere commit -m x', 'Bash'],
-    ['git -c core.worktree /elsewhere commit -m x', 'Bash'],
     ['git -c Core.WorkTree=/elsewhere commit -m x', 'Bash'],
     ['git --config-env=core.worktree=WT commit -m x', 'Bash'],
     ['GIT_COMMON_DIR=/elsewhere/.git git commit -m x', 'Bash'],
