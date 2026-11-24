@@ -233,6 +233,49 @@ test('a repo flag before pr merge hits the same merge gate', () => {
   }
 });
 
+const linuxHost = env => ({ platform: 'linux', env, tmpdir: () => '/tmp' });
+
+function mergeReads(input, host = WINDOWS_CWD.test(input.cwd) ? GIT_BASH_HOST : linuxHost({})) {
+  const calls = [];
+  const base = deps({ pr: { number: 7, url: 'https://github.com/o/r/pull/7', comments: [verdict('PASS')] } });
+  const d = { ...base, gh: (cwd, args) => { calls.push(args); return base.gh(cwd, args); }, host };
+  const reason = decide(input, d);
+  return { reason, views: calls.filter(a => a[1] === 'view').map(a => a.join(' ')) };
+}
+
+test('a short-flag cluster that ends in R names the merge repo', () => {
+  for (const command of ['gh pr merge 7 --squash -dR o/r', 'gh pr merge 7 --squash -dRo/r', 'gh pr merge 7 -sdR o/r', 'gh pr merge 7 -sdR=o/r']) {
+    const { reason, views } = mergeReads(shell(command));
+    assert.equal(reason, null, command);
+    assert.deepEqual(views, ['pr view 7 -R o/r --json number,url,headRefOid,state,statusCheckRollup,comments'], command);
+  }
+  assert.match(mergeReads(shell('gh pr merge 7 -sdR $R')).reason ?? '', /write the repository out/i);
+});
+
+test('GH_REPO from the line or the hook environment names the merge repo, and -R wins', () => {
+  const readsFrom = (input, repo, host) => {
+    const { reason, views } = mergeReads(input, host);
+    assert.equal(reason, null, JSON.stringify(input.tool_input));
+    assert.ok(views.length === 1 && views[0].includes(`-R ${repo} `), `${JSON.stringify(input.tool_input)}: ${views}`);
+  };
+  readsFrom(shell('GH_REPO=o/r gh pr merge 7 --squash'), 'o/r');
+  readsFrom(shell('env GH_REPO=o/r gh pr merge 7 --squash'), 'o/r');
+  readsFrom(shell('export GH_REPO=o/r; gh pr merge 7 --squash'), 'o/r');
+  readsFrom(ps("$env:GH_REPO='o/r'; gh pr merge 7 --squash"), 'o/r');
+  readsFrom(shell('gh pr merge 7 --squash'), 'o/r', linuxHost({ GH_REPO: 'o/r' }));
+  readsFrom(shell('GH_REPO=o/r gh pr merge 7 --squash'), 'o/r', linuxHost({ GH_REPO: 'x/y' }));
+  readsFrom(shell('GH_REPO=x/y gh pr merge 7 -R o/r --squash'), 'o/r');
+  readsFrom(shell('gh pr merge 7 --squash -dR o/r'), 'o/r', linuxHost({ GH_REPO: 'x/y' }));
+  const { views } = mergeReads(shell('export GH_REPO=; gh pr merge 7 --squash'), linuxHost({ GH_REPO: 'x/y' }));
+  assert.deepEqual(views, ['pr view 7 --json number,url,headRefOid,state,statusCheckRollup,comments']);
+});
+
+test('a GH_REPO the guard cannot resolve refuses the merge', () => {
+  for (const input of [shell('GH_REPO=$R gh pr merge 7 --squash'), shell('export GH_REPO=$(cat repo); gh pr merge 7 --squash'), ps('$env:GH_REPO = (Get-Content repo.txt); gh pr merge 7 --squash'), ps('$env:GH_REPO = $r; gh pr merge 7 --squash')]) {
+    assert.match(mergeReads(input).reason ?? '', /write the repository out/i, JSON.stringify(input.tool_input));
+  }
+});
+
 test('a gh word that is not a known command is refused as a possible merge alias', () => {
   for (const command of ['gh m 5', 'gh m 5 --squash', 'gh -R o/r m 5', 'gh co 5', 'gh --bogus pr merge 5 --squash', 'gh pr --squash=true merge 5', 'gh -R o/r pr --delete-branch=true merge 5 --squash']) {
     assert.match(decide(shell(command), deps({ pr: { comments: [verdict('PASS')] } })) ?? '', /gh pr merge/, command);
@@ -246,6 +289,13 @@ test('a gh word that is not a known command is refused as a possible merge alias
   allowed(shell('gh api -X GET repos/o/r/pulls'));
   allowed(shell('gh status --org o'));
   allowed(shell(`gh -R o/r pr view 5 --json comments --jq '.comments[].body' | grep bstack-verdict`));
+});
+
+test('gh copilot is refused: its agent can merge outside the hook', () => {
+  for (const command of ['gh copilot', 'gh copilot -p "merge PR 5"', 'gh -R o/r copilot suggest x']) {
+    assert.match(decide(shell(command), deps()) ?? '', /copilot.*outside/i, command);
+  }
+  assert.match(decide(ps('gh copilot'), deps()) ?? '', /copilot.*outside/i);
 });
 
 test('tier 2 merge also needs a clean interrogate', () => {
