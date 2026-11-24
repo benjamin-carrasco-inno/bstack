@@ -21,7 +21,7 @@ Right forms: [example.html](example.html). Starter tokens and utilities: [tokens
 
 ## Tokens
 
-- Names follow Automatic.css 4: `--primary`, `--accent`, `--base`, `--neutral` with `-ultra-light` to `-ultra-dark`, `--text-dark`, `--bg-light`, `--text-xs` to `--text-xxl`, `--h1` to `--h6`, `--space-xs` to `--space-xxl`, `--content-gap`, `--grid-gap`, `--radius`, `--border`, `--box-shadow-1`, `--gutter`, `--focus-color`. No ACSS install, no build step.
+- Names follow Automatic.css 4: `--primary`, `--accent`, `--base`, `--neutral` with `-ultra-light` to `-ultra-dark`, `--text-dark`, `--bg-light`, `--text-xs` to `--text-xxl`, `--h1` to `--h6`, `--space-xs` to `--space-xxl`, `--content-gap`, `--container-gap`, `--grid-gap`, `--radius`, `--border`, `--box-shadow-1`, `--gutter`, `--focus-color`. No ACSS install, no build step.
 - Values belong to the repo, in its own `:root`. A repo adopting tokens copies tokens.css once and owns it from then on.
 - Names keep their light-scheme role; the dark scheme swaps the values, so `color: var(--text-dark)` works in both.
 - Component rules take colour, type, space, radius, border and shadow from tokens. No hex, no raw px. Units are `rem`; no `to-rem()`.
