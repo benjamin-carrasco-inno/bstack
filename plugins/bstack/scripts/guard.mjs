@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ASSIGNMENT, UNRESOLVED, commandsIn, endsInRedirect, loopBodies, parseGit, redirectTargets, tokenize, withoutHeredocBodies, words } from './lib/shell.mjs';
-import { KINDS, MARKER, latestFor, timeOf } from './lib/verdicts.mjs';
+import { KINDS, MARKER, latestFor, shaOf, timeOf } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
@@ -516,6 +516,8 @@ function apiRule(args) {
 
 const MERGE_VALUE_OPTS = new Set(['-R', '--repo', '-b', '--body', '-F', '--body-file', '-t', '--subject', '--match-head-commit', '-A', '--author-email']);
 
+const INTERROGATE_ROUNDS = 3;
+
 function mergeGate(args, cwd, deps) {
   const flags = [];
   let selector = null;
@@ -560,7 +562,13 @@ function mergeGate(args, cwd, deps) {
   if (risk.tier === 2) {
     const inter = latestFor('interrogate', pr.comments, sha);
     if (!inter) return `Tier 2${why}: run bstack:interrogate on head ${short} before merging, and get the user's OK if a revert cannot undo it.`;
-    if (inter.confirmed > 0) return `Interrogate confirmed ${inter.confirmed} finding(s) on ${short}. Fix them through the bug-fix playbook, then review again.`;
+    if (inter.blocking > 0) {
+      const rounds = new Set(pr.comments.map(c => shaOf('interrogate', c.body)).filter(Boolean)).size;
+      const next = rounds >= INTERROGATE_ROUNDS
+        ? `${rounds} interrogate rounds are done: stop and report to the user what is fixed, what is open and your recommendation.`
+        : 'Fix them through the bug-fix playbook, then review again.';
+      return `Interrogate found ${inter.blocking} blocking finding(s) on ${short}. ${next}`;
+    }
   }
   return null;
 }
@@ -585,12 +593,8 @@ function postSaved(pr, cwd, deps) {
 }
 
 function replaced(entry, comments) {
-  const { tag, line } = KINDS[entry.kind];
   const savedAt = Date.parse(entry.at ?? '') || 0;
-  return comments.some(c => {
-    const body = String(c.body ?? '');
-    return body.startsWith(tag) && line.exec(body)?.[2] === entry.sha && timeOf(c) > savedAt;
-  });
+  return comments.some(c => shaOf(entry.kind, c.body) === entry.sha && timeOf(c) > savedAt);
 }
 
 const runKey = c => `${c.__typename ?? ''}|${c.workflowName ?? ''}|${c.name ?? c.context ?? 'check'}`;
