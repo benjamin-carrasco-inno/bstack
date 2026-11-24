@@ -278,8 +278,25 @@ test('GH_REPO from a prefix on the merge command or the hook environment names t
   readsFrom(shell('gh pr merge 7 --squash -dR o/r'), 'o/r', linuxHost({ GH_REPO: 'x/y' }));
   readsFrom(shell('export GH_REPO=x/y; gh pr merge 7 --squash -R o/r'), 'o/r');
   readsFrom(ps("$env:GH_REPO='x/y'; gh pr merge 7 --squash -R o/r"), 'o/r');
-  const { views } = mergeReads(shell('GH_REPO= gh pr merge 7 --squash'), linuxHost({ GH_REPO: 'x/y' }));
-  assert.deepEqual(views, ['pr view 7 --json number,url,headRefOid,state,statusCheckRollup,comments']);
+});
+
+test('an empty GH_REPO prefix reads the cwd repo, and the guard gh never inherits GH_REPO', () => {
+  for (const command of ['GH_REPO= gh pr merge 7 --squash', 'GH_REPO=o/r GH_REPO= gh pr merge 7 --squash']) {
+    assert.deepEqual(mergeReads(shell(command), linuxHost({ GH_REPO: 'x/y' })).views, ['pr view 7 --json number,url,headRefOid,state,statusCheckRollup,comments'], command);
+  }
+  const fakeGh = tempDir();
+  fs.copyFileSync(process.execPath, path.join(fakeGh, process.platform === 'win32' ? 'gh.exe' : 'gh'));
+  fs.writeFileSync(path.join(fakeGh, 'pr'), "process.stdout.write(process.env.GH_REPO ?? 'unset')");
+  const pathKey = Object.keys(process.env).find(name => name.toUpperCase() === 'PATH');
+  const saved = { path: process.env[pathKey], repo: process.env.GH_REPO };
+  process.env[pathKey] = `${fakeGh}${path.delimiter}${saved.path}`;
+  process.env.GH_REPO = 'x/y';
+  try {
+    assert.equal(realDeps.gh(fakeGh, ['pr', 'view']), 'unset');
+  } finally {
+    process.env[pathKey] = saved.path;
+    if (saved.repo === undefined) delete process.env.GH_REPO; else process.env.GH_REPO = saved.repo;
+  }
 });
 
 test('GH_REPO named anywhere else on the line refuses a merge without -R', () => {
