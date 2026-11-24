@@ -342,7 +342,7 @@ const refuse = (agent, what, fix = 'Report what you would run instead.') => `The
 const CONTROL = nameSet('for switch fi done esac case in try catch finally return break continue exit throw [ [[ test true false');
 const READS = {
   posix: nameSet(`cat head tail ls dir wc grep egrep fgrep rg find echo printf pwd basename dirname realpath readlink stat which type
-    diff cmp comm cut tr nl jq date sleep du df sha256sum sha1sum md5sum printenv whoami hostname uname ps sort uniq`),
+    diff cmp comm cut tr nl jq sleep du df sha256sum sha1sum md5sum printenv whoami uname ps sort uniq set export`),
   powershell: nameSet(`get-content gc cat type get-childitem gci ls dir select-string sls test-path resolve-path rvpa get-item gi
     get-location gl pwd select-object select where-object where ? sort-object sort measure-object measure group-object group
     format-table ft format-list fl out-string out-null write-output write echo write-host convertfrom-json convertto-json
@@ -354,6 +354,8 @@ const POSIX_READ_LIMITS = {
   rg: args => args.find(a => /^--pre(-glob)?(=|$)/.test(a)),
   sort: args => args.find(a => /^(-[a-zA-Z]*o|--output)/.test(a)),
   uniq: args => args.filter(a => !a.startsWith('-')).length > 1 && 'with an output file',
+  set: args => args.find(a => !/^([-+][a-zA-Z]*|pipefail|errexit|nounset|xtrace)$/.test(a)),
+  export: args => args.find(a => !/^-?[A-Za-z_]\w*(=.*)?$/s.test(a) || RISKY_VARIABLE.test(a.split('=')[0])),
 };
 
 const FILTERS = ['filter', 'include', 'exclude', 'credential'];
@@ -381,7 +383,7 @@ const POWERSHELL_PATH_TAKER_ALIASES = { ...POWERSHELL_WRITER_ALIASES, si: 'set-i
 const WRITERS = { posix: nameSet('rm rmdir mkdir cp mv touch tee'), cmd: nameSet('del erase rd rmdir md mkdir copy move ren') };
 
 const RISKY_VARIABLE = /^(GIT_\w*|PATH|PATHEXT|\w*_OPTIONS|LD_\w+|DYLD_\w+|BASH_ENV|ENV|\w*PAGER|\w*EDITOR|PYTHONSTARTUP|PYTHONPATH|NODE_PATH|COMSPEC|SHELLOPTS|PS4|PROMPT_COMMAND)$/i;
-const EXPRESSION_START = /^[$'"@(\[\d.-]/;
+const EXPRESSION_START = /^([$'"@(\[\d-]|\.(?![\\/.\s]))/;
 const POWERSHELL_ASSIGNMENT = /^\$\{?([\w:]+)\}?\s*(?:[+\-*/%]|\?\?)?=(?!=)\s*(.*)$/s;
 const POWERSHELL_OPERATOR = /^-[ci]?(eq|ne|gt|ge|lt|le|like|notlike|match|notmatch|replace|split|join|contains|notcontains|in|notin|is|isnot|as|and|or|xor|not|band|bor|bxor|bnot|shl|shr|f)$/i;
 const CALL_OPERATOR = /(^|[\n;|({"])\s*[&.]\s*['"$(@]/;
@@ -463,7 +465,7 @@ function commandRule(c, ctx) {
   if (cmd === '' || cmd in DIR_MOVES || CONTROL.has(cmd)) return null;
   if (READS[dialect]?.has(cmd)) {
     const limit = dialect === 'posix' && POSIX_READ_LIMITS[cmd]?.(args);
-    return limit ? refuse(ctx.agent, `${cmd} ${limit}, which writes files or runs commands`) : null;
+    return limit ? refuse(ctx.agent, `${cmd} ${limit} is not on the list`) : null;
   }
   const writer = dialect === 'powershell' ? POWERSHELL_WRITERS[POWERSHELL_WRITER_ALIASES[cmd] ?? cmd] : WRITERS[dialect]?.has(cmd) && {};
   if (writer) return writerRule(c, writer, ctx);
@@ -478,7 +480,7 @@ function writerRule(c, spec, ctx) {
   if (typeof targets === 'string') return refuse(ctx.agent, `${c.cmd} ${targets} glues a value to an option`, 'Write the option and its value as separate words.');
   if (ps && !targets.length) return refuse(ctx.agent, `${c.cmd} without a literal path takes its targets from the pipeline`, 'Name the path.');
   for (const { text, expression } of targets) {
-    const reason = insideRule(c, ctx, text, expression);
+    const reason = UNRESOLVABLE[c.dialect]?.test(text) ? refuse(ctx.agent, `${c.cmd} ${text}: the path cannot be resolved before it runs`, 'Use a literal path.') : insideRule(c, ctx, text, expression);
     if (reason) return reason;
   }
   return null;
@@ -492,8 +494,8 @@ function writerTargets(c, spec) {
   for (let i = 0; i < c.args.length; i++) {
     const a = c.args[i];
     const expression = c.expressions?.has(i) ?? false;
-    if (expression || !a.startsWith('-') || a === '-' || (c.dialect === 'cmd' && /^\/[a-z?]$/i.test(a))) {
-      if (c.dialect === 'cmd' && /^\/[a-z?]$/i.test(a)) continue;
+    if (a === '--' || (c.dialect === 'cmd' && /^\/[a-z?]$/i.test(a))) continue;
+    if (expression || !a.startsWith('-') || a === '-') {
       if (!(spec.content && positional++ >= (namedPath ? 0 : 1))) out.push({ text: a, expression });
       continue;
     }
@@ -510,11 +512,10 @@ function writerTargets(c, spec) {
 const UNRESOLVABLE = {
   posix: /[{}]|^~[^/]/,
   powershell: /^@|::|^[a-z][\w.]+:/i,
-  cmd: /^$/,
 };
 
 function insideRule(c, ctx, word, expression) {
-  const target = UNRESOLVABLE[c.dialect]?.test(word) ? undefined : writeTarget(word, knownCwd(c), c.dialect, ctx.host, expression);
+  const target = writeTarget(word, knownCwd(c), c.dialect, ctx.host, expression);
   if (target === null) return null;
   if (target === undefined) return refuse(ctx.agent, `${c.cmd} ${word}: the path cannot be resolved before it runs`, 'Use a literal path.');
   if (!owns(ctx.root, target, ctx.host)) return refuse(ctx.agent, `${c.cmd} on ${target}, outside its own worktree (${ctx.root}) and the temp dir`, 'Report what should change instead of changing it.');
@@ -550,7 +551,10 @@ function runner(problem = () => null) {
   };
 }
 
+const VERSION = /^(--version|-v|-V)$/;
+
 function nodeProblem(args) {
+  if (args.length === 1 && VERSION.test(args[0])) return null;
   const inline = args.find(a => /^(-e|--eval|-p|--print|-i|--interactive|-|--input-type)(=|$)/.test(a) || a.includes('data:'));
   if (inline) return `${inline} runs code from the command line or stdin`;
   return args.includes('--test') || args.some(a => !a.startsWith('-')) ? null : 'without a script file reads code from stdin';
@@ -559,6 +563,7 @@ function nodeProblem(args) {
 const PYTHON_MODULES = /^(pytest|unittest|uvicorn)$/;
 
 function pythonProblem(args) {
+  if (args.length === 1 && VERSION.test(args[0])) return null;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     const module = /^-m(.*)$/.exec(a);
@@ -584,7 +589,7 @@ function packageProblem(args) {
 
 function cargoProblem(args) {
   const sub = args.find(a => !a.startsWith('-') && !a.startsWith('+'));
-  return /^(test|build|check|run|nextest)$/.test(sub ?? '') ? null : `${sub ?? ''} is not on the list (test, build, check, run)`;
+  return /^(test|build|check|run|nextest)$/.test(sub ?? '') || (args.length === 1 && VERSION.test(args[0])) ? null : `${sub ?? ''} is not on the list (test, build, check, run)`;
 }
 
 function sqliteRule(c, ctx) {
@@ -686,7 +691,7 @@ const GH_READS = new Set(['pr view', 'pr diff', 'pr checks', 'pr list', 'pr stat
 function ghAllowed(c, ctx) {
   const [group, action] = ghSubcommand(c.args);
   const name = `${group} ${action}`;
-  if (GH_READS.has(name) || (group === 'api' && !hasWriteFields(c.args))) return null;
+  if (GH_READS.has(name) || (group === 'api' && !hasWriteFields(c.args) && !c.args.some(a => /^-X(?!GET$)./i.test(a)))) return null;
   if (name === 'pr checkout' && c.args.includes('--detach') && !c.args.some(a => /^(-b|--branch|-f|--force)/.test(a))) {
     return inWorktree(c, ctx) ? null : refuse(ctx.agent, `gh pr checkout outside its own worktree (${ctx.root})`, `cd into ${ctx.root} first.`);
   }
