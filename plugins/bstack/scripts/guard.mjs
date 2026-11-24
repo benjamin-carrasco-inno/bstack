@@ -173,9 +173,11 @@ function pathArgs({ cmd, args }) {
   return args.filter((a, i) => !MESSAGE_OPTS.has(args[i - 1]) && !/^--(message|body|title)=/.test(a));
 }
 
+const GH_SHORT_F_IS_FILE = new Set(['pr', 'issue', 'release']);
+
 function bodyFiles(args) {
   const files = [];
-  const fileFlags = args[0] === 'api' ? ['--input'] : ['--body-file', '-F', '--input'];
+  const fileFlags = GH_SHORT_F_IS_FILE.has(args[0]) ? ['--body-file', '-F', '--input'] : ['--body-file', '--input'];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (fileFlags.includes(a)) files.push(args[i + 1]);
