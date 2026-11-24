@@ -1,0 +1,169 @@
+:root {
+  color-scheme: light dark;
+
+  --primary: oklch(52% 0.17 255);
+  --accent: oklch(66% 0.16 50);
+  --base: oklch(62% 0.03 255);
+  --neutral: oklch(50% 0.015 255);
+
+  --primary-ultra-light: light-dark(color-mix(in oklch, var(--primary) 8%, white), color-mix(in oklch, var(--primary) 20%, black));
+  --primary-light: light-dark(color-mix(in oklch, var(--primary) 25%, white), color-mix(in oklch, var(--primary) 40%, black));
+  --primary-semi-light: light-dark(color-mix(in oklch, var(--primary) 60%, white), color-mix(in oklch, var(--primary) 70%, black));
+  --primary-semi-dark: light-dark(color-mix(in oklch, var(--primary) 70%, black), color-mix(in oklch, var(--primary) 60%, white));
+  --primary-dark: light-dark(color-mix(in oklch, var(--primary) 40%, black), color-mix(in oklch, var(--primary) 25%, white));
+  --primary-ultra-dark: light-dark(color-mix(in oklch, var(--primary) 20%, black), color-mix(in oklch, var(--primary) 8%, white));
+
+  --accent-ultra-light: light-dark(color-mix(in oklch, var(--accent) 8%, white), color-mix(in oklch, var(--accent) 20%, black));
+  --accent-light: light-dark(color-mix(in oklch, var(--accent) 25%, white), color-mix(in oklch, var(--accent) 40%, black));
+  --accent-semi-light: light-dark(color-mix(in oklch, var(--accent) 60%, white), color-mix(in oklch, var(--accent) 70%, black));
+  --accent-semi-dark: light-dark(color-mix(in oklch, var(--accent) 70%, black), color-mix(in oklch, var(--accent) 60%, white));
+  --accent-dark: light-dark(color-mix(in oklch, var(--accent) 40%, black), color-mix(in oklch, var(--accent) 25%, white));
+  --accent-ultra-dark: light-dark(color-mix(in oklch, var(--accent) 20%, black), color-mix(in oklch, var(--accent) 8%, white));
+
+  --base-ultra-light: light-dark(color-mix(in oklch, var(--base) 8%, white), color-mix(in oklch, var(--base) 20%, black));
+  --base-light: light-dark(color-mix(in oklch, var(--base) 25%, white), color-mix(in oklch, var(--base) 40%, black));
+  --base-semi-light: light-dark(color-mix(in oklch, var(--base) 60%, white), color-mix(in oklch, var(--base) 70%, black));
+  --base-semi-dark: light-dark(color-mix(in oklch, var(--base) 70%, black), color-mix(in oklch, var(--base) 60%, white));
+  --base-dark: light-dark(color-mix(in oklch, var(--base) 40%, black), color-mix(in oklch, var(--base) 25%, white));
+  --base-ultra-dark: light-dark(color-mix(in oklch, var(--base) 20%, black), color-mix(in oklch, var(--base) 8%, white));
+
+  --neutral-ultra-light: light-dark(color-mix(in oklch, var(--neutral) 8%, white), color-mix(in oklch, var(--neutral) 20%, black));
+  --neutral-light: light-dark(color-mix(in oklch, var(--neutral) 25%, white), color-mix(in oklch, var(--neutral) 40%, black));
+  --neutral-semi-light: light-dark(color-mix(in oklch, var(--neutral) 60%, white), color-mix(in oklch, var(--neutral) 70%, black));
+  --neutral-semi-dark: light-dark(color-mix(in oklch, var(--neutral) 70%, black), color-mix(in oklch, var(--neutral) 60%, white));
+  --neutral-dark: light-dark(color-mix(in oklch, var(--neutral) 40%, black), color-mix(in oklch, var(--neutral) 25%, white));
+  --neutral-ultra-dark: light-dark(color-mix(in oklch, var(--neutral) 20%, black), color-mix(in oklch, var(--neutral) 8%, white));
+
+  --text-dark: var(--neutral-ultra-dark);
+  --text-dark-muted: var(--neutral-dark);
+  --text-light: var(--neutral-ultra-light);
+  --text-light-muted: var(--neutral-light);
+  --bg-ultra-light: var(--base-ultra-light);
+  --bg-light: var(--base-light);
+  --bg-dark: var(--base-dark);
+  --bg-ultra-dark: var(--base-ultra-dark);
+  --body-bg-color: var(--bg-ultra-light);
+  --focus-color: var(--accent);
+
+  --text-font-family: system-ui, sans-serif;
+  --heading-font-family: var(--text-font-family);
+  --text-xs: clamp(0.75rem, 0.729rem + 0.104vw, 0.8125rem);
+  --text-s: clamp(0.875rem, 0.854rem + 0.104vw, 0.9375rem);
+  --text-m: clamp(1rem, 0.958rem + 0.208vw, 1.125rem);
+  --text-l: clamp(1.125rem, 1.042rem + 0.417vw, 1.375rem);
+  --text-xl: clamp(1.375rem, 1.25rem + 0.625vw, 1.75rem);
+  --text-xxl: clamp(1.75rem, 1.5rem + 1.25vw, 2.5rem);
+  --h1: clamp(2rem, 1.667rem + 1.667vw, 3rem);
+  --h2: clamp(1.625rem, 1.417rem + 1.042vw, 2.25rem);
+  --h3: clamp(1.375rem, 1.25rem + 0.625vw, 1.75rem);
+  --h4: clamp(1.125rem, 1.042rem + 0.417vw, 1.375rem);
+  --h5: clamp(1rem, 0.958rem + 0.208vw, 1.125rem);
+  --h6: clamp(0.875rem, 0.833rem + 0.208vw, 1rem);
+
+  --space-xs: clamp(0.5rem, 0.458rem + 0.208vw, 0.625rem);
+  --space-s: clamp(0.75rem, 0.667rem + 0.417vw, 1rem);
+  --space-m: clamp(1rem, 0.833rem + 0.833vw, 1.5rem);
+  --space-l: clamp(1.5rem, 1.25rem + 1.25vw, 2.25rem);
+  --space-xl: clamp(2rem, 1.667rem + 1.667vw, 3rem);
+  --space-xxl: clamp(3rem, 2.5rem + 2.5vw, 4.5rem);
+  --gutter: clamp(1rem, 0.667rem + 1.667vw, 2rem);
+  --content-gap: var(--space-m);
+  --container-gap: var(--space-l);
+  --grid-gap: var(--space-m);
+  --content-width: 80rem;
+
+  --radius: 0.5rem;
+  --border-size: 0.0625rem;
+  --border-style: solid;
+  --border-color-dark: var(--neutral-semi-light);
+  --border-color-light: var(--neutral-semi-dark);
+  --border: var(--border-size) var(--border-style) var(--border-color-dark);
+  --border-light: var(--border-size) var(--border-style) var(--border-color-light);
+  --shadow-color: light-dark(oklch(25% 0.02 255 / 0.12), oklch(0% 0 0 / 0.5));
+  --box-shadow-1: 0 0.0625rem 0.125rem var(--shadow-color);
+  --box-shadow-2: 0 0.25rem 0.75rem var(--shadow-color);
+  --box-shadow-3: 0 0.75rem 2rem var(--shadow-color);
+}
+
+:root[data-scheme="light"] {
+  color-scheme: light;
+}
+
+:root[data-scheme="dark"] {
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--body-bg-color);
+  color: var(--text-dark);
+  font-family: var(--text-font-family);
+  font-size: var(--text-m);
+  line-height: 1.5;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--heading-font-family);
+  line-height: 1.2;
+}
+
+h1 { font-size: var(--h1); }
+h2 { font-size: var(--h2); }
+h3 { font-size: var(--h3); }
+h4 { font-size: var(--h4); }
+h5 { font-size: var(--h5); }
+h6 { font-size: var(--h6); }
+
+:focus-visible {
+  outline: calc(var(--border-size) * 2) solid var(--focus-color);
+  outline-offset: calc(var(--border-size) * 2);
+}
+
+.visually-hidden {
+  position: absolute;
+  inline-size: var(--border-size);
+  block-size: var(--border-size);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-s);
+  border: var(--border-size) var(--border-style) transparent;
+  border-radius: var(--radius);
+  background: var(--primary-dark);
+  color: var(--text-light);
+  font: inherit;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--primary-ultra-dark);
+}
+
+.btn[data-variant="outline"] {
+  border-color: currentColor;
+  background: transparent;
+  color: var(--primary-dark);
+}
+
+.btn[data-variant="outline"]:hover {
+  background: var(--primary-ultra-light);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
