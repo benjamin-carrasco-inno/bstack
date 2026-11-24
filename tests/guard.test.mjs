@@ -760,6 +760,18 @@ test('a body file given as a Git Bash /tmp path is read from the temp dir', () =
   allowed(bashAt('gh pr comment 5 --body-file /tmp/b/v.md'), bodyAt('C:\\Temp\\b\\v.md', 'just a note'));
 });
 
+test('a body file under a temp variable the same line assigns is refused', () => {
+  const noteAt = (host, file) => onHost(host, { ...deps(), readFile: f => (f === file ? 'just a note' : null) });
+  const windows = noteAt(GIT_BASH_HOST, 'C:\\Temp\\v.md');
+  const linux = noteAt({ ...LINUX_HOST, env: { TMPDIR: '/tmp' } }, '/tmp/v.md');
+  blocked(psAt("$env:TEMP='C:\\evil'; gh pr comment 5 --body-file $env:TEMP\\v.md"), windows);
+  blocked(bashAt('TMPDIR=/evil; gh pr comment 5 --body-file $TMPDIR/v.md'), linux);
+  blocked(bashAt('export TMPDIR=/c/evil; gh pr comment 5 --body-file $TMPDIR/v.md'), linux);
+  blocked(bashAt('TMPDIR=/evil gh pr comment 5 --body-file $TMPDIR/v.md'), linux);
+  allowed(psAt("$env:FOO='x'; gh pr comment 5 --body-file $env:TEMP\\v.md"), windows);
+  allowed(bashAt('gh pr comment 5 --body-file $TMPDIR/v.md'), linux);
+});
+
 test('a body file the guard cannot read is refused', () => {
   blocked(shell('gh pr comment 5 --body-file missing.md'));
   blocked(shell('gh issue create -t x -F missing.md'));
