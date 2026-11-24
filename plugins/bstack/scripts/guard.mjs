@@ -148,7 +148,8 @@ function resolvedDir(target, here, dialect, paths) {
 const SAVED_VERDICTS = 'Saved verdicts are written only by the bstack hook when GitHub does not answer; the guard posts them at the next merge. Run the bstack:reviewer or bstack:adversary agent instead.';
 
 function markerRule(c, deps) {
-  const readOnlyGh = c.cmd === 'gh' && (/^(view|checks|diff|list|status)$/.test(c.args[1] ?? '') || (c.args[0] === 'api' && !hasWriteFields(c.args)));
+  const [ghGroup, ghAction] = c.cmd === 'gh' ? ghSubcommand(c.args) : [];
+  const readOnlyGh = c.cmd === 'gh' && (/^(view|checks|diff|list|status)$/.test(ghAction ?? '') || (ghGroup === 'api' && !hasWriteFields(c.args)));
   if (MARKER.test(c.text) && !READ_ONLY.has(c.cmd) && !readOnlyGh) {
     return 'Verdict and interrogate lines are posted by the bstack hook when the bstack:reviewer or bstack:adversary agent finishes. Run that agent instead of writing the line yourself.';
   }
@@ -176,16 +177,20 @@ function pathArgs({ cmd, args }) {
 
 const GH_SHORT_F_IS_FIELD = new Set(['api', 'workflow run']);
 
-export function ghSubcommand(args) {
-  const words = [];
-  for (let i = 0; i < args.length && words.length < 2; i++) {
+function parseGh(args) {
+  const at = [];
+  for (let i = 0; i < args.length && at.length < 2; i++) {
     const a = args[i];
     if (a === '-R' || a === '--repo') i++;
     else if (a.startsWith('--repo=') || /^-R./.test(a)) continue;
-    else if (a.startsWith('-')) break;
-    else words.push(a);
+    else if (a.startsWith('-')) return { at, flag: a };
+    else at.push(i);
   }
-  return words;
+  return { at, flag: null };
+}
+
+export function ghSubcommand(args) {
+  return parseGh(args).at.map(i => args[i]);
 }
 
 function shortFIsField(args) {
@@ -209,7 +214,8 @@ function bodyFiles(args) {
 function agentRule(c, agent) {
   if (!NO_AUTHORING_AGENTS.test(agent)) return null;
   const git = c.cmd === 'git' ? parseGit(c.args).sub : '';
-  const gh = c.cmd === 'gh' ? `${c.args[0]} ${c.args[1] ?? ''}` : '';
+  const [ghGroup, ghAction] = c.cmd === 'gh' ? ghSubcommand(c.args) : [];
+  const gh = c.cmd === 'gh' ? `${ghGroup} ${ghAction ?? ''}` : '';
   if (/^(commit|push|merge|rebase|tag|cherry-pick|am|revert)$/.test(git) || /^pr (merge|comment|review|edit|close|create|ready)|^issue (comment|create|edit|close|reopen|delete|transfer|lock|unlock|pin|unpin|develop)|^label (create|edit|delete|clone)|^api /.test(gh) && !(gh.startsWith('api ') && !hasWriteFields(c.args))) {
     return `The ${agent} agent judges and reproduces; it does not commit, push or post. Report the finding in your final message; the hook posts it.`;
   }
@@ -508,10 +514,19 @@ function rebaseRule(repo, deps) {
 }
 
 // --- gh -------------------------------------------------------------------------------------------
+const GH_COMMANDS = new Set(['auth', 'browse', 'codespace', 'discussion', 'gist', 'issue', 'org', 'pr', 'project', 'release', 'repo', 'skill', 'cache', 'run', 'workflow', 'agent-task', 'alias', 'api', 'attestation', 'completion', 'config', 'copilot', 'extension', 'gpg-key', 'label', 'licenses', 'preview', 'ruleset', 'search', 'secret', 'ssh-key', 'status', 'variable', 'help', 'version']);
+const GH_SINGLE_WORD = new Set(['api', 'browse', 'completion', 'copilot', 'help', 'licenses', 'status', 'version']);
+const GH_TOP_FLAGS = new Set(['--help', '-h', '--version']);
+const GH_HIDDEN_SUBCOMMAND = 'The guard cannot tell which gh command this runs (an alias, an extension, or a flag before the subcommand can hide gh pr merge), so it fails closed. Write the full command with the subcommand first: gh pr merge <n> --squash --delete-branch, gh pr view <n>, and so on.';
+
 function ghRule(c, cwd, deps) {
-  const [group, action] = c.args;
-  if (group === 'pr' && action === 'merge') return mergeGate(c.args.slice(2), cwd, deps);
-  if (group === 'api') return apiRule(c.args.slice(1));
+  const { at, flag } = parseGh(c.args);
+  const [group, action] = at.map(i => c.args[i]);
+  if (group === undefined ? flag !== null && !GH_TOP_FLAGS.has(flag) : !GH_COMMANDS.has(group)) return GH_HIDDEN_SUBCOMMAND;
+  if (action === undefined && flag !== null && !GH_SINGLE_WORD.has(group) && !GH_TOP_FLAGS.has(flag)) return GH_HIDDEN_SUBCOMMAND;
+  const without = n => c.args.filter((_, i) => !at.slice(0, n).includes(i));
+  if (group === 'pr' && action === 'merge') return mergeGate(without(2), cwd, deps);
+  if (group === 'api') return apiRule(without(1));
   return null;
 }
 
@@ -555,6 +570,7 @@ function mergeGate(args, cwd, deps) {
     const a = args[i];
     if (MERGE_VALUE_OPTS.has(a)) { if (a === '-R' || a === '--repo') repo = args[i + 1]; i++; continue; }
     if (a.startsWith('--repo=')) { repo = a.slice(7); continue; }
+    if (/^-R./.test(a)) { repo = a.slice(2); continue; }
     if (a.startsWith('-')) flags.push(a); else selector ??= a;
   }
   if (flags.includes('--auto')) return 'Auto-merge is blocked: it would merge later without the verdict check. Wait for CI and the verdict, then gh pr merge <n> --squash --delete-branch.';

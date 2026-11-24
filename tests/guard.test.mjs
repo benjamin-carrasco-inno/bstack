@@ -199,6 +199,35 @@ test('a merge whose repo is a shell variable is refused with the name to write o
   assert.match(decide(ps('gh pr merge 7 -R $env:R --squash'), deps({ pr: { comments: [verdict('PASS')] } })) ?? '', /write the repository out/i);
 });
 
+test('a repo flag before pr merge hits the same merge gate', () => {
+  for (const repoFlag of ['-R o/r', '--repo o/r', '--repo=o/r', '-Ro/r']) {
+    blocked(shell(`gh ${repoFlag} pr merge 7 --squash --delete-branch`));
+    blocked(shell(`gh ${repoFlag} pr merge 7 --merge`), deps({ pr: { comments: [verdict('PASS')] } }));
+    blocked(shell(`gh ${repoFlag} pr merge 7 --squash --auto`), deps({ pr: { comments: [verdict('PASS')] } }));
+    blocked({ ...shell(`gh ${repoFlag} pr merge 7 --squash`), agent_type: 'bstack:reviewer' });
+    const calls = [];
+    const base = deps({ pr: { number: 7, url: 'https://github.com/o/r/pull/7', comments: [verdict('PASS')] } });
+    const d = { ...base, gh: (cwd, args) => { calls.push(args); return base.gh(cwd, args); } };
+    allowed(shell(`gh ${repoFlag} pr merge 7 --squash --delete-branch`), d);
+    assert.ok(calls.length > 0 && calls.every(a => a.join(' ').includes('-R o/r') || a.includes('https://github.com/o/r/pull/7')), `${repoFlag}: ${JSON.stringify(calls)}`);
+  }
+});
+
+test('a gh word that is not a known command is refused as a possible merge alias', () => {
+  for (const command of ['gh m 5', 'gh m 5 --squash', 'gh -R o/r m 5', 'gh co 5', 'gh --bogus pr merge 5 --squash', 'gh pr --squash=true merge 5', 'gh -R o/r pr --delete-branch=true merge 5 --squash']) {
+    assert.match(decide(shell(command), deps({ pr: { comments: [verdict('PASS')] } })) ?? '', /gh pr merge/, command);
+  }
+  allowed(shell('gh -R o/r pr view 5'));
+  allowed(shell('gh -R o/r issue list'));
+  allowed(shell('gh --repo=o/r pr checks 5'));
+  allowed(shell('gh --version'));
+  allowed(shell('gh help pr'));
+  allowed(shell('gh alias list'));
+  allowed(shell('gh api -X GET repos/o/r/pulls'));
+  allowed(shell('gh status --org o'));
+  allowed(shell(`gh -R o/r pr view 5 --json comments --jq '.comments[].body' | grep bstack-verdict`));
+});
+
 test('tier 2 merge also needs a clean interrogate', () => {
   const d = comments => deps({ diff: DATA_DIFF, pr: { comments } });
   blocked(shell('gh pr merge 5 --squash'), d([verdict('PASS')]));
