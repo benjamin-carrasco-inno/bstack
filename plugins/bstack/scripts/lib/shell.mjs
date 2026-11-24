@@ -92,7 +92,7 @@ function quotedSubstitution(line, i, dialect, closes) {
   return close > 0 ? { inner: i + 1, close } : null;
 }
 
-function closingParen(line, open, dialect, closes) {
+export function closingParen(line, open, dialect = 'posix', closes = new Map()) {
   if (!closes.has(open)) closes.set(open, scanToClosingParen(line, open, dialect, closes));
   return closes.get(open);
 }
@@ -119,7 +119,7 @@ function scanToClosingParen(line, open, dialect, closes) {
   return -1;
 }
 
-function closingBacktick(line, open) {
+export function closingBacktick(line, open) {
   for (let i = open + 1; i < line.length; i++) {
     if (line[i] === '\\') i++;
     else if (line[i] === '`') return i;
@@ -234,7 +234,7 @@ export function words(segment, dialect = 'posix') {
     const ch = segment[i];
     if (quote) {
       if (ch === quote) { quote = null; continue; }
-      if (ch === '\\' && quote === '"' && /["\\$`]/.test(segment[i + 1] ?? '')) { addQuoted(segment[++i]); continue; }
+      if (quote === '"' && escapesInDoubleQuotes(ch, dialect) && /["\\$`]/.test(segment[i + 1] ?? '')) { addQuoted(segment[++i]); continue; }
       if (quote === '"' && expandsAt(segment, i, dialect, true)) expands = true;
       addQuoted(ch);
       continue;
@@ -254,18 +254,18 @@ export function words(segment, dialect = 'posix') {
   return out;
 }
 
-export function tokenize(segment) {
-  return words(segment).map(w => w.text);
+export function tokenize(segment, dialect = 'posix') {
+  return words(segment, dialect).map(w => w.text);
 }
 
-export function redirectTargets(segment) {
+export function redirectTargets(segment, dialect = 'posix') {
   const targets = [];
   let quote = null;
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i];
     if (quote) {
       if (ch === quote) quote = null;
-      else if (ch === '\\' && quote === '"') i++;
+      else if (quote === '"' && escapesInDoubleQuotes(ch, dialect)) i++;
       continue;
     }
     const here = hereString(segment, i);
@@ -275,7 +275,7 @@ export function redirectTargets(segment) {
     if (segment[i + 1] === '>') i++;
     if (segment[i + 1] === '&') { i++; continue; }
     if (segment[i + 1] === '|') i++;
-    const [word] = words(segment.slice(i + 1));
+    const [word] = words(segment.slice(i + 1), dialect);
     if (word?.text) targets.push(word);
   }
   return targets;

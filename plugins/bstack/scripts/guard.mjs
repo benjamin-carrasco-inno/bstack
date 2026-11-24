@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ASSIGNMENT, UNRESOLVED, commandsIn, endsInRedirect, loopBodies, parseGit, redirectTargets, tokenize, withoutHeredocBodies, words } from './lib/shell.mjs';
+import { ASSIGNMENT, UNRESOLVED, closingBacktick, closingParen, commandsIn, endsInRedirect, loopBodies, parseGit, redirectTargets, tokenize, withoutHeredocBodies, words } from './lib/shell.mjs';
 import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, timeOf, userOkFor } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
@@ -25,21 +25,24 @@ export function decide(input, deps) {
   const cwd = input.cwd || process.cwd();
   const agent = String(input.agent_type ?? '');
   if (tool.startsWith('mcp__')) return mcpRule(tool, input.tool_input ?? {});
-  if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(tool)) return writeRule(input.tool_input ?? {}, deps);
+  const host = withPaths(deps.host ?? REAL_HOST);
+  const root = host.paths.resolvePath(cwd);
+  const noAuthoring = NO_AUTHORING_AGENTS.test(agent);
+  if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(tool)) return (noAuthoring ? agentFileRule(input.tool_input ?? {}, agent, root, host) : null) ?? writeRule(input.tool_input ?? {}, deps);
   if (tool !== 'Bash' && tool !== 'PowerShell') return null;
   const line = String(input.tool_input?.command ?? '');
   const dialect = tool === 'PowerShell' ? 'powershell' : 'posix';
-  const host = withPaths(deps.host ?? REAL_HOST);
   const tempNames = commandsIn(withoutHeredocBodies(line), 0, dialect).some(changesEnv) ? NO_TEMP_NAMES : plainTempNames(line);
   const hostDeps = { ...deps, host: { ...host, tempNames } };
-  const root = host.paths.resolvePath(cwd);
+  const refused = noAuthoring ? noAuthoringRule(line, dialect, cwd, agent, root, hostDeps.host) : null;
+  if (refused) return refused;
   const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
   const looped = loopBodies(line).some(body => commandsIn(body, 0, dialect).some(createsCommit));
   for (const [k, c] of commands.entries()) {
-    const reason = hiddenRule(c) ?? markerRule(c, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
+    const reason = hiddenRule(c) ?? markerRule(c, hostDeps) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
     if (reason) return reason;
   }
-  return agentWritesRule(line, dialect, cwd, agent, root, hostDeps.host);
+  return null;
 }
 
 const REAL_HOST = { platform: process.platform, env: process.env, tmpdir: () => os.tmpdir() };
@@ -52,7 +55,6 @@ const DIR_MOVES = {
 };
 const HOME = /^~(?=$|[\\/])/;
 const OPAQUE = /[$`]|%[^%\s]+%/;
-const GIT_LOCATION_VARIABLE = /^GIT_(DIR|WORK_TREE)$/i;
 const TEMP_PREFIX = {
   posix: /^(?:\/tmp|\$\{?(?<name>TMPDIR|TEMP|TMP)\}?)(?=$|\/)/,
   powershell: /^\$env:(?<name>TEMP|TMP)(?=$|[\\/])/i,
@@ -82,8 +84,9 @@ function changesEnv(c) {
   if (c.dialect !== 'powershell') return false;
   if (STATIC_MEMBER.test(c.text)) return true;
   if (INVOKED_BY_PATH.test(c.program ?? '')) return true;
-  const paths = (FILE_WRITERS[c.cmd] ?? ITEM_PATHS[c.cmd])?.(c.args, c.dialect) ?? [];
-  return paths.some(p => isExpressionArg(c, p) || REACHES_ENV_DRIVE.test(p.replace(LEADING_ENV_READ, '')));
+  const spec = POWERSHELL_PATH_TAKERS[POWERSHELL_PATH_TAKER_ALIASES[c.cmd] ?? c.cmd];
+  const paths = spec ? writerTargets(c, spec) : [];
+  return typeof paths === 'string' || paths.some(p => p.expression || REACHES_ENV_DRIVE.test(p.text.replace(LEADING_ENV_READ, '')));
 }
 
 function plainTempNames(line) {
@@ -125,7 +128,7 @@ function located(commands, start, host) {
 
 function shellState(scopes, scope, start) {
   if (!scopes.has(scope)) {
-    const parent = scope ? shellState(scopes, scope.slice(0, scope.lastIndexOf('/')), start) : { here: { dir: start, known: true }, previous: undefined, stack: [], env: {} };
+    const parent = scope ? shellState(scopes, scope.slice(0, scope.lastIndexOf('/')), start) : { here: { dir: start, known: start !== UNKNOWN_DIR }, previous: undefined, stack: [], env: {} };
     scopes.set(scope, { ...parent, stack: [...parent.stack], env: { ...parent.env } });
   }
   return scopes.get(scope);
@@ -331,174 +334,390 @@ function builtBody(c, group, action) {
   return null;
 }
 
-// --- reviewer, adversary and comment-critic judge; they never author ---------------------------------
-function agentRule(c, agent) {
-  if (!NO_AUTHORING_AGENTS.test(agent)) return null;
-  const git = c.cmd === 'git' ? parseGit(c.args).sub : '';
-  const [ghGroup, ghAction] = c.cmd === 'gh' ? ghSubcommand(c.args) : [];
-  const gh = c.cmd === 'gh' ? `${ghGroup} ${ghAction ?? ''}` : '';
-  if (/^(commit|push|merge|rebase|tag|cherry-pick|am|revert)$/.test(git) || /^pr (merge|comment|review|edit|close|create|ready)|^issue (comment|create|edit|close|reopen|delete|transfer|lock|unlock|pin|unpin|develop)|^label (create|edit|delete|clone)|^api /.test(gh) && !(gh.startsWith('api ') && !hasWriteFields(c.args))) {
-    return `The ${agent} agent judges and reproduces; it does not commit, push or post. Report the finding in your final message; the hook posts it.`;
-  }
-  return null;
-}
+// --- reviewer, adversary and comment-critic judge: they run only what this allowlist names -----------
+const nameSet = text => new Set(text.trim().split(/\s+/));
+const ALLOWED_SUMMARY = 'read-only git and gh, file reads and searches, tests and the app run from its own worktree, HTTP to localhost, and file writes inside its worktree or the temp dir';
+const refuse = (agent, what, fix = 'Report what you would run instead.') => `The ${agent} agent runs only allowlisted commands (${ALLOWED_SUMMARY}). Refused: ${what}. ${fix}`;
 
-function agentWritesRule(line, dialect, cwd, agent, root, host) {
-  if (!NO_AUTHORING_AGENTS.test(agent)) return null;
-  const commands = located(commandsIn(withoutHeredocBodies(line), 0, dialect), cwd, host);
+const CONTROL = nameSet('for switch fi done esac case in try catch finally return break continue exit throw [ [[ test true false');
+const READS = {
+  posix: nameSet(`cat head tail ls dir wc grep egrep fgrep rg find echo printf pwd basename dirname realpath readlink stat which type
+    diff cmp comm cut tr nl jq date sleep du df sha256sum sha1sum md5sum printenv whoami hostname uname ps sort uniq`),
+  powershell: nameSet(`get-content gc cat type get-childitem gci ls dir select-string sls test-path resolve-path rvpa get-item gi
+    get-location gl pwd select-object select where-object where ? sort-object sort measure-object measure group-object group
+    format-table ft format-list fl out-string out-null write-output write echo write-host convertfrom-json convertto-json
+    compare-object diff join-path split-path get-date start-sleep sleep get-command gcm get-filehash get-process gps get-member gm findstr`),
+  cmd: nameSet('dir type echo findstr where'),
+};
+const POSIX_READ_LIMITS = {
+  find: args => args.find(a => /^-(delete|exec|execdir|ok|okdir|fprint0?|fprintf|fls)$/.test(a)),
+  rg: args => args.find(a => /^--pre(-glob)?(=|$)/.test(a)),
+  sort: args => args.find(a => /^(-[a-zA-Z]*o|--output)/.test(a)),
+  uniq: args => args.filter(a => !a.startsWith('-')).length > 1 && 'with an output file',
+};
+
+const FILTERS = ['filter', 'include', 'exclude', 'credential'];
+const CONTENT = { data: ['value', 'encoding', 'stream', ...FILTERS], content: true };
+const POWERSHELL_WRITERS = {
+  'remove-item': { data: ['stream', ...FILTERS] },
+  'copy-item': { data: FILTERS },
+  'move-item': { data: FILTERS },
+  'rename-item': { data: ['credential'] },
+  'new-item': { data: ['itemtype', 'credential'] },
+  'set-content': CONTENT,
+  'add-content': CONTENT,
+  'clear-content': { data: ['stream', ...FILTERS] },
+  'out-file': { data: ['encoding', 'inputobject', 'width'] },
+  'tee-object': { data: ['inputobject', 'variable'] },
+};
+const POWERSHELL_WRITER_ALIASES = {
+  rm: 'remove-item', ri: 'remove-item', del: 'remove-item', erase: 'remove-item', rd: 'remove-item', rmdir: 'remove-item',
+  cp: 'copy-item', copy: 'copy-item', cpi: 'copy-item', mv: 'move-item', move: 'move-item', mi: 'move-item',
+  ren: 'rename-item', rni: 'rename-item', md: 'new-item', mkdir: 'new-item', ni: 'new-item',
+  sc: 'set-content', ac: 'add-content', clc: 'clear-content', tee: 'tee-object',
+};
+const POWERSHELL_PATH_TAKERS = { ...POWERSHELL_WRITERS, 'set-item': CONTENT, 'clear-item': { data: FILTERS }, ...Object.fromEntries(Object.keys(DIR_MOVES).map(k => [k, { data: FILTERS }])) };
+const POWERSHELL_PATH_TAKER_ALIASES = { ...POWERSHELL_WRITER_ALIASES, si: 'set-item', cli: 'clear-item' };
+const WRITERS = { posix: nameSet('rm rmdir mkdir cp mv touch tee'), cmd: nameSet('del erase rd rmdir md mkdir copy move ren') };
+
+const RISKY_VARIABLE = /^(GIT_\w*|PATH|PATHEXT|\w*_OPTIONS|LD_\w+|DYLD_\w+|BASH_ENV|ENV|\w*PAGER|\w*EDITOR|PYTHONSTARTUP|PYTHONPATH|NODE_PATH|COMSPEC|SHELLOPTS|PS4|PROMPT_COMMAND)$/i;
+const EXPRESSION_START = /^[$'"@(\[\d.-]/;
+const POWERSHELL_ASSIGNMENT = /^\$\{?([\w:]+)\}?\s*(?:[+\-*/%]|\?\?)?=(?!=)\s*(.*)$/s;
+const POWERSHELL_OPERATOR = /^-[ci]?(eq|ne|gt|ge|lt|le|like|notlike|match|notmatch|replace|split|join|contains|notcontains|in|notin|is|isnot|as|and|or|xor|not|band|bor|bxor|bnot|shl|shr|f)$/i;
+const CALL_OPERATOR = /(^|[\n;|({"])\s*[&.]\s*['"$(@]/;
+const PURE_TYPE = /^\[(System\.)?(IO\.Path|Math|String|Convert|Text\.RegularExpressions\.Regex|Regex|DateTime|TimeSpan|Guid|Int32|Int64|int|long|char|bool)\]$/i;
+const PURE_METHODS = nameSet(`trim trimstart trimend split substring tolower toupper tolowerinvariant toupperinvariant contains startswith endswith
+  indexof lastindexof padleft padright equals tostring gettype where foreach`);
+const withoutStrings = text => text.replace(/'(?:[^']|'')*'|"(?:[^"`]|`.)*"/gs, "''");
+
+function noAuthoringRule(line, dialect, cwd, agent, root, host) {
+  const text = withoutHeredocBodies(line);
+  const ctx = { agent, root, host };
+  if (dialect === 'powershell' && CALL_OPERATOR.test(text)) return refuse(agent, 'the call operator & or dot-sourcing of a string, variable or expression', 'Name the command directly.');
+  const commands = located(commandsIn(text, 0, dialect), cwd, host);
   for (const [k, c] of commands.entries()) {
-    const reason = treeRewriteRule(c, agent, root, host) ?? fileWriteRule(c, agent, root, commands[k + 1], host);
+    const target = k > 0 && endsInRedirect(commands[k - 1].text, commands[k - 1].dialect) && words(c.text, c.dialect).length === 1;
+    const reason = (target ? null : agentCommandRule(c, ctx)) ?? redirectRule(c, ctx, commands[k + 1]);
+    if (reason) return reason;
+  }
+  for (const inner of quotedSubstitutions(text, dialect)) {
+    const reason = noAuthoringRule(inner, dialect, UNKNOWN_DIR, agent, root, host);
     if (reason) return reason;
   }
   return null;
 }
 
-const TREE_REWRITING_GIT = {
-  stash: { rewrites: rest => !/^(list|show)$/.test(rest[0] ?? ''), anywhere: true },
-  checkout: { rewrites: () => true },
-  switch: { rewrites: () => true },
-  worktree: { rewrites: rest => /^(add|remove|move|prune|repair)$/.test(rest[0] ?? ''), paths: rest => positionalArgs(rest.slice(1), /^(-b|-B|--reason)$/) },
-  restore: { rewrites: () => true },
-  reset: { rewrites: () => true },
-  apply: { rewrites: rest => !rest.some(a => /^--(check|stat|numstat|summary)$/.test(a)) },
-  clean: { rewrites: rest => !rest.some(a => a === '--dry-run' || /^-[a-zA-Z]*n/.test(a)) },
-  rm: { rewrites: () => true },
-  mv: { rewrites: () => true },
-  pull: { rewrites: () => true },
-  'read-tree': { rewrites: () => true },
-  'checkout-index': { rewrites: () => true },
-  'update-index': { rewrites: () => true },
-};
-const UNKNOWN_GIT = { rewrites: () => true };
-const GIT_BUILTINS = new Set(`add am annotate apply archive bisect blame branch bugreport bundle cat-file check-attr check-ignore
-  check-mailmap check-ref-format checkout checkout-index cherry cherry-pick clean clone commit commit-graph commit-tree config
-  count-objects describe diagnose diff diff-files diff-index diff-tree difftool fetch fetch-pack for-each-ref for-each-repo
-  format-patch fsck gc get-tar-commit-id grep hash-object help init interpret-trailers log ls-files ls-remote ls-tree
-  maintenance merge merge-base merge-file merge-tree mktag mktree mv name-rev notes pack-objects pack-refs prune pull push
-  range-diff read-tree rebase reflog remote repack replace rerere reset restore rev-list rev-parse revert rm shortlog show
-  show-branch show-ref sparse-checkout stash status submodule switch symbolic-ref tag update-index update-ref var
-  verify-commit verify-pack verify-tag version whatchanged worktree write-tree`.split(/\s+/));
+function quotedSubstitutions(text, dialect) {
+  const found = [];
+  const ps = dialect === 'powershell';
+  let quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const here = ps && !quote && /^@(['"])\r?\n/.exec(text.slice(i, i + 4));
+    if (here) { quote = `\n${here[1]}@`; i += here[0].length - 1; continue; }
+    if (quote === "'" || quote === "\n'@") { if (text.startsWith(quote, i)) { i += quote.length - 1; quote = null; } continue; }
+    if (ch === (ps ? '`' : '\\')) { i++; continue; }
+    if (quote && text.startsWith(quote, i)) { i += quote.length - 1; quote = null; continue; }
+    if (!quote && (ch === '"' || ch === "'")) { quote = ch; continue; }
+    if (!quote) continue;
+    const close = ch === '$' && text[i + 1] === '(' ? closingParen(text, i + 1, dialect) : ch === '`' && !ps ? closingBacktick(text, i) : -1;
+    if (close > 0) { found.push(text.slice(i + (ch === '$' ? 2 : 1), close)); i = close; }
+  }
+  return found;
+}
 
-function treeRewriteRule(c, agent, root, host) {
-  if (c.cmd !== 'git') return null;
-  const { dir, dirExpression, aliases, sub, rest } = parseGit(c.args, c.expressions);
-  if (aliases) return `The ${agent} agent must not define git aliases on the command line: an alias can run any command, also on another checkout. Run the git command itself.`;
-  const rule = TREE_REWRITING_GIT[sub] ?? (sub && !GIT_BUILTINS.has(sub) ? UNKNOWN_GIT : null);
-  if (!rule?.rewrites(rest)) return null;
-  if (rule.anywhere) return `The ${agent} agent must not run git ${sub}: the stash stack is shared by every worktree of the repo. Read with git stash list or git stash show.`;
-  const otherTree = Object.keys(c.env).some(name => GIT_LOCATION_VARIABLE.test(name)) || c.args.some(a => /^--(work-tree|git-dir)\b/.test(a));
-  const here = knownCwd(c);
-  const repo = !dir ? here : dirExpression ? undefined : writeTarget(dir, here, c.dialect, host, false);
-  const touched = [repo, ...(rule.paths?.(rest) ?? []).map(p => repo && writeTarget(p, repo, c.dialect, host, isExpressionArg(c, p)))];
-  if (otherTree || touched.some(p => !p || !owns(root, p, host))) return `The ${agent} agent must not run git ${sub} on a checkout outside its own worktree (${root}), or one the guard cannot locate; it would rewrite someone else's uncommitted work. Read with git diff or git show instead.`;
+function agentCommandRule(c, ctx) {
+  const ps = c.dialect === 'powershell';
+  const risky = Object.keys(c.env).find(name => RISKY_VARIABLE.test(name));
+  if (risky) return refuse(ctx.agent, `setting ${risky}, which changes what the next command runs or where git writes`);
+  return (ps ? dotnetRule(c.text, ctx.agent) : null) ?? (ps && EXPRESSION_START.test(c.text) ? expressionRule(c, ctx) : commandRule(c, ctx));
+}
+
+function dotnetRule(text, agent) {
+  const code = withoutStrings(text);
+  for (const m of code.matchAll(/(\[[\w.]+\])?\s*::\s*(\w*)/g)) {
+    if (!PURE_TYPE.test(m[1] ?? '')) return refuse(agent, `the .NET or provider call ${m[0].trim()}`, 'Use a cmdlet from the list.');
+  }
+  for (const m of code.matchAll(/\.\s*([A-Za-z_]\w*)\s*\(/g)) {
+    if (!PURE_METHODS.has(m[1].toLowerCase())) return refuse(agent, `the method call .${m[1]}()`, 'Use a cmdlet from the list.');
+  }
   return null;
 }
 
-function knownCwd(c) {
-  return c.cwdKnown ? c.cwd : undefined;
+function expressionRule(c, ctx) {
+  const set = POWERSHELL_ASSIGNMENT.exec(c.text);
+  if (set) {
+    const variable = /^env:(\w+)$/i.exec(set[1]);
+    if (variable && RISKY_VARIABLE.test(variable[1])) return refuse(ctx.agent, `setting $env:${variable[1]}, which changes what the next command runs or where git writes`);
+    const value = set[2].trim();
+    if (!value || EXPRESSION_START.test(value)) return value ? expressionRule({ ...c, text: value }, ctx) : null;
+    return commandsIn(value, 1, 'powershell').map(inner => agentCommandRule({ ...c, ...inner, env: c.env }, ctx)).find(Boolean) ?? null;
+  }
+  const [first, second] = words(c.text, 'powershell');
+  if (!second || first.text.endsWith(',') || /^[,+*/%=!<>.|]/.test(second.text) || POWERSHELL_OPERATOR.test(second.text) || /^-?\d/.test(second.text)) return null;
+  return refuse(ctx.agent, `${first.text} ${second.text} runs a value as a command`, 'Name the command directly.');
+}
+
+function commandRule(c, ctx) {
+  const { cmd, dialect, args } = c;
+  if (cmd === '' || cmd in DIR_MOVES || CONTROL.has(cmd)) return null;
+  if (READS[dialect]?.has(cmd)) {
+    const limit = dialect === 'posix' && POSIX_READ_LIMITS[cmd]?.(args);
+    return limit ? refuse(ctx.agent, `${cmd} ${limit}, which writes files or runs commands`) : null;
+  }
+  const writer = dialect === 'powershell' ? POWERSHELL_WRITERS[POWERSHELL_WRITER_ALIASES[cmd] ?? cmd] : WRITERS[dialect]?.has(cmd) && {};
+  if (writer) return writerRule(c, writer, ctx);
+  const check = AGENT_COMMANDS[cmd];
+  return check ? check(c, ctx) : refuse(ctx.agent, `${cmd} is not on the list`);
+}
+
+function writerRule(c, spec, ctx) {
+  const ps = c.dialect === 'powershell';
+  if (ps && withoutStrings(c.text).includes(',')) return refuse(ctx.agent, `${c.cmd} with a list of paths`, 'Write one literal path per command.');
+  const targets = writerTargets(c, spec);
+  if (typeof targets === 'string') return refuse(ctx.agent, `${c.cmd} ${targets} glues a value to an option`, 'Write the option and its value as separate words.');
+  if (ps && !targets.length) return refuse(ctx.agent, `${c.cmd} without a literal path takes its targets from the pipeline`, 'Name the path.');
+  for (const { text, expression } of targets) {
+    const reason = insideRule(c, ctx, text, expression);
+    if (reason) return reason;
+  }
+  return null;
+}
+
+function writerTargets(c, spec) {
+  const ps = c.dialect === 'powershell';
+  const namedPath = ps && c.args.some(a => namesParameter(a.split(':')[0], PATH_NAMES, 'powershell'));
+  const out = [];
+  let positional = 0;
+  for (let i = 0; i < c.args.length; i++) {
+    const a = c.args[i];
+    const expression = c.expressions?.has(i) ?? false;
+    if (expression || !a.startsWith('-') || a === '-' || (c.dialect === 'cmd' && /^\/[a-z?]$/i.test(a))) {
+      if (c.dialect === 'cmd' && /^\/[a-z?]$/i.test(a)) continue;
+      if (!(spec.content && positional++ >= (namedPath ? 0 : 1))) out.push({ text: a, expression });
+      continue;
+    }
+    const option = /^--?([a-z][\w-]*)(?:[=:](.*))?$/is.exec(a);
+    if (!option) return a;
+    const data = ps && namesParameter(`-${option[1]}`, spec.data ?? [], 'powershell');
+    if (option[2] !== undefined) { if (!data) out.push({ text: option[2], expression }); continue; }
+    if (!ps || namesParameter(a, POWERSHELL_SWITCHES, 'powershell')) continue;
+    if (++i < c.args.length && !data) out.push({ text: c.args[i], expression: c.expressions?.has(i) ?? false });
+  }
+  return out;
+}
+
+const UNRESOLVABLE = {
+  posix: /[{}]|^~[^/]/,
+  powershell: /^@|::|^[a-z][\w.]+:/i,
+  cmd: /^$/,
+};
+
+function insideRule(c, ctx, word, expression) {
+  const target = UNRESOLVABLE[c.dialect]?.test(word) ? undefined : writeTarget(word, knownCwd(c), c.dialect, ctx.host, expression);
+  if (target === null) return null;
+  if (target === undefined) return refuse(ctx.agent, `${c.cmd} ${word}: the path cannot be resolved before it runs`, 'Use a literal path.');
+  if (!owns(ctx.root, target, ctx.host)) return refuse(ctx.agent, `${c.cmd} on ${target}, outside its own worktree (${ctx.root}) and the temp dir`, 'Report what should change instead of changing it.');
+  return null;
+}
+
+function inWorktree(c, ctx) {
+  return c.cwdKnown && c.cwd !== UNKNOWN_DIR && ctx.host.paths.contains(ctx.root, c.cwd);
+}
+
+const PATH_LIKE = /[\\/]|^\.\.?$|^~|[$`%(]/;
+
+function argsInsideRule(c, ctx) {
+  for (let i = 0; i < c.args.length; i++) {
+    const a = c.args[i];
+    const expression = c.expressions?.has(i) ?? false;
+    if (!expression && /^\d*[<>]/.test(a)) continue;
+    const option = !expression && /^--?[\w.-]*(?:=(.*))?$/s.exec(a);
+    if (!option && !expression && a.startsWith('-') && a !== '-') return refuse(ctx.agent, `${c.cmd} ${a} glues a value to an option`, 'Write the option and its value as separate words.');
+    const word = option ? option[1] : a;
+    if (word === undefined || word.includes('://') || (!expression && !PATH_LIKE.test(word))) continue;
+    const reason = insideRule(c, ctx, word, expression);
+    if (reason) return reason;
+  }
+  return null;
+}
+
+function runner(problem = () => null) {
+  return (c, ctx) => {
+    if (!inWorktree(c, ctx)) return refuse(ctx.agent, `${c.cmd} from ${c.cwdKnown && c.cwd ? c.cwd : 'a directory the guard cannot resolve'}; tests and the app run only from its own worktree (${ctx.root})`, `cd into ${ctx.root} first.`);
+    const found = problem(c.args);
+    return found ? refuse(ctx.agent, `${c.cmd} ${found}`, 'Write code to a file in your worktree and run that file, from your worktree.') : argsInsideRule(c, ctx);
+  };
+}
+
+function nodeProblem(args) {
+  const inline = args.find(a => /^(-e|--eval|-p|--print|-i|--interactive|-|--input-type)(=|$)/.test(a) || a.includes('data:'));
+  if (inline) return `${inline} runs code from the command line or stdin`;
+  return args.includes('--test') || args.some(a => !a.startsWith('-')) ? null : 'without a script file reads code from stdin';
+}
+
+const PYTHON_MODULES = /^(pytest|unittest|uvicorn)$/;
+
+function pythonProblem(args) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const module = /^-m(.*)$/.exec(a);
+    if (module) {
+      const name = module[1] || args[i + 1];
+      return PYTHON_MODULES.test(name ?? '') ? null : `-m ${name} is not a test runner on the list (pytest, unittest, uvicorn)`;
+    }
+    if (a === '-' || /^-[a-zA-Z]*c/.test(a)) return `${a} runs code from the command line or stdin`;
+    if (/^-[WX]$/.test(a)) { i++; continue; }
+    if (!a.startsWith('-')) return null;
+  }
+  return 'without a script file reads code from stdin';
+}
+
+const PACKAGE_COMMANDS = /^(test|t|run|run-script|start|ci|install|i)$/;
+
+function packageProblem(args) {
+  const global = args.find(a => /^(-g|--global|--location(=global)?)$/.test(a));
+  if (global) return `${global} installs outside its worktree`;
+  const sub = args.find(a => !a.startsWith('-'));
+  return sub === undefined || PACKAGE_COMMANDS.test(sub) ? null : `${sub} is not on the list (test, run, start, install, ci)`;
+}
+
+function cargoProblem(args) {
+  const sub = args.find(a => !a.startsWith('-') && !a.startsWith('+'));
+  return /^(test|build|check|run|nextest)$/.test(sub ?? '') ? null : `${sub ?? ''} is not on the list (test, build, check, run)`;
+}
+
+function sqliteRule(c, ctx) {
+  if (!c.args.some(a => /^--?safe$/.test(a))) return refuse(ctx.agent, 'sqlite3 without -safe, which can run shell commands and write other files', 'Run sqlite3 -safe <db> "select ...".');
+  const db = c.args.find(a => !a.startsWith('-'));
+  return db ? insideRule(c, ctx, db, false) ?? argsInsideRule(c, ctx) : refuse(ctx.agent, 'sqlite3 without a database file');
+}
+
+const LOCAL_URL = /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])(:\d+)?([/?#]|$)/i;
+const CURL_FLAGS = /^-[sSiIvfLkGg46N]+$|^--(silent|show-error|include|head|verbose|fail|fail-with-body|location|insecure|get|compressed|no-buffer|http1\.1|http2|globoff|no-progress-meter)$/;
+const CURL_VALUED = /^(-[XHdmwubeA]|--(request|header|data|data-raw|data-binary|data-urlencode|json|max-time|write-out|user|cookie|connect-timeout|retry|user-agent|referer))$/;
+const localOnly = (ctx, url) => (LOCAL_URL.test(url) ? null : refuse(ctx.agent, `a request to ${url}; only localhost is on the list`, 'Exercise the app on localhost, never a production URL.'));
+
+function curlRule(c, ctx) {
+  for (let i = 0; i < c.args.length; i++) {
+    const a = c.args[i];
+    const [opt, ...glued] = a.split('=');
+    if (CURL_FLAGS.test(a) || /^-[XHdmwubeA]./.test(a) || (glued.length && CURL_VALUED.test(opt))) continue;
+    if (CURL_VALUED.test(a)) { i++; continue; }
+    const output = /^(-o|--output)$/.test(opt) ? (glued.length ? glued.join('=') : c.args[++i]) : null;
+    if (output !== null) { const reason = insideRule(c, ctx, output ?? '', false); if (reason) return reason; continue; }
+    const url = opt === '--url' ? (glued.length ? glued.join('=') : c.args[++i] ?? '') : a.startsWith('-') ? null : a;
+    if (url === null) return refuse(ctx.agent, `curl ${a} is not on the list`);
+    const reason = localOnly(ctx, url);
+    if (reason) return reason;
+  }
+  return null;
+}
+
+const WEB_VALUED = ['method', 'body', 'headers', 'contenttype', 'timeoutsec', 'maximumredirection', 'erroraction', 'useragent'];
+const WEB_SWITCHES = ['usebasicparsing', 'skiphttperrorcheck', 'disablekeepalive'];
+
+function webRule(c, ctx) {
+  for (let i = 0; i < c.args.length; i++) {
+    const a = c.args[i];
+    let url = a;
+    if (namesParameter(a, ['uri'], 'powershell')) url = c.args[++i] ?? '';
+    else if (namesParameter(a, WEB_SWITCHES, 'powershell')) continue;
+    else if (namesParameter(a, WEB_VALUED, 'powershell')) { i++; continue; }
+    else if (a.startsWith('-')) return refuse(ctx.agent, `${c.cmd} ${a} is not on the list`);
+    const reason = localOnly(ctx, url);
+    if (reason) return reason;
+  }
+  return null;
+}
+
+const PROCESS_WORD = /^(-?\d+|%\d+|\$!|-(s|id|force|9|15|term|kill|int)|term|kill|int|\/(pid|f|t))$/i;
+
+function killRule(c, ctx) {
+  const other = c.args.find(a => !PROCESS_WORD.test(a));
+  if (other || !c.args.some(a => /^(\d+|%\d+|\$!)$/.test(a))) return refuse(ctx.agent, `${c.cmd} ${other ?? ''} stops processes by something other than the id of one it started`.replace(/\s+/g, ' '), 'Stop the app by its process id.');
+  return null;
+}
+
+function foreachRule(c, ctx) {
+  const member = c.args.find((a, i) => !c.expressions?.has(i) && !/^(-(process|begin|end|parallel|throttlelimit)|\d+)$/i.test(a));
+  return member ? refuse(ctx.agent, `${c.cmd} ${member} calls a member by name`, 'Use a script block and a method from the list.') : null;
+}
+
+const GIT_READS = nameSet(`status log show diff rev-parse merge-base ls-files ls-tree cat-file blame grep shortlog describe rev-list show-ref
+  for-each-ref name-rev ls-remote range-diff whatchanged count-objects check-ignore check-attr var version`);
+const BRANCH_LISTING = /^(--show-current|--list|-l|-[arv]+|--all|--remotes|--verbose|--contains|--no-contains|--merged|--no-merged|--points-at|--sort(=.*)?|--format(=.*)?|--color(=.*)?|--no-color|--column(=.*)?|--no-column|--abbrev(=.*)?|--no-abbrev|-i|--ignore-case|--omit-empty)$/;
+const BRANCH_VALUED = /^(--contains|--no-contains|--merged|--no-merged|--points-at|--sort|--format)$/;
+const GIT_READ_FORMS = {
+  '': () => true,
+  branch: rest => rest.every((a, i) => BRANCH_LISTING.test(a) || BRANCH_VALUED.test(rest[i - 1] ?? '') || (rest.some(f => f === '--list' || f === '-l') && !a.startsWith('-'))),
+  worktree: rest => rest[0] === 'list',
+  stash: rest => /^(list|show)$/.test(rest[0] ?? ''),
+  remote: rest => !rest[0] || /^(-v|--verbose|show|get-url)$/.test(rest[0]),
+  config: rest => /^(get|list)$/.test(rest[0] ?? '') || rest.some(a => /^(--get(-all|-regexp|-urlmatch)?|--list|-l)$/.test(a)),
+  reflog: rest => !rest[0] || rest[0] === 'show' || rest[0].startsWith('-'),
+  fetch: rest => !rest.some(a => a.includes(':') || /^(--upload-pack|-u$|--update-head-ok)/.test(a)),
+};
+const GIT_IN_WORKTREE = {
+  checkout: rest => (rest.includes('--') || rest.includes('--detach')) && !rest.some(a => /^(-[bB]|--orphan)/.test(a)),
+  switch: rest => rest.some(a => a === '--detach' || a === '-d') && !rest.some(a => /^(-[cC]|--create|--force-create|--orphan)/.test(a)),
+  restore: () => true,
+};
+
+function gitAllowed(c, ctx) {
+  const { dir, dirExpression, config, sub, rest } = parseGit(c.args, c.expressions);
+  const globals = c.args.slice(0, c.args.length - rest.length - (sub ? 1 : 0));
+  if (config.length || globals.some(a => /^--exec-path=/.test(a))) return refuse(ctx.agent, `git ${globals.join(' ')}: configuration on the command line can run any program`, 'Run the git command without -c.');
+  const writes = rest.find(a => /^--output(=|$)/.test(a) || (sub === 'grep' && /^(-O|--open-files-in-pager)/.test(a)));
+  if (writes) return refuse(ctx.agent, `git ${sub} ${writes}, which writes a file or runs a program`);
+  if (GIT_READS.has(sub) || GIT_READ_FORMS[sub]?.(rest)) return null;
+  if (GIT_IN_WORKTREE[sub]?.(rest)) {
+    const here = knownCwd(c);
+    const repo = !dir ? here : dirExpression ? undefined : writeTarget(dir, here, c.dialect, ctx.host, false);
+    const otherTree = globals.some(a => /^--(work-tree|git-dir)\b/.test(a));
+    if (otherTree || !repo || !owns(ctx.root, repo, ctx.host)) return refuse(ctx.agent, `git ${sub} on a checkout outside its own worktree (${ctx.root}), or one the guard cannot locate`, 'Read with git diff or git show instead.');
+    return null;
+  }
+  return refuse(ctx.agent, `git ${[sub, ...rest.slice(0, 2)].join(' ')} is not on the list`, 'Read with git status, log, show or diff; restore a file in your own worktree with git restore or git checkout <commit> -- <path>.');
+}
+
+const GH_READS = new Set(['pr view', 'pr diff', 'pr checks', 'pr list', 'pr status', 'issue view', 'issue list', 'issue status', 'run view', 'run list', 'repo view']);
+
+function ghAllowed(c, ctx) {
+  const [group, action] = ghSubcommand(c.args);
+  const name = `${group} ${action}`;
+  if (GH_READS.has(name) || (group === 'api' && !hasWriteFields(c.args))) return null;
+  if (name === 'pr checkout' && c.args.includes('--detach') && !c.args.some(a => /^(-b|--branch|-f|--force)/.test(a))) {
+    return inWorktree(c, ctx) ? null : refuse(ctx.agent, `gh pr checkout outside its own worktree (${ctx.root})`, `cd into ${ctx.root} first.`);
+  }
+  return refuse(ctx.agent, `gh ${[group, action].filter(Boolean).join(' ')} is not on the list`, 'Read with gh pr view, gh pr diff, gh issue view or gh api (GET); report findings in your final message, the hook posts them.');
+}
+
+const AGENT_COMMANDS = {
+  git: gitAllowed, gh: ghAllowed,
+  node: runner(nodeProblem), python: runner(pythonProblem), python3: runner(pythonProblem), py: runner(pythonProblem),
+  pytest: runner(), uvicorn: runner(),
+  npm: runner(packageProblem), pnpm: runner(packageProblem), yarn: runner(packageProblem), bun: runner(packageProblem),
+  cargo: runner(cargoProblem),
+  sqlite3: sqliteRule,
+  curl: curlRule, 'invoke-webrequest': webRule, iwr: webRule, 'invoke-restmethod': webRule, irm: webRule,
+  kill: killRule, 'stop-process': killRule, spps: killRule, taskkill: killRule,
+  foreach: foreachRule, 'foreach-object': foreachRule, '%': foreachRule,
+};
+
+function agentFileRule(input, agent, root, host) {
+  const file = String(input.file_path ?? input.notebook_path ?? '');
+  const target = host.paths.resolvePath(root, file, 'powershell');
+  return owns(root, target, host) ? null : refuse(agent, `writing ${target}, outside its own worktree (${root}) and the temp dir`, 'Report what should change instead of changing it.');
 }
 
 const PATH_NAMES = ['path', 'literalpath', 'lp', 'pspath'];
 const POWERSHELL_SWITCHES = ['force', 'nonewline', 'passthru', 'append', 'noclobber', 'whatif', 'confirm', 'asbytestream', 'recurse'];
-const byArgs = spec => (args, dialect) => writeTargets(args, spec, dialect);
-const REMOVES = byArgs({ pick: 'all', named: PATH_NAMES });
-const MOVES = byArgs({ pick: 'all', named: [...PATH_NAMES, 'destination'] });
-const COPIES_BY_ARGS = byArgs({ pick: 'last', named: ['destination'] });
-const COPIES = (args, dialect) => {
-  const dirs = targetDirectories(args);
-  return dirs.length ? dirs : COPIES_BY_ARGS(args, dialect);
-};
-const WRITES_CONTENT = byArgs({ pick: 'first', named: [...PATH_NAMES, 'filepath'], valued: true });
-const WINDOWS_COPIES = args => {
-  const paths = args.filter(a => !/^\/[a-z?]+(:.*)?$/i.test(a));
-  return [paths[1] ?? '.'];
-};
-
-const FILE_WRITERS = {
-  sed: sedInPlaceTargets,
-  tee: byArgs({ pick: 'all', named: [] }),
-  rm: REMOVES, 'remove-item': REMOVES, ri: REMOVES, del: REMOVES, erase: REMOVES, rmdir: REMOVES, rd: REMOVES,
-  'clear-content': REMOVES, clc: REMOVES, mkdir: REMOVES, md: REMOVES,
-  mv: MOVES, 'move-item': MOVES, mi: MOVES, move: MOVES, 'rename-item': MOVES, rni: MOVES, ren: MOVES,
-  cp: COPIES, 'copy-item': COPIES, cpi: COPIES, copy: COPIES,
-  xcopy: WINDOWS_COPIES, robocopy: WINDOWS_COPIES,
-  'set-content': WRITES_CONTENT, sc: WRITES_CONTENT, 'add-content': WRITES_CONTENT, ac: WRITES_CONTENT,
-  'out-file': WRITES_CONTENT, 'tee-object': WRITES_CONTENT, 'new-item': WRITES_CONTENT, ni: WRITES_CONTENT,
-  dd: args => args.filter(a => a.startsWith('of=')).map(a => a.slice(3)),
-  truncate: args => positionalArgs(args, /^(-s|-r|--size|--reference)$/),
-  ln: linkTargets,
-  curl: args => optionValues(args, /^(-[a-zA-Z]*o|--output|--output-dir)$/, /^--output(-dir)?=/),
-  patch: patchTargets,
-};
-const ITEM_PATHS = { 'set-item': WRITES_CONTENT, si: WRITES_CONTENT, 'clear-item': WRITES_CONTENT, cli: WRITES_CONTENT, ...Object.fromEntries(Object.keys(DIR_MOVES).map(k => [k, WRITES_CONTENT])) };
-
-function positionalArgs(args, valued) {
-  return args.filter((a, i) => !a.startsWith('-') && !valued.test(args[i - 1] ?? ''));
-}
-
-function optionValues(args, separate, glued) {
-  return args.flatMap((a, i) => separate.test(a) ? [args[i + 1]] : glued.test(a) ? [a.slice(a.indexOf('=') + 1)] : []).filter(Boolean);
-}
-
-function targetDirectories(args) {
-  return optionValues(args, /^(-t|--target-directory)$/, /^--target-directory=/);
-}
-
-function linkTargets(args) {
-  const named = targetDirectories(args);
-  if (named.length) return named;
-  const positional = positionalArgs(args, /^(-t|--target-directory|-S|--suffix)$/);
-  return positional.length > 1 ? positional.slice(-1) : [];
-}
-
-const PATCH_VALUED = /^(-[pidoDBFrzVYg]|--(strip|input|output|directory|reject-file|prefix|suffix|basename-prefix|fuzz|backup-if-mismatch|version-control|get))$/;
-
-function patchTargets(args) {
-  const words = args.filter((a, i) => !a.startsWith('<') && args[i - 1] !== '<');
-  const named = optionValues(words, /^(-[dor]|--(directory|output|reject-file))$/, /^--(directory|output|reject-file)=/);
-  const [original] = positionalArgs(words, PATCH_VALUED);
-  return [...named, original ?? '.'];
-}
-
-const DOTNET_FILE_WRITE = /\[(System\.)?IO\.File\]::(Write|Append)\w*\s*\(\s*(?:(['"])(.*?)\3|([^,\s)]+))/gi;
-
-function dotnetWriteTargets(text) {
-  return [...text.matchAll(DOTNET_FILE_WRITE)].map(m => ({ text: m[4] ?? m[5], expression: m[5]?.includes('(') ?? false }));
-}
 
 function namesParameter(flag, names, dialect) {
   const name = /^-([a-z]+)$/i.exec(flag)?.[1].toLowerCase();
   if (!name) return false;
   return names.some(n => (dialect === 'powershell' ? n.startsWith(name) : n === name));
-}
-
-function writeTargets(args, { pick, named, valued = false }, dialect) {
-  const byName = [];
-  const positional = [];
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    const inline = /^(-[a-z]+):(.+)$/i.exec(a);
-    if (inline) { if (namesParameter(inline[1], named, dialect)) byName.push(inline[2]); continue; }
-    if (namesParameter(a, named, dialect)) { if (i + 1 < args.length) byName.push(args[++i]); continue; }
-    if (/^-./.test(a) || /^\/[a-z]$/i.test(a)) { if (valued && !namesParameter(a, POWERSHELL_SWITCHES, dialect)) i++; continue; }
-    positional.push(a);
-  }
-  if (byName.length && pick !== 'all') return byName;
-  return [...byName, ...{ first: positional.slice(0, 1), last: positional.slice(-1), all: positional }[pick]];
-}
-
-function sedInPlaceTargets(args) {
-  if (!args.some(a => /^-[^-]*i/.test(a) || a.startsWith('--in-place'))) return [];
-  const positional = [];
-  let scriptGiven = false;
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (/^(-e|-f|--expression|--file)$/.test(a)) { scriptGiven = true; i++; continue; }
-    if (/^--(expression|file)=/.test(a)) { scriptGiven = true; continue; }
-    if (a.startsWith('-')) continue;
-    positional.push(a);
-  }
-  return scriptGiven ? positional : positional.slice(1);
 }
 
 const NULL_SINK = /^(\$null|\/dev\/(null|stdout|stderr)|nul)$/i;
@@ -523,18 +742,15 @@ function owns(root, target, host) {
   return [root, host.paths.resolvePath(host.tmpdir())].some(dir => host.paths.contains(dir, target));
 }
 
-function isExpressionArg(c, value) {
-  return Boolean(value) && c.args.some((a, i) => c.expressions?.has(i) && a.endsWith(value));
+function knownCwd(c) {
+  return c.cwdKnown && c.cwd !== UNKNOWN_DIR ? c.cwd : undefined;
 }
 
-function fileWriteRule(c, agent, root, next, host) {
-  const clobbered = next && endsInRedirect(c.text, c.dialect) ? words(next.text).slice(0, 1) : [];
-  const byCommand = (FILE_WRITERS[c.cmd]?.(c.args, c.dialect) ?? []).map(text => ({ text, expression: isExpressionArg(c, text) }));
-  for (const { text: word, expression } of [...redirectTargets(c.text), ...clobbered, ...dotnetWriteTargets(c.text), ...byCommand]) {
-    const target = writeTarget(word, knownCwd(c), c.dialect, host, expression);
-    if (target === null) continue;
-    if (target === undefined) return `The ${agent} agent may write files only inside its own worktree or the temp dir, and ${word} cannot be resolved before it runs. Use a literal path.`;
-    if (!owns(root, target, host)) return `The ${agent} agent may write files only inside its own worktree (${root}) or the temp dir, not ${target}. Report what should change instead of changing it.`;
+function redirectRule(c, ctx, next) {
+  const clobbered = next && endsInRedirect(c.text, c.dialect) ? words(next.text, next.dialect).slice(0, 1) : [];
+  for (const { text, expression } of [...redirectTargets(c.text, c.dialect), ...clobbered]) {
+    const reason = insideRule({ ...c, cmd: 'a redirect' }, ctx, text, expression);
+    if (reason) return reason;
   }
   return null;
 }
