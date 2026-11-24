@@ -9,6 +9,13 @@ test('segments split on operators outside quotes', () => {
   assert.deepEqual(splitSegments('& git status'), ['git status']);
 });
 
+test('a backslash escapes a quote only in POSIX shells; PowerShell escapes with a backtick', () => {
+  assert.deepEqual(splitSegments('Write-Output "C:\\"; git status', 'powershell'), ['Write-Output "C:\\"', 'git status']);
+  assert.deepEqual(splitSegments('Write-Output "a`"; b"; git status', 'powershell'), ['Write-Output "a`"; b"', 'git status']);
+  assert.deepEqual(splitSegments('echo "a\\"; b"; git status'), ['echo "a\\"; b"', 'git status']);
+  assert.deepEqual(commandsIn('Write-Output "C:\\" x', 0, 'powershell')[0].args, ['C:\\', 'x']);
+});
+
 test('a | after > always splits, even when the > is escaped', () => {
   assert.deepEqual(splitSegments('echo x >| a.txt | tee b'), ['echo x >', 'a.txt', 'tee b']);
   assert.deepEqual(splitSegments('echo \\>|git push'), ['echo \\>', 'git push']);
