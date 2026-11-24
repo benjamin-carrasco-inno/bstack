@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as guard from '../plugins/bstack/scripts/guard.mjs';
 import { decide, ciState, realDeps, retryOnTimeout } from '../plugins/bstack/scripts/guard.mjs';
 import { commentBody } from '../plugins/bstack/scripts/lib/verdicts.mjs';
 
@@ -773,6 +774,27 @@ test('-F is a field outside pr and issue, and a field value read from @file is s
   allowed(shell('gh workflow run deploy.yml --ref main -F env=prod -F dry=true'));
   blocked(shell('gh workflow run x -F body=@v.md'), verdict);
   blocked(shell('gh pr comment 5 -F v.md'), verdict);
+});
+
+test('-F after gh global flags or in an alias is a body file; only api and workflow run take it as a field', () => {
+  const verdict = deps({ files: { 'v.md': `bstack-verdict: PASS sha=${SHA}` } });
+  blocked(shell('gh -R o/r pr comment 5 -F v.md'), verdict);
+  blocked(shell('gh --repo o/r pr comment 5 -F v.md'), verdict);
+  blocked(shell('gh --repo=o/r pr comment 5 -F v.md'), verdict);
+  blocked(shell('gh pc 5 -F v.md'), verdict);
+  blocked(shell('gh -R o/r release create v1 -F v.md'), verdict);
+  allowed(shell('gh -R o/r workflow run x -F env=prod'));
+  allowed(shell('gh --repo=o/r workflow run x -F env=prod'));
+  allowed(shell('gh -R o/r api repos/o/r/issues -F title=x'));
+  blocked(shell('gh -R o/r workflow run x -F body=@v.md'), verdict);
+});
+
+test('ghSubcommand skips the global repo flag', () => {
+  const { ghSubcommand } = guard;
+  assert.deepEqual(ghSubcommand(['-R', 'o/r', 'pr', 'comment', '5']), ['pr', 'comment']);
+  assert.deepEqual(ghSubcommand(['--repo=o/r', 'workflow', 'run', 'x']), ['workflow', 'run']);
+  assert.deepEqual(ghSubcommand(['api', 'repos/o/r']), ['api', 'repos/o/r']);
+  assert.deepEqual(ghSubcommand(['--unknown', 'api']), []);
 });
 
 test('the main session reads a cd to $TMPDIR as unknown, set or not', () => {
