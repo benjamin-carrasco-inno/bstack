@@ -36,7 +36,7 @@ export function decide(input, deps) {
   const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
   const looped = loopBodies(line).some(body => commandsIn(body, 0, dialect).some(createsCommit));
   for (const [k, c] of commands.entries()) {
-    const reason = hiddenRule(c) ?? markerRule(c, hostDeps, commands[k - 1]) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
+    const reason = hiddenRule(c) ?? markerRule(c, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
     if (reason) return reason;
   }
   return agentWritesRule(line, dialect, cwd, agent, root, hostDeps.host);
@@ -69,6 +69,7 @@ const ENV_CHANGERS = new Set(['.', 'source', 'eval', 'export', 'declare', 'types
   'set', 'set-variable', 'sv', 'new-variable', 'nv', 'remove-variable', 'rv', 'clear-variable', 'clv', 'invoke-expression', 'iex', 'import-module', 'ipmo']);
 const DYNAMIC_COMMAND = /[$`]|%[^%]+%/;
 const POWERSHELL_SCRIPT = /\.psm?1$/;
+const INVOKED_BY_PATH = /[\\/]|^\./;
 const ENVIRONMENT_CLASS = /Environment\]::/i;
 const LEADING_ENV_READ = /^\$(\{env:\w+\}|env:\w+)/i;
 const REACHES_ENV_DRIVE = /env:|environment::|[$`]/i;
@@ -79,6 +80,7 @@ function changesEnv(c) {
   if (ENV_CHANGERS.has(c.cmd) || DYNAMIC_COMMAND.test(c.cmd) || POWERSHELL_SCRIPT.test(c.cmd) || ENVIRONMENT_CLASS.test(c.text)) return true;
   if (c.cmd === 'printf') return c.args.some(a => a.startsWith('-v'));
   if (c.dialect !== 'powershell') return false;
+  if (INVOKED_BY_PATH.test(c.program ?? '')) return true;
   const paths = (FILE_WRITERS[c.cmd] ?? ITEM_PATHS[c.cmd])?.(c.args, c.dialect) ?? [];
   return paths.some(p => isExpressionArg(c, p) || REACHES_ENV_DRIVE.test(p.replace(LEADING_ENV_READ, '')));
 }
@@ -109,10 +111,12 @@ function tempDirNamed(name, host) {
 
 function located(commands, start, host) {
   const scopes = new Map();
+  const placed = new Map();
   return commands.map(c => {
     const shell = shellState(scopes, c.scope ?? '', start);
     const here = (c.chdir ?? []).reduce((from, to) => movedTo(to.text, to.expression, from, c.dialect, host), shell.here);
-    const at = { ...c, cwd: here.dir, cwdKnown: here.known, env: { ...shell.env, ...c.env } };
+    const at = { ...c, cwd: here.dir, cwdKnown: here.known, env: { ...shell.env, ...c.env }, pipedFrom: placed.get(c.pipedFrom) };
+    placed.set(c, at);
     changeDir(shell, c, host);
     setVariables(shell.env, c);
     return at;
@@ -176,7 +180,7 @@ function hiddenRule(c) {
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
 const SAVED_VERDICTS = 'Saved verdicts are written only by the bstack hook when GitHub does not answer; the guard posts them at the next merge. Run the bstack:reviewer or bstack:adversary agent instead.';
 
-function markerRule(c, deps, prior) {
+function markerRule(c, deps) {
   const [ghGroup, ghAction] = c.cmd === 'gh' ? ghSubcommand(c.args) : [];
   const readOnlyGh = c.cmd === 'gh' && (/^(view|checks|diff|list|status)$/.test(ghAction ?? '') || (ghGroup === 'api' && !hasWriteFields(c.args)));
   if (MARKER.test(c.text) && !READ_ONLY.has(c.cmd) && !readOnlyGh) {
@@ -187,7 +191,7 @@ function markerRule(c, deps, prior) {
   const built = builtBody(c, ghGroup, ghAction);
   if (built) return `The ${built} text comes from a substitution or variable the guard cannot see, so it cannot check it for a bstack verdict line. Write the text to a file and pass the file (--body-file, --notes-file or -F body=@<path>).`;
   for (const file of bodyFiles(c.args)) {
-    const sources = file === '-' ? stdinFiles(c, prior) : [{ file, at: c }];
+    const sources = file === '-' ? stdinFiles(c) : [{ file, at: c }];
     if (!sources) return 'The guard cannot see what reaches the body on stdin, so it cannot check it for a bstack verdict line. Redirect a file with < <path>, pipe one with cat <path> |, or give the body file as a path.';
     for (const source of sources) {
       const reason = bodyFileReason(source, deps);
@@ -225,12 +229,13 @@ function inputRedirects(text) {
   return files;
 }
 
-function stdinFiles(c, prior) {
+function stdinFiles(c) {
   const redirected = inputRedirects(c.text);
   if (redirected?.length) return redirected.map(file => ({ file, at: c }));
-  if (!redirected || !STDIN_READERS.has(prior?.cmd)) return null;
-  const files = readerFiles(prior);
-  return files?.length ? files.map(file => ({ file, at: prior })) : null;
+  const reader = c.pipedFrom;
+  if (!redirected || !STDIN_READERS.has(reader?.cmd)) return null;
+  const files = readerFiles(reader);
+  return files?.length ? files.map(file => ({ file, at: reader })) : null;
 }
 
 function readerFiles(reader) {
@@ -279,7 +284,7 @@ function shortFIsField(args) {
   return GH_SHORT_F_IS_FIELD.has(cmd) || GH_SHORT_F_IS_FIELD.has(`${cmd} ${sub}`);
 }
 
-const GH_BOOLEAN_SHORTHANDS = 'acdeprwy';
+const GH_BOOLEAN_SHORTHANDS = 'acdefiprwy';
 
 function flagValues(args, long, short) {
   const cluster = short && new RegExp(`^-[${GH_BOOLEAN_SHORTHANDS}]*[${short}](=?)(.*)$`, 's');

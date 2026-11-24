@@ -2,7 +2,7 @@
 // recognise git and gh invocations. It evaluates nothing: variables and substitutions stay text.
 
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'pwsh', 'powershell', 'cmd']);
-const PREFIXES = new Set(['&', 'env', 'command', 'exec', 'time', 'nohup', 'sudo', 'call',
+const PREFIXES = new Set(['&', 'env', 'command', 'builtin', 'exec', 'time', 'nohup', 'sudo', 'call',
   'if', 'then', 'elif', 'else', 'elseif', 'while', 'until', 'do', '!']);
 const flagSet = (valued = '', bare = '', chdir = '') => ({ valued: new Set(valued.split(' ')), bare: new Set(bare.split(' ')), chdir: new Set(chdir.split(' ')) });
 const WRAPPER_FLAGS = {
@@ -12,6 +12,7 @@ const WRAPPER_FLAGS = {
   time: flagSet('-f --format -o --output', '-p --portability -a --append -v --verbose -q --quiet'),
   exec: flagSet('-a', '-c -l'),
   command: flagSet('', '-p -v -V'),
+  builtin: flagSet(),
   nohup: flagSet(),
 };
 const LEADING_REDIRECT = /^(\d*[<>]|&>)/;
@@ -50,7 +51,7 @@ function wrapperFlags(wrapper, parsed) {
     }
     i += step;
   }
-  return { rest: parsed.slice(i), chdir: chdir.filter(Boolean) };
+  return { rest: parsed.slice(i), chdir: chdir.slice(-1).filter(Boolean) };
 }
 
 const HERE_STRING_OPEN = /^@(['"])\r?\n/;
@@ -127,19 +128,33 @@ function closingBacktick(line, open) {
   return -1;
 }
 
-// Cut a line into segments at ; && || | & newlines and ( ) { } groups, outside quotes; a substitution's commands come first.
 export function splitSegments(line, dialect = 'posix') {
+  return segmentsOf(line, dialect).map(s => s.text);
+}
+
+// Cut a line into segments at ; && || | & newlines and ( ) { } groups, outside quotes; a substitution's commands come first.
+function segmentsOf(line, dialect) {
   const segments = [];
   let cur = '';
+  let pipedFrom;
   let quote = null;
   const groups = [];
   const closes = new Map();
+  const emit = () => {
+    const text = cur.trim();
+    cur = '';
+    if (!text) return undefined;
+    const segment = { text, pipedFrom };
+    pipedFrom = undefined;
+    segments.push(segment);
+    return segment;
+  };
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (quote) {
       const sub = quote === '"' ? quotedSubstitution(line, i, dialect, closes) : null;
       if (sub) {
-        segments.push(...splitSegments(line.slice(sub.inner, sub.close), dialect));
+        segments.push(...segmentsOf(line.slice(sub.inner, sub.close), dialect));
         cur += line.slice(i, sub.close + 1);
         i = sub.close;
         continue;
@@ -156,7 +171,7 @@ export function splitSegments(line, dialect = 'posix') {
     const close = ch === '(' && (!opensGroup(cur) || isArgument(cur)) ? closingParen(line, i, dialect, closes)
       : ch === '`' && dialect === 'posix' ? closingBacktick(line, i) : -1;
     if (close > 0) {
-      segments.push(...splitSegments(line.slice(i + 1, close), dialect));
+      segments.push(...segmentsOf(line.slice(i + 1, close), dialect));
       cur += line.slice(i, close + 1);
       i = close;
       continue;
@@ -164,26 +179,32 @@ export function splitSegments(line, dialect = 'posix') {
     if (ch in CLOSER) {
       const splits = opensGroup(cur);
       groups.push({ closer: CLOSER[ch], splits });
-      if (splits) { segments.push(cur); cur = ''; } else cur += ch;
+      if (splits) { emit(); pipedFrom = undefined; } else cur += ch;
       continue;
     }
     if (ch === groups.at(-1)?.closer) {
-      if (groups.pop().splits) { segments.push(cur); cur = ''; } else cur += ch;
+      if (groups.pop().splits) emit(); else cur += ch;
       continue;
     }
-    if (ch === '\n' || ch === '\r' || ch === ';') { segments.push(cur); cur = ''; continue; }
-    if (ch === '|') { if (line[i + 1] === '|') i++; segments.push(cur); cur = ''; continue; }
+    if (ch === '\n' || ch === '\r' || ch === ';') { emit(); continue; }
+    if (ch === '|') {
+      const pipe = line[i + 1] !== '|';
+      if (!pipe) i++;
+      const source = emit();
+      pipedFrom = pipe ? source : undefined;
+      continue;
+    }
     if (ch === '&') {
       const prev = line[i - 1];
       if (prev === '>' || line[i + 1] === '>') { cur += ch; continue; } // 2>&1, &>
-      if (line[i + 1] === '&') { i++; segments.push(cur); cur = ''; continue; }
+      if (line[i + 1] === '&') { i++; emit(); continue; }
       if (cur.trim() === '') { cur += ' '; continue; } // PowerShell call operator
-      segments.push(cur); cur = ''; continue;
+      emit(); continue;
     }
     cur += ch;
   }
-  segments.push(cur);
-  return segments.map(s => s.trim()).filter(Boolean);
+  emit();
+  return segments;
 }
 
 const EXPANDS_AFTER_DOLLAR = /^[\w{(?!#*@$-]/;
@@ -325,7 +346,9 @@ export const UNRESOLVED = /[$%`]/;
 // Every simple command in a line, including commands nested in bash -c, pwsh -Command and cmd /c.
 export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shellCount = { n: 0 }) {
   const out = [];
-  for (const segment of splitSegments(line, dialect)) {
+  const commandOf = new Map();
+  for (const part of segmentsOf(line, dialect)) {
+    const segment = part.text;
     let parsed = words(segment, dialect);
     const env = {};
     const chdir = [];
@@ -360,7 +383,9 @@ export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shell
       out.push(...commandsIn(args.join(' '), depth + 1, dialect, scope, shellCount));
       continue;
     }
-    out.push({ cmd, args, expressions, expands, text: segment, dialect, env, scope, chdir });
+    const command = { cmd, program: parsed[0].text, args, expressions, expands, text: segment, dialect, env, scope, chdir, pipedFrom: commandOf.get(part.pipedFrom) };
+    commandOf.set(part, command);
+    out.push(command);
   }
   return out;
 }
