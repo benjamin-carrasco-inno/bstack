@@ -66,6 +66,12 @@ test('a test skip or an allowed failure outside prose is tier 2', () => {
   assert.equal(tier(file('scripts/check.sh', { add: ['pyright || true'] })), 2);
 });
 
+test('an allowed failure in a CMakeLists.txt is tier 2', () => {
+  const line = 'add_custom_target(check COMMAND sh -c "ctest || true")';
+  assert.equal(tier(file('CMakeLists.txt', { add: [line] })), 2);
+  assert.equal(tier(file('src/CMakeLists.txt', { add: [line] })), 2);
+});
+
 test('prose in non-source files that names a suppression token is not a suppression', () => {
   assert.equal(tier(file('docs/guide.rst', { add: ['Never add ``type: ignore``.'] })), 0);
   assert.equal(tier(file('plugins/bstack/skills/x/notes.txt', { add: ['Never add `# noqa`.'] })), 1);
