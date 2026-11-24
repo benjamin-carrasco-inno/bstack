@@ -117,6 +117,25 @@ test('commands inside $( ), backticks and PowerShell ( ) arguments are checked, 
   }
 });
 
+test('commands inside a double-quoted $( ) or bash backtick substitution are checked by every rule', () => {
+  blocked(shell('echo "$(git push origin main)"'));
+  blocked(shell('echo "`git push origin main`"'));
+  blocked(shell('echo "$(echo "$(git push origin main)")"'));
+  blocked(shell('echo "$(gh pr merge 5 --squash --admin)"'));
+  blocked(shell(`cat "$(gh pr comment 5 --body '<!-- bstack-verdict v1 -->')"`));
+  blocked(ps('Write-Output "$(git push origin main)"'));
+  blocked(ps('Write-Output "$(git commit --no-verify -m x)"'));
+  blocked(ps('Write-Output "C:\\$(git push origin main)"'));
+  blocked(ps('Write-Output "$env:TEMP\\$(git push origin main)"'));
+  blocked(ps('Write-Output "\\$(git push origin main)"'));
+  allowed(shell("echo '$(git push origin main)'"));
+  allowed(shell('echo "\\$(git push origin main)"'));
+  allowed(ps("Write-Output '$(git push origin main)'"));
+  allowed(ps('Write-Output "`git push origin main`"'));
+  allowed(ps('Write-Output "`$(git push origin main)"'));
+  allowed(shell('git commit -m "$(git log -1 --format=%s)"'));
+});
+
 test('a refspec the guard cannot resolve counts as the current branch', () => {
   const onMain = deps({ branch: 'main' });
   const onFeature = deps({ branch: 'feat/x' });
