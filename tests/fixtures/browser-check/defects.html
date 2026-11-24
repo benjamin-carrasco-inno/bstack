@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Browser check: defects</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    .wide { min-inline-size: 30rem; }
+    .grid { display: grid; grid-template-columns: 1fr; }
+    @media (width >= 40rem) { .grid { grid-template-columns: 1fr 1fr; } }
+    .spin { animation: spin 1s infinite linear; }
+    @keyframes spin { to { rotate: 1turn; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="dup">Defects</h1>
+    <p id="dup">Second element with the same id.</p>
+    <div class="wide">Wider than a phone.</div>
+    <form>
+      <input name="query" type="text">
+      <label>Named <input name="named" type="text"></label>
+      <input type="hidden" name="token" value="x">
+    </form>
+    <a href="#">Nowhere</a>
+    <p>Hello {{ user.name }}</p>
+    <ul class="grid">
+      <li>One</li>
+      <li>Two</li>
+    </ul>
+    <p class="spin">Spinning</p>
+  </main>
+  <div hidden>
+    <p id="dup">Hidden duplicate</p>
+    <a href="#">Hidden link</a>
+    <p>{% hidden %}</p>
+  </div>
+  <div aria-hidden="true"><input name="decorative"></div>
+  <dialog><input name="in-closed-dialog"><p>${closed}</p></dialog>
+</body>
+</html>

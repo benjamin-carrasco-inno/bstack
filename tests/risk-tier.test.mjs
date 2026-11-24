@@ -153,6 +153,25 @@ test('a source file renamed into a test dir loses no suppression check', () => {
   assert.equal(tier(renamed('src/a.js', 'tests/fixtures/a.js', ['+// eslint-disable-next-line'], { headers: true })), 2);
 });
 
+test('a runnable test renamed out of the suite is tier 2', () => {
+  for (const headers of [false, true]) {
+    for (const [from, to] of [['tests/x.test.mjs', 'tests/x.test.md'], ['tests/test_api.py', 'scripts/api_check.py'], ['src/a.test.ts', 'src/a.test.ts.bak']]) {
+      for (const lines of [[], [' x', '+y']]) {
+        const r = riskTier(renamed(from, to, lines, { headers }));
+        assert.equal(r.tier, 2, `${from} -> ${to}, headers=${headers}, edited=${lines.length > 0}`);
+        assert.ok(r.reasons.includes(`test file renamed out of the suite: ${from} -> ${to}`), r.reasons.join());
+      }
+    }
+  }
+});
+
+test('a test renamed between runnable test paths is not tier 2 by itself', () => {
+  for (const headers of [false, true]) {
+    assert.equal(tier(renamed('tests/a.test.mjs', 'tests/b.test.mjs', [], { headers })), 1);
+    assert.equal(tier(renamed('tests/a.test.mjs', 'tests/b.test.mjs', [' x', "+const y = 'z';"], { headers })), 1);
+  }
+});
+
 const quoted = (a, b, lines) => [`diff --git ${a} ${b}`, `--- ${a}`, `+++ ${b}`, '@@ -1 +1,2 @@', ...lines].join('\n');
 
 test('a quoted path with a space is parsed with its real path', () => {

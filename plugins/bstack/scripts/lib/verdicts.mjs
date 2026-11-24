@@ -18,6 +18,8 @@ export const KINDS = {
   },
 };
 
+export const INTERROGATE_ROUNDS = 3;
+
 const findings = m => ({ confirmed: Number(m[1]), blocking: Number(m.groups.blocking ?? m[1]) });
 
 // Parse the last result line of an agent's report. Returns { result, pr, sha, body } or null.

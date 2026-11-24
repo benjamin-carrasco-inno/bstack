@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Frontend example</title>
+  <link rel="stylesheet" href="tokens.css">
+  <style>
+    .shell {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--container-gap);
+      max-inline-size: var(--content-width);
+      margin-inline: auto;
+      padding: var(--container-gap) var(--gutter);
+    }
+
+    .shell__main {
+      flex: 999 1 0;
+      min-inline-size: 60%;
+    }
+
+    .shell__aside {
+      flex: 1 1 18rem;
+    }
+
+    .card-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr));
+      gap: var(--grid-gap);
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .card {
+      --_pad: var(--space-m);
+      :has(> &) { container-type: inline-size; }
+
+      display: grid;
+      gap: calc(var(--_pad) / 2);
+      padding: var(--_pad);
+      border: var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-light);
+      box-shadow: var(--box-shadow-1);
+    }
+
+    .card[data-tone="accent"] {
+      border-color: var(--accent-semi-light);
+      background: var(--accent-ultra-light);
+    }
+
+    .card[data-pinned="true"] {
+      box-shadow: var(--box-shadow-3);
+    }
+
+    .card__media {
+      aspect-ratio: 16 / 9;
+      border-radius: calc(var(--radius) / 2);
+      background: linear-gradient(135deg, var(--primary-light), var(--accent-light));
+    }
+
+    .card__title {
+      margin: 0;
+      font-size: var(--h4);
+    }
+
+    .card__text {
+      margin: 0;
+      color: var(--text-dark-muted);
+    }
+
+    .card__actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: calc(var(--_pad) / 2);
+      align-items: end;
+    }
+
+    .card__field {
+      display: grid;
+      gap: calc(var(--_pad) / 4);
+      font-size: var(--text-s);
+    }
+
+    .card__input {
+      padding: calc(var(--_pad) / 4) calc(var(--_pad) / 2);
+      border: var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-ultra-light);
+      color: var(--text-dark);
+      font: inherit;
+    }
+
+    @container (inline-size >= 36rem) {
+      .card {
+        grid-template-columns: minmax(0, 2fr) 3fr;
+        column-gap: var(--_pad);
+        align-items: start;
+      }
+
+      .card__media {
+        grid-row: span 3;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="shell__main" aria-labelledby="main-title">
+      <h1 id="main-title">Projects</h1>
+      <ul class="card-list">
+        <li>
+          <article class="card">
+            <div class="card__media"></div>
+            <h2 class="card__title">Quarterly report</h2>
+            <p class="card__text">The same component lays itself out by the space its cell gives it, not by the viewport.</p>
+            <div class="card__actions">
+              <a class="btn" href="?report=q3">Open</a>
+              <button class="btn card__pin" type="button" data-variant="outline" aria-pressed="false">Pin</button>
+            </div>
+          </article>
+        </li>
+        <li>
+          <article class="card" data-tone="accent">
+            <div class="card__media"></div>
+            <h2 class="card__title">Supplier import</h2>
+            <p class="card__text">A variant is a data attribute on the root; the parent still owns width and placement.</p>
+            <div class="card__actions">
+              <label class="card__field">Batch name
+                <input class="card__input" name="batch" type="text">
+              </label>
+              <button class="btn card__pin" type="button" data-variant="outline" aria-pressed="false">Pin</button>
+            </div>
+          </article>
+        </li>
+      </ul>
+    </section>
+    <aside class="shell__aside" aria-labelledby="aside-title">
+      <h2 id="aside-title">Pinned</h2>
+      <ul class="card-list">
+        <li>
+          <article class="card">
+            <div class="card__media"></div>
+            <h3 class="card__title">Narrow parent</h3>
+            <p class="card__text">At a wide viewport this cell is narrow, so the card stacks.</p>
+            <div class="card__actions">
+              <button class="btn card__pin" type="button" data-variant="outline" aria-pressed="false">Pin</button>
+            </div>
+          </article>
+        </li>
+      </ul>
+    </aside>
+  </main>
+  <script>
+    for (const card of document.querySelectorAll('.card:not([data-ready])')) {
+      card.dataset.ready = '';
+      card.querySelector('.card__pin')?.addEventListener('click', event => {
+        const pinned = event.currentTarget.getAttribute('aria-pressed') !== 'true';
+        event.currentTarget.setAttribute('aria-pressed', String(pinned));
+        card.dataset.pinned = String(pinned);
+      });
+    }
+  </script>
+</body>
+</html>

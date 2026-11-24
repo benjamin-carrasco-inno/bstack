@@ -25,7 +25,7 @@ const BUDGET = {
 };
 const PLAYBOOK_BUDGET = 3584;
 const SKILL_BUDGET = 6144;
-const TOTAL_TEXT_BUDGET = 61440;
+const TOTAL_TEXT_BUDGET = 67584;
 
 function frontmatter(file) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(fs.readFileSync(file, 'utf8'));
