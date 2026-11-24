@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orders</title>
+  <style>
+    :root { --space-s: 0.75rem; --space-m: 1rem; --radius: 0.5rem; --border: 0.0625rem solid oklch(80% 0 0); --text-dark: oklch(20% 0 0); }
+    body { margin: 0; font-family: system-ui, sans-serif; color: var(--text-dark); }
+    .page { max-inline-size: 60rem; margin-inline: auto; padding: var(--space-m); }
+    .search { display: grid; gap: var(--space-s); padding: var(--space-m); border: var(--border); border-radius: var(--radius); }
+    .search__field { display: grid; gap: calc(var(--space-s) / 2); }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <h1>Orders</h1>
+    <form class="search" role="search">
+      <label class="search__field">Order number
+        <input name="order" type="search">
+      </label>
+      <button type="submit">Search</button>
+    </form>
+  </main>
+</body>
+</html>
