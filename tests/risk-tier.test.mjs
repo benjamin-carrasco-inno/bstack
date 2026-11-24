@@ -106,6 +106,19 @@ test('an edit inside an executed block whose fence is outside the diff is tier 2
   assert.equal(riskTier(prose, { readFile: () => head }).tier, 1);
 });
 
+test('an allowed failure in a frontmatter hook of a skill or agent file is tier 2', () => {
+  const hook = '          command: "npm test || true"';
+  const named = 'Never write `|| true` yourself.';
+  const head = ['---', 'name: x', 'description: y', 'hooks:', '  PostToolUse:', '    - matcher: "Edit|Write"', '      hooks:', '        - type: command',
+    hook, '---', '', '# X', '', named].join('\n');
+  const edit = (p, line) => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  for (const p of ['plugins/bstack/skills/x/SKILL.md', '.claude/agents/a.md', 'plugins/bstack/agents/a.md']) {
+    assert.equal(riskTier(edit(p, hook), { readFile: () => head }).tier, 2, p);
+    assert.equal(riskTier(edit(p, hook), { readFile: () => `﻿${head.replace(/\n/g, '\r\n')}` }).tier, 2, p);
+    assert.equal(riskTier(edit(p, named), { readFile: () => head }).tier, 1, p);
+  }
+});
+
 test('a prose file whose head cannot be read keeps the weakening rules', () => {
   const diff = file('docs/ci.md', { add: ['Never add `|| true`.'] });
   assert.equal(riskTier(diff).tier, 2);
