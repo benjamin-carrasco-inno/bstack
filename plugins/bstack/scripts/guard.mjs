@@ -174,11 +174,28 @@ function pathArgs({ cmd, args }) {
   return args.filter((a, i) => !MESSAGE_OPTS.has(args[i - 1]) && !/^--(message|body|title)=/.test(a));
 }
 
-const GH_SHORT_F_IS_FILE = new Set(['pr', 'issue', 'release']);
+const GH_SHORT_F_IS_FIELD = new Set(['api', 'workflow run']);
+
+export function ghSubcommand(args) {
+  const words = [];
+  for (let i = 0; i < args.length && words.length < 2; i++) {
+    const a = args[i];
+    if (a === '-R' || a === '--repo') i++;
+    else if (a.startsWith('--repo=') || /^-R./.test(a)) continue;
+    else if (a.startsWith('-')) break;
+    else words.push(a);
+  }
+  return words;
+}
+
+function shortFIsField(args) {
+  const [cmd, sub] = ghSubcommand(args);
+  return GH_SHORT_F_IS_FIELD.has(cmd) || GH_SHORT_F_IS_FIELD.has(`${cmd} ${sub}`);
+}
 
 function bodyFiles(args) {
   const files = [];
-  const fileFlags = GH_SHORT_F_IS_FILE.has(args[0]) ? ['--body-file', '-F', '--input'] : ['--body-file', '--input'];
+  const fileFlags = shortFIsField(args) ? ['--body-file', '--input'] : ['--body-file', '-F', '--input'];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (fileFlags.includes(a)) files.push(args[i + 1]);
