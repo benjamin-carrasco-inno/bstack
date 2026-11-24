@@ -35,7 +35,7 @@ export function decide(input, deps) {
   const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
   const looped = loopBodies(line).some(body => commandsIn(body, 0, dialect).some(createsCommit));
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps) : null);
+    const reason = markerRule(c, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
     if (reason) return reason;
   }
   return agentWritesRule(line, dialect, cwd, agent, root, hostDeps.host);
@@ -520,14 +520,14 @@ const GH_TOP_FLAGS = new Set(['--help', '-h', '--version']);
 const GH_HIDDEN_SUBCOMMAND = 'The guard cannot tell which gh command this runs (an alias, an extension, or a flag before the subcommand can hide gh pr merge), so it fails closed. Write the full command with the subcommand first: gh pr merge <n> --squash --delete-branch, gh pr view <n>, and so on.';
 const GH_COPILOT = 'gh copilot starts an agent that can run gh pr merge or git push outside this hook, so the guard cannot gate what it does. Run the gh or git command yourself.';
 
-function ghRule(c, cwd, deps) {
+function ghRule(c, cwd, deps, line) {
   const { at, flag } = parseGh(c.args);
   const [group, action] = at.map(i => c.args[i]);
   if (group === 'copilot') return GH_COPILOT;
   if (group === undefined ? flag !== null && !GH_TOP_FLAGS.has(flag) : !GH_COMMANDS.has(group)) return GH_HIDDEN_SUBCOMMAND;
   if (action === undefined && flag !== null && !GH_SINGLE_WORD.has(group) && !GH_TOP_FLAGS.has(flag)) return GH_HIDDEN_SUBCOMMAND;
   const without = n => c.args.filter((_, i) => !at.slice(0, n).includes(i));
-  if (group === 'pr' && action === 'merge') return mergeGate(without(2), cwd, deps, c.env);
+  if (group === 'pr' && action === 'merge') return mergeGate(without(2), cwd, deps, c, line);
   if (group === 'api') return apiRule(without(1));
   return null;
 }
@@ -562,7 +562,11 @@ function apiRule(args) {
 
 const MERGE_VALUE_OPTS = new Set(['--repo', '--body', '--body-file', '--subject', '--match-head-commit', '--author-email']);
 const MERGE_SHORT_VALUES = new Set(['R', 'b', 'F', 't', 'A']);
-
+const SQUASH_FLAG = /^(?:-s|--squash)(?:=|$)/;
+const SQUASH_ON = /^(?:-s|--squash)(?:=(?:1|t|T|true|TRUE|True))?$/;
+const GH_REPO_NAME = /GH_REPO/gi;
+const SHELL_QUOTING = /[\\'"`^]/g;
+const GH_REPO_OFF_COMMAND = 'This line names GH_REPO outside a prefix on gh pr merge, and the guard does not follow shell variables, so it cannot tell which repository gh merges in. Write the repository out on the merge command: gh pr merge <n> -R owner/repo --squash --delete-branch.';
 
 function mergeArgs(args) {
   const flags = [];
@@ -573,11 +577,13 @@ function mergeArgs(args) {
     if (MERGE_VALUE_OPTS.has(a)) { if (a === '--repo') repo = args[i + 1]; i++; continue; }
     if (a.startsWith('--repo=')) { repo = a.slice(7); continue; }
     if (/^-[^-]/.test(a)) {
-      const valued = [...a.slice(1)].findIndex(ch => MERGE_SHORT_VALUES.has(ch)) + 1;
-      flags.push(...[...a.slice(1, valued || a.length)].map(ch => `-${ch}`));
-      if (!valued) continue;
-      const value = valued + 1 < a.length ? a.slice(valued + 1).replace(/^=/, '') : args[++i];
-      if (a[valued] === 'R') repo = value;
+      const end = [...a].findIndex((ch, j) => j > 0 && (ch === '=' || MERGE_SHORT_VALUES.has(ch)));
+      const letters = [...a.slice(1, end < 0 ? a.length : end)].map(ch => `-${ch}`);
+      if (a[end] === '=') { flags.push(...letters.slice(0, -1), `${letters.at(-1)}${a.slice(end)}`); continue; }
+      flags.push(...letters);
+      if (end < 0) continue;
+      const value = end + 1 < a.length ? a.slice(end + 1).replace(/^=/, '') : args[++i];
+      if (a[end] === 'R') repo = value;
       continue;
     }
     if (a.startsWith('-')) flags.push(a); else selector ??= a;
@@ -585,17 +591,28 @@ function mergeArgs(args) {
   return { flags, selector, repo };
 }
 
-function envRepo(env, host) {
-  const named = vars => Object.entries(vars ?? {}).find(([k]) => (host.platform === 'win32' ? k.toUpperCase() : k) === 'GH_REPO');
-  return (named(env) ?? named(host.env))?.[1] || null;
+const isGhRepo = (name, host) => (host.platform === 'win32' ? name.toUpperCase() : name) === 'GH_REPO';
+
+function prefixGhRepos(c, host) {
+  const all = words(c.text).map(w => w.text);
+  const prefix = all.slice(0, all.length - c.args.length - 1);
+  const sets = prefix.map(w => ASSIGNMENT.exec(w));
+  if (!sets.every((set, i) => set || prefix[i] === 'env')) return [];
+  return sets.filter(set => set && isGhRepo(set[1], host)).map(set => set[2]);
 }
 
-function mergeGate(args, cwd, deps, env) {
+function hookGhRepo(host) {
+  return Object.entries(host.env ?? {}).find(([name]) => isGhRepo(name, host))?.[1] || null;
+}
+
+function mergeGate(args, cwd, deps, c, line) {
   const { flags, selector, repo: flagRepo } = mergeArgs(args);
   if (flags.includes('--auto')) return 'Auto-merge is blocked: it would merge later without the verdict check. Wait for CI and the verdict, then gh pr merge <n> --squash --delete-branch.';
   if (flags.includes('--admin')) return '--admin bypasses the repo rules. Merge normally once CI and the verdict are in.';
-  if (!flags.some(f => f === '--squash' || f === '-s')) return 'Squash merge only: gh pr merge <n> --squash --delete-branch.';
-  const repo = flagRepo || envRepo(env, deps.host);
+  if (!SQUASH_ON.test(flags.filter(f => SQUASH_FLAG.test(f)).at(-1) ?? '')) return 'Squash merge only: gh pr merge <n> --squash --delete-branch.';
+  const prefixRepos = prefixGhRepos(c, deps.host);
+  if (!flagRepo && (line.replace(SHELL_QUOTING, '').match(GH_REPO_NAME)?.length ?? 0) > prefixRepos.length) return GH_REPO_OFF_COMMAND;
+  const repo = flagRepo || (prefixRepos.length ? prefixRepos.at(-1) || null : hookGhRepo(deps.host));
   if (repo && /[$%`()]/.test(repo)) return `The guard cannot see what ${flagRepo ? repo : `GH_REPO=${repo}`} holds, so it cannot read the verdict from that repository. Write the repository out: gh pr merge <n> -R owner/repo --squash --delete-branch.`;
 
   const target = [...(selector ? [selector] : []), ...(repo ? ['-R', repo] : [])];
