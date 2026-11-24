@@ -51,7 +51,7 @@ function findBrowser(explicit) {
 }
 
 function launch(exe, profile) {
-  const child = spawn(exe, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  const child = spawn(exe, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--ignore-certificate-errors', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   const endpoint = new Promise((resolve, reject) => {
     let log = '';
     child.stderr.on('data', chunk => {
@@ -116,13 +116,25 @@ async function openStartPage(cdp, start) {
   const { errorText } = await cdp.send('Page.navigate', { url: start.href }, sessionId);
   if (errorText) throw new Error(`could not open ${start.href} (${errorText}); is the app running?`);
   await loaded;
-  if (await evaluate(cdp, sessionId, 'location.origin') !== start.origin) throw new Error(`could not open ${start.href}; is the app running?`);
+  const landed = new URL(await evaluate(cdp, sessionId, 'location.href'));
+  if (!/^https?:$/.test(landed.protocol)) throw new Error(`could not open ${start.href}; is the app running?`);
+  if (landed.href !== start.href) throw redirectError([[start.href, landed.href]], start.origin);
   return sessionId;
 }
 
+function redirectError(redirects, origin) {
+  const shown = href => (new URL(href).origin === origin ? href.slice(origin.length) : href);
+  const list = redirects.map(([requested, landed]) => `${shown(requested)} redirected to ${shown(landed)}`).join(', ');
+  return new Error(`${list}; pass the path it lands on, or for a page behind login inject browser-check.js in a signed-in browser (the runner has no session)`);
+}
+
 async function runCheck(cdp, args, check) {
-  const sessionId = await openStartPage(cdp, new URL(args.paths[0], args.origin));
-  const statuses = await evaluate(cdp, sessionId, `Promise.all(${JSON.stringify(args.paths)}.map(p => fetch(p, { credentials: 'include' }).then(r => [p, r.status])))`);
+  const start = new URL(args.paths[0], args.origin);
+  const sessionId = await openStartPage(cdp, start);
+  const statuses = await evaluate(cdp, sessionId, `Promise.all(${JSON.stringify(args.paths)}.map(p => fetch(p, { credentials: 'include' }).then(r => [p, r.status, r.url])))`);
+  const withoutHash = url => url.href.split('#')[0];
+  const redirects = statuses.map(([p, , landed]) => [withoutHash(new URL(p, start)), landed]).filter(([requested, landed]) => landed !== requested);
+  if (redirects.length) throw redirectError(redirects, start.origin);
   const missing = statuses.filter(([, status]) => status >= 400);
   if (missing.length) throw new Error(`pages did not load: ${missing.map(([p, status]) => `${p} (${status})`).join(', ')}`);
   const options = JSON.stringify({ paths: args.paths, ...(args.widths && { widths: args.widths }) });
