@@ -14,6 +14,7 @@ const NOT_DOCS = /(^|\/)(AGENTS|CLAUDE)\.md$|(^|\/)requirements[^/]*\.txt$|(^|\/
 const CONFIG = /(^|\/)(\.github\/workflows\/|\.claude\/)|(^|\/)(pyproject\.toml|setup\.cfg|ruff\.toml|\.ruff\.toml|pyrightconfig\.json|eslint\.config\.[cm]?js|\.eslintrc[^/]*|Cargo\.toml|clippy\.toml|rustfmt\.toml|package\.json|tsconfig[^/]*\.json|Dockerfile|docker-compose[^/]*\.ya?ml|\.pre-commit-config\.yaml)$/i;
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)test_[^/]+\.py$|_test\.(py|go|rs)$|\.(test|spec)\.[cm]?[jt]sx?$/i;
 const CODE = /\.(py|pyi|js|mjs|cjs|ts|tsx|jsx|rs|go|sql|sh|ps1|html|css|vue|svelte)$/i;
+const runnableTest = p => TEST_PATH.test(p) && CODE.test(p);
 const FIXTURE = /(^|\/)(fixtures|__fixtures__|testdata)\//i;
 const SCHEMA_FILE = /(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i;
 
@@ -107,6 +108,7 @@ export function riskTier(diff, { extraPaths = [] } = {}) {
     for (const q of paths) for (const [re, why] of PATH_RULES) if (re.test(q) && !(testFixtureSql && re === SCHEMA_FILE)) raise(2, `${why}: ${q}`);
 
     if (isTest && f.deleted) raise(2, `test file deleted: ${p}`);
+    if (f.oldPath && runnableTest(paths[1]) && !runnableTest(p)) raise(2, `test file renamed out of the suite: ${paths[1]} -> ${p}`);
     if (isTest && f.removed.some(l => TEST_REMOVED.test(l))) raise(2, `test removed: ${p}`);
     if (isTest) {
       const lost = f.removed.filter(l => ASSERT.test(l)).length - f.added.filter(l => ASSERT.test(l)).length;
