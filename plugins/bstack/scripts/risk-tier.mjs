@@ -169,9 +169,9 @@ export const ghFileReader = (gh, repo, sha) => p =>
 function main() {
   const args = process.argv.slice(2);
   const opt = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
-  const run = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
+  const run = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', maxBuffer: 64 << 20 });
   let diff;
-  let readFile = p => fs.readFileSync(path.join(process.cwd(), p), 'utf8');
+  let readFile = p => fs.readFileSync(path.join(run('git', ['rev-parse', '--show-toplevel']).trim(), p), 'utf8');
   if (opt('--pr')) {
     diff = run('gh', ['pr', 'diff', opt('--pr')]);
     const pr = JSON.parse(run('gh', ['pr', 'view', opt('--pr'), '--json', 'url,headRefOid']));
