@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as guard from '../plugins/bstack/scripts/guard.mjs';
 import { decide, ciState, realDeps, retryOnTimeout } from '../plugins/bstack/scripts/guard.mjs';
 import { commentBody } from '../plugins/bstack/scripts/lib/verdicts.mjs';
 
@@ -772,7 +773,7 @@ test('PowerShell reads /x as the root of the current drive, not as a Git Bash pa
   allowed(psAt('git -C /c/proj push'), onMainAt('C:\\proj'));
   blocked(psAt('cd /tmp/rat; git commit -m x'), overBaselineAt('C:\\tmp\\rat'));
   allowed(psAt('cd /tmp/rat; git commit -m x'), overBaselineAt(BASH_TEMP_RAT));
-  const verdictAt = file => ({ ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : null) });
+  const verdictAt = file => ({ ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : 'just a note') });
   blocked(psAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\c\\x\\v.md'));
   allowed(psAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\x\\v.md'));
   blocked(psAt('cmd /c git -C /c/proj push'), onMainAt('C:\\c\\proj'));
@@ -788,6 +789,62 @@ test('Bash keeps the Git Bash meaning of /c/... and /tmp; a cd to $TEMP or $TMP 
   const verdictAt = file => ({ ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : null) });
   blocked(bashAt('gh pr comment 5 --body-file /c/x/v.md'), verdictAt('C:\\x\\v.md'));
   blocked(psAt("bash -c 'git -C /c/proj push'"), onMainAt('C:\\proj'));
+});
+
+test('a body file given as a Git Bash /tmp path is read from the temp dir', () => {
+  const bodyAt = (file, text) => onHost(GIT_BASH_HOST, { ...deps(), readFile: f => (f === file ? text : null) });
+  blocked(bashAt('gh pr comment 5 --body-file /tmp/b/v.md'), bodyAt('C:\\Temp\\b\\v.md', `bstack-verdict: PASS sha=${SHA}`));
+  blocked(bashAt('gh pr comment 5 -F /tmp/b/v.md'), bodyAt('C:\\Temp\\b\\v.md', `bstack-interrogate: 0 sha=${SHA}`));
+  allowed(bashAt('gh pr comment 5 --body-file /tmp/b/v.md'), bodyAt('C:\\Temp\\b\\v.md', 'just a note'));
+});
+
+test('a body file under a temp variable the same line assigns is refused', () => {
+  const noteAt = (host, file) => onHost(host, { ...deps(), readFile: f => (f === file ? 'just a note' : null) });
+  const windows = noteAt(GIT_BASH_HOST, 'C:\\Temp\\v.md');
+  const linux = noteAt({ ...LINUX_HOST, env: { TMPDIR: '/tmp' } }, '/tmp/v.md');
+  blocked(psAt("$env:TEMP='C:\\evil'; gh pr comment 5 --body-file $env:TEMP\\v.md"), windows);
+  blocked(bashAt('TMPDIR=/evil; gh pr comment 5 --body-file $TMPDIR/v.md'), linux);
+  blocked(bashAt('export TMPDIR=/c/evil; gh pr comment 5 --body-file $TMPDIR/v.md'), linux);
+  blocked(bashAt('TMPDIR=/evil gh pr comment 5 --body-file $TMPDIR/v.md'), linux);
+  allowed(psAt("$env:FOO='x'; gh pr comment 5 --body-file $env:TEMP\\v.md"), windows);
+  allowed(bashAt('gh pr comment 5 --body-file $TMPDIR/v.md'), linux);
+});
+
+test('a body file the guard cannot read is refused', () => {
+  blocked(shell('gh pr comment 5 --body-file missing.md'));
+  blocked(shell('gh issue create -t x -F missing.md'));
+  blocked(shell('gh api repos/o/r/issues --input missing.json'));
+  allowed(shell('gh pr comment 5 --body-file empty.md'), deps({ files: { 'empty.md': '' } }));
+  allowed(shell('gh api repos/o/r/issues -F title=x -f body=y'));
+});
+
+test('-F is a field outside pr and issue, and a field value read from @file is still checked', () => {
+  const verdict = deps({ files: { 'v.md': `bstack-verdict: PASS sha=${SHA}` } });
+  allowed(shell('gh workflow run deploy.yml -F env=prod'));
+  allowed(shell('gh workflow run deploy.yml --ref main -F env=prod -F dry=true'));
+  blocked(shell('gh workflow run x -F body=@v.md'), verdict);
+  blocked(shell('gh pr comment 5 -F v.md'), verdict);
+});
+
+test('-F after gh global flags or in an alias is a body file; only api and workflow run take it as a field', () => {
+  const verdict = deps({ files: { 'v.md': `bstack-verdict: PASS sha=${SHA}` } });
+  blocked(shell('gh -R o/r pr comment 5 -F v.md'), verdict);
+  blocked(shell('gh --repo o/r pr comment 5 -F v.md'), verdict);
+  blocked(shell('gh --repo=o/r pr comment 5 -F v.md'), verdict);
+  blocked(shell('gh pc 5 -F v.md'), verdict);
+  blocked(shell('gh -R o/r release create v1 -F v.md'), verdict);
+  allowed(shell('gh -R o/r workflow run x -F env=prod'));
+  allowed(shell('gh --repo=o/r workflow run x -F env=prod'));
+  allowed(shell('gh -R o/r api repos/o/r/issues -F title=x'));
+  blocked(shell('gh -R o/r workflow run x -F body=@v.md'), verdict);
+});
+
+test('ghSubcommand skips the global repo flag', () => {
+  const { ghSubcommand } = guard;
+  assert.deepEqual(ghSubcommand(['-R', 'o/r', 'pr', 'comment', '5']), ['pr', 'comment']);
+  assert.deepEqual(ghSubcommand(['--repo=o/r', 'workflow', 'run', 'x']), ['workflow', 'run']);
+  assert.deepEqual(ghSubcommand(['api', 'repos/o/r']), ['api', 'repos/o/r']);
+  assert.deepEqual(ghSubcommand(['--unknown', 'api']), []);
 });
 
 test('the main session reads a cd to $TMPDIR as unknown, set or not', () => {

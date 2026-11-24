@@ -30,15 +30,15 @@ export function decide(input, deps) {
   const line = String(input.tool_input?.command ?? '');
   const dialect = tool === 'PowerShell' ? 'powershell' : 'posix';
   const host = withPaths(deps.host ?? REAL_HOST);
-  const hostDeps = { ...deps, host };
+  const hostDeps = { ...deps, host: { ...host, tempNames: plainTempNames(line) } };
   const root = host.paths.resolvePath(cwd);
   const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
   const looped = loopBodies(line).some(body => commandsIn(body, 0, dialect).some(createsCommit));
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, cwd, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps) : null);
+    const reason = markerRule(c, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps) : null);
     if (reason) return reason;
   }
-  return agentWritesRule(line, dialect, cwd, agent, root, { ...host, tempNames: plainTempNames(line) });
+  return agentWritesRule(line, dialect, cwd, agent, root, hostDeps.host);
 }
 
 const REAL_HOST = { platform: process.platform, env: process.env, tmpdir: () => os.tmpdir() };
@@ -147,16 +147,20 @@ function resolvedDir(target, here, dialect, paths) {
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
 const SAVED_VERDICTS = 'Saved verdicts are written only by the bstack hook when GitHub does not answer; the guard posts them at the next merge. Run the bstack:reviewer or bstack:adversary agent instead.';
 
-function markerRule(c, cwd, deps) {
+function markerRule(c, deps) {
   const readOnlyGh = c.cmd === 'gh' && (/^(view|checks|diff|list|status)$/.test(c.args[1] ?? '') || (c.args[0] === 'api' && !hasWriteFields(c.args)));
   if (MARKER.test(c.text) && !READ_ONLY.has(c.cmd) && !readOnlyGh) {
     return 'Verdict and interrogate lines are posted by the bstack hook when the bstack:reviewer or bstack:adversary agent finishes. Run that agent instead of writing the line yourself.';
   }
   if (!READ_ONLY.has(c.cmd) && pathArgs(c).some(a => PENDING_PATH.test(a))) return SAVED_VERDICTS;
   if (c.cmd === 'gh') {
+    const { host } = deps;
     for (const file of bodyFiles(c.args)) {
-      const text = deps.readFile(deps.host.paths.resolvePath(cwd, file, c.dialect));
-      if (text && MARKER.test(text)) return `The body file ${file} contains a bstack verdict line. Verdicts are posted only by the bstack hook.`;
+      const { word, dialect } = inTempDir(file, c.dialect, host);
+      const target = resolvedDir(word, c.cwdKnown ? c.cwd : UNKNOWN_DIR, dialect, host.paths);
+      const text = target === UNKNOWN_DIR ? null : deps.readFile(target);
+      if (text === null) return `The guard cannot read the body file ${file} to check it for a bstack verdict line. Give a literal path to a file that exists.`;
+      if (MARKER.test(text)) return `The body file ${file} contains a bstack verdict line. Verdicts are posted only by the bstack hook.`;
     }
   }
   return null;
@@ -170,11 +174,31 @@ function pathArgs({ cmd, args }) {
   return args.filter((a, i) => !MESSAGE_OPTS.has(args[i - 1]) && !/^--(message|body|title)=/.test(a));
 }
 
+const GH_SHORT_F_IS_FIELD = new Set(['api', 'workflow run']);
+
+export function ghSubcommand(args) {
+  const words = [];
+  for (let i = 0; i < args.length && words.length < 2; i++) {
+    const a = args[i];
+    if (a === '-R' || a === '--repo') i++;
+    else if (a.startsWith('--repo=') || /^-R./.test(a)) continue;
+    else if (a.startsWith('-')) break;
+    else words.push(a);
+  }
+  return words;
+}
+
+function shortFIsField(args) {
+  const [cmd, sub] = ghSubcommand(args);
+  return GH_SHORT_F_IS_FIELD.has(cmd) || GH_SHORT_F_IS_FIELD.has(`${cmd} ${sub}`);
+}
+
 function bodyFiles(args) {
   const files = [];
+  const fileFlags = shortFIsField(args) ? ['--body-file', '--input'] : ['--body-file', '-F', '--input'];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === '--body-file' || a === '-F' || a === '--input') files.push(args[i + 1]);
+    if (fileFlags.includes(a)) files.push(args[i + 1]);
     else if (a.startsWith('--body-file=') || a.startsWith('--input=')) files.push(a.split('=').slice(1).join('='));
     if ((a === '-F' || a === '--field') && /=@/.test(args[i + 1] ?? '')) files.push(args[i + 1].split('=@')[1]);
   }
