@@ -1,6 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -50,7 +51,7 @@ const routes = {
   '/clean': html(fixture('clean.html')),
   '/delay': (req, res) => setTimeout(() => html(fixture('defects.html'))(req, res), Number(new URL(req.url, 'http://x').searchParams.get('ms'))),
   '/hanging-image': html('<!doctype html><html lang="en"><title>Hanging image</title><img src="/never" alt=""></html>'),
-  '/never': () => {},
+  '/never': () => server.emit('never-requested'),
 };
 const server = http.createServer((req, res) => (routes[new URL(req.url, 'http://x').pathname] ?? ((_, r) => r.writeHead(404).end('not found')))(req, res));
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -69,18 +70,23 @@ function runAsync(args, env = {}) {
   child.stdout.on('data', chunk => { stdout += chunk; });
   child.stderr.on('data', chunk => { stderr += chunk; });
   const giveUp = setTimeout(() => child.kill('SIGKILL'), GIVE_UP_MS);
-  return new Promise(resolve => child.on('close', status => {
+  const done = new Promise(resolve => child.on('close', status => {
     clearTimeout(giveUp);
     resolve({ status, stdout, stderr, seconds: (Date.now() - started) / 1000 });
   }));
+  return Object.assign(done, { child });
 }
 
-const deadOrigin = await runAsync(['http://127.0.0.1:9']);
+const closed = http.createServer();
+await new Promise(resolve => closed.listen(0, '127.0.0.1', resolve));
+const deadPort = closed.address().port;
+await new Promise(resolve => closed.close(resolve));
+const deadOrigin = await runAsync([`http://127.0.0.1:${deadPort}`]);
 const noBrowser = /no Chrome or Edge found/.test(deadOrigin.stderr) && 'no Chrome or Edge on this machine; set BROWSER_CHECK_BROWSER to run the browser tests';
 
 test('browser check runner exits 2 when nothing listens on the origin', { skip: noBrowser }, () => {
   assert.equal(deadOrigin.status, 2, deadOrigin.stderr);
-  assert.match(deadOrigin.stderr, /could not open http:\/\/127\.0\.0\.1:9\//);
+  assert.match(deadOrigin.stderr, new RegExp(`could not open http://127\\.0\\.0\\.1:${deadPort}/ \\(net::ERR_CONNECTION_REFUSED\\)`));
 });
 
 test('browser check runner reports the defects fixture with exit 1 and its breakpoint', { skip: noBrowser }, async () => {
@@ -117,5 +123,21 @@ test('browser check runner gives up at --timeout on a page that never finishes l
   assert.equal(run.status, 2, run.stderr);
   assert.match(run.stderr, /no result within 5 s/);
   assert.ok(run.seconds < 15, `took ${run.seconds} s`);
+  assert.deepEqual(left, []);
+});
+
+const windowsKillsHard = process.platform === 'win32' && 'on Windows child.kill() terminates without a signal the runner can handle';
+
+test('browser check runner stopped by SIGTERM exits 2 and removes its profile', { skip: noBrowser || windowsKillsHard }, async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
+  const requested = once(server, 'never-requested');
+  const running = runAsync([origin, '/hanging-image'], { TMPDIR: tmp, TEMP: tmp, TMP: tmp });
+  await requested;
+  running.child.kill('SIGTERM');
+  const run = await running;
+  const left = fs.readdirSync(tmp).filter(name => name.startsWith('browser-check-'));
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  assert.equal(run.status, 2, run.stderr);
+  assert.match(run.stderr, /stopped by SIGTERM/);
   assert.deepEqual(left, []);
 });

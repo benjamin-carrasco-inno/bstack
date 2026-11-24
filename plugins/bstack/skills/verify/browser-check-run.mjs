@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const USAGE = 'usage: node browser-check-run.mjs <origin> <path>... [--widths 375,768,1280] [--browser <exe>]';
+const USAGE = 'usage: node browser-check-run.mjs <origin> <path>... [--widths 375,768,1280] [--browser <exe>] [--timeout 120]';
 const CANDIDATES = {
   win32: [
     `${process.env['PROGRAMFILES(X86)']}\\Microsoft\\Edge\\Application\\msedge.exe`,
@@ -21,7 +21,7 @@ const CANDIDATES = {
 };
 
 function parseArgs(argv) {
-  const args = { paths: [], widths: undefined, browser: process.env.BROWSER_CHECK_BROWSER };
+  const args = { paths: [], widths: undefined, browser: process.env.BROWSER_CHECK_BROWSER, timeoutSeconds: 120 };
   const value = i => {
     if (argv[i + 1] === undefined || argv[i + 1].startsWith('--')) throw new Error(`${argv[i]} needs a value\n${USAGE}`);
     return argv[i + 1];
@@ -29,11 +29,13 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--widths') args.widths = value(i++).split(',').map(Number);
     else if (argv[i] === '--browser') args.browser = value(i++);
+    else if (argv[i] === '--timeout') args.timeoutSeconds = Number(value(i++));
     else if (!args.origin) args.origin = argv[i];
     else args.paths.push(argv[i]);
   }
   if (!URL.canParse(args.origin ?? '') || !/^https?:$/.test(new URL(args.origin).protocol)) throw new Error(USAGE);
   if (args.widths?.some(w => !Number.isInteger(w) || w < 1)) throw new Error(`--widths takes positive integers, such as 375,768,1280\n${USAGE}`);
+  if (!(args.timeoutSeconds > 0 && args.timeoutSeconds <= 86400)) throw new Error(`--timeout takes seconds above 0 and up to 86400\n${USAGE}`);
   if (!args.paths.length) args.paths.push(new URL(args.origin).pathname);
   return args;
 }
@@ -67,9 +69,14 @@ function launch(exe, profile) {
 function connect(url) {
   const ws = new WebSocket(url);
   const pending = new Map();
+  const eventWaiters = new Set();
   let next = 0;
   ws.addEventListener('message', event => {
     const msg = JSON.parse(event.data);
+    if (msg.method) {
+      for (const waiter of eventWaiters) waiter(msg);
+      return;
+    }
     const waiter = pending.get(msg.id);
     if (!waiter) return;
     pending.delete(msg.id);
@@ -81,8 +88,16 @@ function connect(url) {
     pending.set(id, { resolve, reject });
     ws.send(JSON.stringify({ id, method, params, sessionId }));
   });
+  const nextEvent = (method, sessionId) => new Promise(resolve => {
+    const waiter = msg => {
+      if (msg.method !== method || msg.sessionId !== sessionId) return;
+      eventWaiters.delete(waiter);
+      resolve(msg.params);
+    };
+    eventWaiters.add(waiter);
+  });
   return new Promise((resolve, reject) => {
-    ws.addEventListener('open', () => resolve({ send, close: () => ws.close() }));
+    ws.addEventListener('open', () => resolve({ send, nextEvent, close: () => ws.close() }));
     ws.addEventListener('error', () => reject(new Error(`cannot connect to ${url}`)));
   });
 }
@@ -93,29 +108,52 @@ async function evaluate(cdp, sessionId, expression) {
   return result.value;
 }
 
+async function openStartPage(cdp, start) {
+  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  await cdp.send('Page.enable', {}, sessionId);
+  const loaded = cdp.nextEvent('Page.loadEventFired', sessionId);
+  const { errorText } = await cdp.send('Page.navigate', { url: start.href }, sessionId);
+  if (errorText) throw new Error(`could not open ${start.href} (${errorText}); is the app running?`);
+  await loaded;
+  if (await evaluate(cdp, sessionId, 'location.origin') !== start.origin) throw new Error(`could not open ${start.href}; is the app running?`);
+  return sessionId;
+}
+
+async function runCheck(cdp, args, check) {
+  const sessionId = await openStartPage(cdp, new URL(args.paths[0], args.origin));
+  const statuses = await evaluate(cdp, sessionId, `Promise.all(${JSON.stringify(args.paths)}.map(p => fetch(p, { credentials: 'include' }).then(r => [p, r.status])))`);
+  const missing = statuses.filter(([, status]) => status >= 400);
+  if (missing.length) throw new Error(`pages did not load: ${missing.map(([p, status]) => `${p} (${status})`).join(', ')}`);
+  const options = JSON.stringify({ paths: args.paths, ...(args.widths && { widths: args.widths }) });
+  return evaluate(cdp, sessionId, `(${check})(${options})`);
+}
+
+function giveUpSignal(seconds) {
+  let timer;
+  const stopped = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no result within ${seconds} s; a page or one of its resources may never finish loading (raise --timeout for a slow app)`)), seconds * 1000);
+    for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => reject(new Error(`stopped by ${signal}`)));
+  });
+  return { stopped, clear: () => clearTimeout(timer) };
+}
+
 async function main() {
   if (typeof WebSocket === 'undefined') throw new Error('needs Node 22 or later (global WebSocket)');
   const args = parseArgs(process.argv.slice(2));
   const check = fs.readFileSync(new URL('./browser-check.js', import.meta.url), 'utf8').trim();
   const browser = findBrowser(args.browser);
+  const giveUp = giveUpSignal(args.timeoutSeconds);
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-check-'));
   const { child, endpoint } = launch(browser, profile);
   let cdp;
   try {
-    cdp = await connect(await endpoint);
-    const start = new URL(args.paths[0], args.origin);
-    const { targetId } = await cdp.send('Target.createTarget', { url: start.href });
-    const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
-    const loaded = await evaluate(cdp, sessionId, `new Promise(r => document.readyState === 'complete' ? r(location.origin) : addEventListener('load', () => r(location.origin), { once: true }))`);
-    if (loaded !== start.origin) throw new Error(`could not open ${start.href}; is the app running?`);
-    const statuses = await evaluate(cdp, sessionId, `Promise.all(${JSON.stringify(args.paths)}.map(p => fetch(p, { credentials: 'include' }).then(r => [p, r.status])))`);
-    const missing = statuses.filter(([, status]) => status >= 400);
-    if (missing.length) throw new Error(`pages did not load: ${missing.map(([p, status]) => `${p} (${status})`).join(', ')}`);
-    const options = JSON.stringify({ paths: args.paths, ...(args.widths && { widths: args.widths }) });
-    const report = await evaluate(cdp, sessionId, `(${check})(${options})`);
+    const work = endpoint.then(connect).then(connected => runCheck(cdp = connected, args, check));
+    const report = await Promise.race([work, giveUp.stopped]);
     console.log(JSON.stringify(report, null, 2));
     process.exitCode = report.findings.length ? 1 : 0;
   } finally {
+    giveUp.clear();
     await closeBrowser(child, cdp);
     fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   }
