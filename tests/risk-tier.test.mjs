@@ -119,6 +119,32 @@ test('an allowed failure in a frontmatter hook of a skill or agent file is tier 
   }
 });
 
+test('an executed block after frontmatter that names an executed form is tier 2', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  const named = 'Never write `|| true` yourself.';
+  const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  const fence = ['---', 'name: x', 'description: Explains the ```! block form', '---', '', '```!', 'npm test || true', '```', '', named].join('\n');
+  const inline = ['---', 'name: x', 'description: Lines that start with !` run', '---', '', 'Run !`npm test || true` first.', '', named].join('\n');
+  assert.equal(riskTier(edit('npm test || true'), { readFile: () => fence }).tier, 2);
+  assert.equal(riskTier(edit('Run !`npm test || true` first.'), { readFile: () => inline }).tier, 2);
+  assert.equal(riskTier(edit(named), { readFile: () => fence }).tier, 1);
+  assert.equal(riskTier(edit(named), { readFile: () => inline }).tier, 1);
+});
+
+test('frontmatter whose opening or closing dashes have trailing whitespace is executed', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  const hook = '          command: npm test || true';
+  const named = 'Never write `|| true` yourself.';
+  const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  const head = (open, close) => [open, 'name: x', 'hooks:', '  Stop:', '    - hooks:', '        - type: command', hook, close, '', named].join('\n');
+  for (const [open, close] of [['--- ', '---'], ['---', '--- ']]) {
+    assert.equal(riskTier(edit(hook), { readFile: () => head(open, close) }).tier, 2, JSON.stringify([open, close]));
+    assert.equal(riskTier(edit(named), { readFile: () => head(open, close) }).tier, 1, JSON.stringify([open, close]));
+  }
+  const rule = ['# X', '', 'Intro.', '', '---', '', named].join('\n');
+  assert.equal(riskTier(edit(named), { readFile: () => rule }).tier, 1);
+});
+
 test('a prose file whose head cannot be read keeps the weakening rules', () => {
   const diff = file('docs/ci.md', { add: ['Never add `|| true`.'] });
   assert.equal(riskTier(diff).tier, 2);
