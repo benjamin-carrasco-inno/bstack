@@ -53,6 +53,19 @@ test('markdown that names a suppression token is not a suppression', () => {
   assert.equal(tier(file('docs/guide.md', { add: ['Never add `type: ignore`.'] })), 0);
 });
 
+test('markdown that names a test skip or an allowed failure is not a weakened check', () => {
+  assert.equal(tier(file('plugins/bstack/agents/reviewer.md', { add: ['Flag a new `it.skip(` or `|| true`.'] })), 1);
+  assert.equal(tier(file('docs/ci.md', { add: ['Never add `continue-on-error: true` or `@pytest.mark.skip`.'] })), 0);
+});
+
+test('a test skip or an allowed failure outside prose is tier 2', () => {
+  assert.equal(tier(file('tests/api.test.mjs', { add: ["it.skip('flaky', () => {});"] })), 2);
+  assert.equal(tier(file('.github/workflows/ci.yml', { add: ['      - run: npm test || true'] })), 2);
+  assert.equal(tier(file('.github/workflows/ci.yml', { add: ['        continue-on-error: true'] })), 2);
+  assert.equal(tier(file('package.json', { add: ['    "test": "node --test || true",'] })), 2);
+  assert.equal(tier(file('scripts/check.sh', { add: ['pyright || true'] })), 2);
+});
+
 test('prose in non-source files that names a suppression token is not a suppression', () => {
   assert.equal(tier(file('docs/guide.rst', { add: ['Never add ``type: ignore``.'] })), 0);
   assert.equal(tier(file('plugins/bstack/skills/x/notes.txt', { add: ['Never add `# noqa`.'] })), 1);
