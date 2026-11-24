@@ -45,7 +45,7 @@ const WEAKENING_ADDED = [
 ];
 const PROSE_EXTENSION = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
 const isProse = p => PROSE_EXTENSION.test(p) && !BUILD_TXT.test(p) && !COMMANDS.test(p);
-const CLAUDE_CODE_EXECUTED_MARKDOWN = [/```!\s*\n?([\s\S]*?)\n?```/dg, /(?<=^|\s)!`([^`]+)`/dgm];
+const CLAUDE_CODE_EXECUTED_MARKDOWN = [/```!\s*\n?([\s\S]*?)\n?```/dg, /(?<=^|\s)!`([^`]+)`/dgm, /^﻿?---\n([\s\S]*?)\n---(?=\n|$)/dg];
 
 function executedMatch(head, line, re) {
   if (typeof head !== 'string') return true;
