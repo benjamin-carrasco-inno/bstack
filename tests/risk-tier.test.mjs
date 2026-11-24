@@ -72,6 +72,16 @@ test('an allowed failure in a CMakeLists.txt is tier 2', () => {
   assert.equal(tier(file('src/CMakeLists.txt', { add: [line] })), 2);
 });
 
+test('an allowed failure in a command file that Claude Code executes is tier 2', () => {
+  assert.equal(tier(file('.claude/commands/test.md', { add: ['!`npm test || true`'] })), 2);
+  assert.equal(tier(file('plugins/x/commands/check.md', { add: ['!`node --test || true`'] })), 2);
+});
+
+test('a command file is not docs', () => {
+  assert.equal(tier(file('.claude/commands/x.md', { add: ['Run the tests.'] })), 1);
+  assert.equal(tier(file('plugins/x/commands/x.md', { add: ['Run the tests.'] })), 1);
+});
+
 test('prose in non-source files that names a suppression token is not a suppression', () => {
   assert.equal(tier(file('docs/guide.rst', { add: ['Never add ``type: ignore``.'] })), 0);
   assert.equal(tier(file('plugins/bstack/skills/x/notes.txt', { add: ['Never add `# noqa`.'] })), 1);
