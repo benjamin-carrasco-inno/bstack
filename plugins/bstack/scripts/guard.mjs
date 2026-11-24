@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ASSIGNMENT, UNRESOLVED, commandsIn, endsInRedirect, loopBodies, parseGit, redirectTargets, tokenize, withoutHeredocBodies, words } from './lib/shell.mjs';
-import { KINDS, MARKER, latestFor, shaOf, timeOf } from './lib/verdicts.mjs';
+import { INTERROGATE_ROUNDS, KINDS, MARKER, latestFor, shaOf, timeOf } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
@@ -560,7 +560,6 @@ function apiRule(args) {
 
 const MERGE_VALUE_OPTS = new Set(['-R', '--repo', '-b', '--body', '-F', '--body-file', '-t', '--subject', '--match-head-commit', '-A', '--author-email']);
 
-const INTERROGATE_ROUNDS = 3;
 
 function mergeGate(args, cwd, deps) {
   const flags = [];
