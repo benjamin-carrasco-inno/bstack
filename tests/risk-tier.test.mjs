@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseDiff, riskTier } from '../plugins/bstack/scripts/risk-tier.mjs';
+
+const SCRIPT = fileURLToPath(new URL('../plugins/bstack/scripts/risk-tier.mjs', import.meta.url));
 
 const file = (p, { add = [], del = [], created = false, deleted = false } = {}) =>
   [`diff --git a/${p} b/${p}`, created ? 'new file mode 100644' : '', deleted ? 'deleted file mode 100644' : '', `--- a/${p}`, `+++ b/${p}`,
@@ -403,6 +410,38 @@ test('risk-paths.txt raises listed paths', () => {
   const diff = file('app/billing/calc.py', { add: ['x = 2'] });
   assert.equal(riskTier(diff).tier, 1);
   assert.equal(riskTier(diff, { extraPaths: ['app/billing/**'] }).tier, 2);
+});
+
+test('a change to the repo risk policy file is tier 2, a nested file of that name is not', () => {
+  const r = riskTier(file('.github/risk-paths.txt', { del: ['plugins/**'] }));
+  assert.equal(r.tier, 2);
+  assert.ok(r.reasons.includes('risk policy file: .github/risk-paths.txt'), r.reasons.join('; '));
+  assert.equal(tier(file('docs/.github/risk-paths.txt', { add: ['x'] })), 1);
+});
+
+test('risk-tier.mjs without --pr takes risk-paths.txt from the base ref, not the working tree', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-tier-cli-'));
+  const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
+  const cli = () => JSON.parse(execFileSync(process.execPath, [SCRIPT, '--base', 'main'], { cwd: repo, encoding: 'utf8' }));
+  const listed = 'listed in .github/risk-paths.txt: app/main.py';
+  try {
+    git('init', '-q', '-b', 'main');
+    fs.mkdirSync(path.join(repo, '.github'));
+    fs.mkdirSync(path.join(repo, 'app'));
+    fs.writeFileSync(path.join(repo, '.github', 'risk-paths.txt'), 'app/*.py\n');
+    fs.writeFileSync(path.join(repo, 'app', 'main.py'), 'x = 0\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'base');
+    git('checkout', '-q', '-b', 'feat');
+    fs.writeFileSync(path.join(repo, 'app', 'main.py'), 'x = 1\n');
+    fs.writeFileSync(path.join(repo, '.github', 'risk-paths.txt'), '# edited locally\n');
+    assert.ok(cli().reasons.includes(listed));
+    fs.rmSync(path.join(repo, '.github', 'risk-paths.txt'));
+    git('commit', '-q', '-am', 'drop the policy');
+    assert.ok(cli().reasons.includes(listed));
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 test('reasons name the file', () => {

@@ -21,7 +21,10 @@ const interrogate = (confirmed, blocking = confirmed, sha = SHA) => ({ body: com
 const userOk = (sha = SHA) => ({ body: `Read the report, merge it.\nbstack-user-ok sha=${sha}\n`, createdAt: '2026-11-22T12:00:00Z' });
 const legacyInterrogate = n => ({ body: `<!-- bstack-interrogate v1 -->\nbstack-interrogate: confirmed=${n} sha=${SHA}\n\nreport\n`, createdAt: '2026-11-22T11:00:00Z' });
 
-function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, files = {} } = {}) {
+const BASE_RISK_PATHS = /^repos\/([\w.-]+\/[\w.-]+)\/contents\/\.github\/risk-paths\.txt\?ref=(.+)$/;
+const NOT_FOUND = () => new Error('gh: Not Found (HTTP 404)');
+
+function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, files = {}, riskPaths = NOT_FOUND } = {}) {
   return {
     git: (_cwd, args) => {
       if (args.includes('@{u}')) { if (!upstream) throw new Error('no upstream'); return upstream; }
@@ -31,6 +34,7 @@ function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, fil
     gh: (_cwd, args) => {
       if (args[1] === 'view') return JSON.stringify({ number: 5, url: 'https://github.com/o/r/pull/5', headRefOid: SHA, baseRefName: 'main', state: 'OPEN', statusCheckRollup: GREEN, comments: [], ...pr });
       if (args[1] === 'diff') return diff;
+      if (args[0] === 'api' && BASE_RISK_PATHS.test(args.at(-1))) { if (typeof riskPaths === 'function') throw riskPaths(); return riskPaths; }
       throw new Error(`unexpected gh ${args.join(' ')}`);
     },
     readFile: f => files[f.replace(/\\/g, '/').split('/').pop()] ?? null,
@@ -222,9 +226,48 @@ test('a merge in another repo reads the PR, diff and verdict from that repo', ()
     const d = { ...base, gh: (cwd, args) => { calls.push(args); return base.gh(cwd, args); } };
     allowed(shell(command), d);
     const named = args => args.includes('https://github.com/o/r/pull/7') || args.join(' ').includes('-R o/r');
-    assert.deepEqual(calls.map(a => a[1]), ['view', 'diff'], command);
-    assert.ok(calls.every(named), `${command}: ${JSON.stringify(calls)}`);
+    assert.deepEqual(calls.map(a => a[0] === 'api' ? a.at(-1) : a[1]), ['view', 'diff', 'repos/o/r/contents/.github/risk-paths.txt?ref=main'], command);
+    assert.ok(calls.filter(a => a[0] === 'pr').every(named), `${command}: ${JSON.stringify(calls)}`);
   }
+});
+
+test('the merge gate takes risk-paths.txt from the base branch, never from the checkout it runs in', () => {
+  const checkout = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-riskpaths-'));
+  try {
+    const merge = (local, riskPaths, comments) => {
+      fs.rmSync(path.join(checkout, '.github'), { recursive: true, force: true });
+      if (local !== null) { fs.mkdirSync(path.join(checkout, '.github')); fs.writeFileSync(path.join(checkout, '.github', 'risk-paths.txt'), local); }
+      return decide(shell('gh pr merge 5 --squash', { cwd: checkout }), onCwdHost({ cwd: checkout }, deps({ riskPaths, pr: { comments } })));
+    };
+    const tier2 = /^Tier 2 \(listed in \.github\/risk-paths\.txt: app\/main\.py\)/;
+    assert.match(merge(null, 'app/*.py\n', [verdict('PASS')]) ?? '', tier2);
+    assert.match(merge('# edited locally\n', 'app/*.py\n', [verdict('PASS')]) ?? '', tier2);
+    assert.equal(merge('app/*.py\n', 'docs/**\n', [verdict('PASS')]), null);
+    assert.equal(merge('app/*.py\n', NOT_FOUND, [verdict('PASS')]), null);
+  } finally {
+    fs.rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test('the merge gate fails closed with a retry hint when the base risk-paths.txt cannot be read', () => {
+  for (const failure of ['gh: Server Error (HTTP 502)', 'error connecting to api.github.com', 'gh: Bad credentials (HTTP 401)']) {
+    const reason = decide(shell('gh pr merge 5 --squash'), deps({ riskPaths: () => new Error(failure), pr: { comments: [verdict('PASS')] } }));
+    assert.match(reason ?? '', /could not read \.github\/risk-paths\.txt from main in o\/r .*Retry the merge/, failure);
+  }
+});
+
+test('a PR that edits risk-paths.txt is tier 2 and judged with the base branch version', () => {
+  const dropped = ['diff --git a/.github/risk-paths.txt b/.github/risk-paths.txt', '--- a/.github/risk-paths.txt', '+++ b/.github/risk-paths.txt', '-app/*.py', ''].join('\n') + CODE_DIFF;
+  const reason = decide(shell('gh pr merge 5 --squash'), deps({ diff: dropped, riskPaths: 'app/*.py\n', pr: { comments: [verdict('PASS')] } }));
+  assert.match(reason ?? '', /^Tier 2 .*risk policy file: \.github\/risk-paths\.txt.*listed in \.github\/risk-paths\.txt: app\/main\.py/);
+});
+
+test('a merge in another repo reads risk-paths.txt from that repo\'s base branch', () => {
+  const calls = [];
+  const base = deps({ riskPaths: 'app/*.py\n', pr: { number: 7, url: 'https://github.com/x/y/pull/7', baseRefName: 'release/1.0', comments: [verdict('PASS')] } });
+  const d = { ...base, gh: (cwd, args) => { calls.push(args); return base.gh(cwd, args); } };
+  assert.match(decide(shell('gh pr merge 7 -R x/y --squash'), d) ?? '', /^Tier 2 /);
+  assert.deepEqual(calls.filter(a => a[0] === 'api').map(a => a.at(-1)), ['repos/x/y/contents/.github/risk-paths.txt?ref=release%2F1.0']);
 });
 
 test('a merge whose repo is a shell variable is refused with the name to write out', () => {
@@ -244,7 +287,7 @@ test('a repo flag before pr merge hits the same merge gate', () => {
     const base = deps({ pr: { number: 7, url: 'https://github.com/o/r/pull/7', comments: [verdict('PASS')] } });
     const d = { ...base, gh: (cwd, args) => { calls.push(args); return base.gh(cwd, args); } };
     allowed(shell(`gh ${repoFlag} pr merge 7 --squash --delete-branch`), d);
-    assert.ok(calls.length > 0 && calls.every(a => a.join(' ').includes('-R o/r') || a.includes('https://github.com/o/r/pull/7')), `${repoFlag}: ${JSON.stringify(calls)}`);
+    assert.ok(calls.length > 0 && calls.every(a => a.join(' ').includes('-R o/r') || a.includes('https://github.com/o/r/pull/7') || a.at(-1).startsWith('repos/o/r/')), `${repoFlag}: ${JSON.stringify(calls)}`);
   }
 });
 

@@ -1,7 +1,4 @@
 import { test } from 'node:test';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import assert from 'node:assert/strict';
 import { decide } from '../plugins/bstack/scripts/guard.mjs';
 import { deliver, handle } from '../plugins/bstack/scripts/verdict.mjs';
@@ -57,7 +54,7 @@ function fakeGitHub({ head = MERGE, commits = MERGED_ONCE, diffs, comments, chec
       if (/\/pulls\/5\/commits/.test(endpoint)) return commits.map(c => [c.sha, ...c.parents].join(' ')).join('\n');
       const compared = /\/compare\/main\.\.\.([0-9a-f]{40})$/.exec(endpoint);
       if (compared) return diffs[compared[1]];
-      const file = /\/contents\/(.+)\?ref=([0-9a-f]{40})$/.exec(endpoint);
+      const file = /\/contents\/(.+)\?ref=([^&]+)$/.exec(endpoint);
       if (file && files[file[2]]?.[file[1]] !== undefined) return files[file[2]][file[1]];
       throw new Error(`HTTP 404: ${endpoint}`);
     },
@@ -235,21 +232,15 @@ test('sameChange counts a line ending changed to CRLF as a change', () => {
 });
 
 test('a docs-named file listed in .github/risk-paths.txt compares strictly and counts as overlap at tier 2', () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-carry-'));
-  try {
-    fs.mkdirSync(path.join(repo, '.github'));
-    fs.writeFileSync(path.join(repo, '.github', 'risk-paths.txt'), 'security/*.txt\n');
-    const allowlist = (pre, neighbour) => ['diff --git a/security/admin-allowlist.txt b/security/admin-allowlist.txt', `index ${pre}..4444444 100644`,
-      '--- a/security/admin-allowlist.txt', '+++ b/security/admin-allowlist.txt', '@@ -1,1 +1,2 @@', '+alice@example.com', ` ${neighbour}`].join('\n');
-    const judged = diffOf(codeFile(CODE), allowlist('3333333', 'deny-all'));
-    const moved = diffOf(codeFile(CODE), allowlist('7777777', 'allow-all'));
-    assert.deepEqual(sameChange(judged, moved, tierZeroDocs(['security/*.txt'])).changed, ['security/admin-allowlist.txt']);
-    const sameLines = diffOf(codeFile(CODE), allowlist('7777777', 'deny-all'));
-    const github = fakeGitHub({ diffs: { [JUDGED]: judged, [MERGE]: sameLines }, comments: [verdict('PASS'), interrogate(0)] });
-    assert.match(merge(github, repo) ?? '', /does not carry to 5555555: main changed security\/admin-allowlist\.txt, which this tier 2 PR also changes\./);
-  } finally {
-    fs.rmSync(repo, { recursive: true, force: true });
-  }
+  const allowlist = (pre, neighbour) => ['diff --git a/security/admin-allowlist.txt b/security/admin-allowlist.txt', `index ${pre}..4444444 100644`,
+    '--- a/security/admin-allowlist.txt', '+++ b/security/admin-allowlist.txt', '@@ -1,1 +1,2 @@', '+alice@example.com', ` ${neighbour}`].join('\n');
+  const judged = diffOf(codeFile(CODE), allowlist('3333333', 'deny-all'));
+  const moved = diffOf(codeFile(CODE), allowlist('7777777', 'allow-all'));
+  assert.deepEqual(sameChange(judged, moved, tierZeroDocs(['security/*.txt'])).changed, ['security/admin-allowlist.txt']);
+  const sameLines = diffOf(codeFile(CODE), allowlist('7777777', 'deny-all'));
+  const files = { main: { '.github/risk-paths.txt': 'security/*.txt\n' } };
+  const github = fakeGitHub({ diffs: { [JUDGED]: judged, [MERGE]: sameLines }, comments: [verdict('PASS'), interrogate(0)], files });
+  assert.match(merge(github) ?? '', /does not carry to 5555555: main changed security\/admin-allowlist\.txt, which this tier 2 PR also changes\./);
 });
 
 const reviewedAt = (at = JUDGED) => ({ agent_type: 'bstack:reviewer', cwd: '/repo', last_assistant_message: `Works.\nbstack-verdict: PASS pr=5 sha=${at}` });
