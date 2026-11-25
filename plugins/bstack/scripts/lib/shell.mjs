@@ -127,6 +127,14 @@ export function closingBacktick(line, open) {
   return -1;
 }
 
+const LINE_CONTINUATION = /\\\r?\n/y;
+
+function lineContinuation(line, i, dialect) {
+  if (dialect !== 'posix') return 0;
+  LINE_CONTINUATION.lastIndex = i;
+  return LINE_CONTINUATION.exec(line)?.[0].length ?? 0;
+}
+
 const UNSEEN_PIPE_SOURCE = Object.freeze({ cmd: '', args: [], text: '' });
 
 export function splitSegments(line, dialect = 'posix') {
@@ -160,6 +168,8 @@ function segmentsOf(line, dialect) {
         i = sub.close;
         continue;
       }
+      const joined = quote === '"' ? lineContinuation(line, i, dialect) : 0;
+      if (joined) { i += joined - 1; continue; }
       cur += ch;
       if (ch === quote) quote = null;
       else if (quote === '"' && escapesInDoubleQuotes(ch, dialect) && i + 1 < line.length) cur += line[++i];
@@ -167,6 +177,9 @@ function segmentsOf(line, dialect) {
     }
     const here = hereString(line, i);
     if (here) { cur += line.slice(i, here.end); i = here.end - 1; continue; }
+    const joined = lineContinuation(line, i, dialect);
+    if (joined) { i += joined - 1; continue; }
+    if (ch === '\\' && dialect === 'posix' && i + 1 < line.length) { cur += ch + line[++i]; continue; }
     if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
     if (ch === '`' && (line[i + 1] === '`' || BRACKETS.has(line[i + 1]))) { cur += ch + line[++i]; continue; }
     const close = ch === '(' && (!opensGroup(cur) || isArgument(cur)) ? closingParen(line, i, dialect, closes)
@@ -247,6 +260,7 @@ export function words(segment, dialect = 'posix') {
     const here = hereString(segment, i);
     if (here) { expands ||= segment[i + 1] === '"' && /\$[\w{(]/.test(here.body); addQuoted(here.body); started = true; i = here.end - 1; continue; }
     if (expandsAt(segment, i, dialect, false)) expands = true;
+    if (ch === '$' && dialect === 'posix' && segment[i + 1] === '"' && segment[i - 1] !== '\\') continue;
     if (ch === '"' || ch === "'") { quote = ch; started = true; continue; }
     if (/\s/.test(ch) && depth === 0) { if (started) end(); continue; }
     if (ch === '(') { expression = true; depth++; }
