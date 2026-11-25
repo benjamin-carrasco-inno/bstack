@@ -383,3 +383,25 @@ test('reasons name the file', () => {
   const r = riskTier(file('app/schema.sql', { add: ['ALTER TABLE t ADD COLUMN c int;'] }));
   assert.ok(r.reasons.some(x => x.includes('app/schema.sql')));
 });
+
+test('a stylesheet named like auth code is not auth or secrets code', () => {
+  for (const p of ['plugins/bstack/skills/frontend/tokens.css', 'src/styles/tokens.scss', 'src/session.css', 'src/auth.sass', 'src/token.less']) {
+    const r = riskTier(file(p, { add: ['--color-accent: #0a6;'] }));
+    assert.equal(r.tier, 1, p);
+    assert.ok(!r.reasons.some(x => x.startsWith('auth or secrets code')), r.reasons.join());
+  }
+});
+
+test('auth code keeps tier 2 next to the stylesheet exemption', () => {
+  for (const p of ['auth/token.py', 'src/session.ts']) {
+    const r = riskTier(file(p, { add: ['x = 1'] }));
+    assert.equal(r.tier, 2, p);
+    assert.ok(r.reasons.includes(`auth or secrets code: ${p}`), r.reasons.join());
+  }
+});
+
+test('a stylesheet listed in risk-paths stays tier 2', () => {
+  const r = riskTier(file('src/styles/tokens.scss', { add: ['$accent: #0a6;'] }), { extraPaths: ['src/styles/**'] });
+  assert.equal(r.tier, 2);
+  assert.ok(r.reasons.includes('listed in .github/risk-paths.txt: src/styles/tokens.scss'), r.reasons.join());
+});
