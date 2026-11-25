@@ -15,7 +15,7 @@ import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, ti
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
-import { prCommits, prMergeInChain, sameChange } from './lib/carry.mjs';
+import { mergeInChain, prCommits, prMergeInChain, sameChange } from './lib/carry.mjs';
 import { policyLines, readBasePolicy } from './lib/base-policy.mjs';
 import { EXPOSURE, RISK_PATHS, exposureOf, gatePlan, ghFileReader, riskTier, tierZeroDocs } from './risk-tier.mjs';
 
@@ -1098,22 +1098,24 @@ function mergeGate(args, cwd, deps, c, line) {
 }
 
 // Internal exposure: the newest interrogate result on a commit of this PR counts. Blocking findings
-// must be on an earlier commit, and the verdict judged after them.
+// need a later PR commit that is not a merge-in of the base, and a verdict judged after them.
 function internalInterrogate(pr, verdict, why, { cwd, deps, repo }) {
   const head = pr.headRefOid;
   const results = (pr.comments ?? []).filter(c => shaOf('interrogate', c.body)).sort((a, b) => timeOf(a) - timeOf(b));
-  let ofPr = new Set([head]);
+  let commits = [];
   if (results.some(c => shaOf('interrogate', c.body) !== head)) {
-    try { ofPr = new Set([head, ...prCommits(args => deps.gh(cwd, ['api', ...args]), repo, pr.number).map(c => c.sha)]); }
+    try { commits = prCommits(args => deps.gh(cwd, ['api', ...args]), repo, pr.number); }
     catch (e) { return `bstack could not read the commits of ${pr.url} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
   }
+  const ofPr = new Set([head, ...commits.map(c => c.sha)]);
   const newest = results.filter(c => ofPr.has(shaOf('interrogate', c.body))).at(-1);
   if (!newest) return `Tier 2${why}: run bstack:interrogate on head ${head.slice(0, 7)} before merging, and get the user's OK if a revert cannot undo it.`;
   const judgedOn = shaOf('interrogate', newest.body);
   const { blocking } = latestFor('interrogate', [newest], judgedOn);
   if (!blocking) return null;
   const verdictAt = Math.max(...pr.comments.filter(c => shaOf('verdict', c.body) === verdict.from).map(timeOf));
-  if (judgedOn !== head && verdictAt > timeOf(newest)) return null;
+  const fixedSince = !mergeInChain(commits, head).includes(judgedOn);
+  if (fixedSince && verdictAt > timeOf(newest)) return null;
   return `Interrogate found ${blocking} blocking finding(s) on ${judgedOn.slice(0, 7)}. Fix each as a failing test that now passes, push, and run bstack:reviewer on the new head.`;
 }
 
