@@ -1,11 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { riskTier, readRiskPaths } from '../plugins/bstack/scripts/risk-tier.mjs';
+import fs from 'node:fs';
+import { policyLines } from '../plugins/bstack/scripts/lib/base-policy.mjs';
+import { RISK_PATHS, riskTier } from '../plugins/bstack/scripts/risk-tier.mjs';
 
-const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const extraPaths = readRiskPaths(repoRoot);
+const extraPaths = policyLines(fs.readFileSync(new URL(`../${RISK_PATHS}`, import.meta.url), 'utf8'));
 const edit = p => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, '+const x = 1;'].join('\n');
 
 const gateFiles = [

@@ -85,7 +85,7 @@ The guard then posts a comment with both heads, the merge commits and the diff f
 
 In prose files (`.md`, `.rst`, `.txt`, `.adoc`, not `CMakeLists.txt`), a skipped test or `|| true` counts only where Claude Code may execute it: inside a ```` ```! ```` block, on a line that contains `` !` `` anywhere (also with `$ARGUMENTS` or another argument placeholder between them) and on to the next backtick after it, in a file's leading YAML frontmatter (where skill and agent `hooks:` live), or anywhere in a file under `commands/`. The guard reads such a file at the PR head to see that; when it cannot, the line keeps tier 2.
 
-A repo can raise paths to tier 2 with globs in `.github/risk-paths.txt`.
+A repo can raise paths to tier 2 with globs in `.github/risk-paths.txt`. The guard and `risk-tier.mjs --pr` read it from the PR's base branch through `gh`, never from the checkout; without `--pr`, `risk-tier.mjs` reads it from `--base` (default `origin/HEAD`). A missing file means no extra paths; any other read failure blocks the merge. A PR that changes the file is tier 2.
 
 ## Comments
 

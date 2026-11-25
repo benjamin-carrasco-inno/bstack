@@ -39,7 +39,7 @@ Computed, not chosen. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/risk-tier.mjs"` a
 - **1** code, config, CI, agent instructions: CI, your own full diff read, and a `bstack:reviewer` verdict.
 - **2** code that writes, deletes or counts data; schema and migrations; external side effects (POST, mail, publishing, webhooks, n8n); auth; concurrency; importers; weakened tests or checks: tier 1, plus `bstack:interrogate`, plus the user's OK when a revert cannot undo it.
 
-A repo can raise paths to tier 2 with globs in `.github/risk-paths.txt`. Add one only for a risk the heuristics miss.
+A repo can raise paths to tier 2 with globs in the base branch's `.github/risk-paths.txt`. Add one only for a risk the heuristics miss.
 
 ## Models and effort
 
