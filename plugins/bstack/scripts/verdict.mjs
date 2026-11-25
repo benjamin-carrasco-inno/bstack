@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // SubagentStop hook for bstack:reviewer and bstack:adversary. It reads the agent's final report,
 // checks that the SHA it judged is still the PR head or that only merges of the base branch followed
-// it, and posts the report as a PR comment with the verdict marker. The model never posts verdicts itself, so the merge gate reads only this output.
+// it, and posts the report as a PR comment with the verdict marker. The model never posts verdicts
+// itself, so the merge gate reads only this output.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
