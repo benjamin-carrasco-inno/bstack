@@ -30,7 +30,7 @@ description: Run the app and prove behaviour on the real surface. Start it safel
 
 ## UI changes
 
-When the diff touches HTML, CSS, templates or client JS, run [browser-check.js](browser-check.js) on each changed page, with any browser automation that can evaluate JS. On a same-origin page of the running app, evaluate the file's text followed by `({ paths: ['/changed', '/other'] })`; `widths` overrides 375, 768 and 1280. It returns JSON:
+When the diff touches HTML, CSS, templates or client JS, run [browser-check.js](browser-check.js) on each changed page, with any browser automation that can evaluate JS. On a same-origin page of the running app, evaluate the file's text followed by `({ paths: ['/changed', '/other'] })`; `widths` overrides 375, 768 and 1280. Without browser tools: `node "${CLAUDE_PLUGIN_ROOT}/skills/verify/browser-check-run.mjs" <origin> /changed /other` (Node 22, local Chrome or Edge). It returns JSON:
 - `findings`: overflow per width, duplicate ids, inputs without a label, `href="#"`, leftover template placeholders. One the change introduced is a FAIL.
 - `breakpoints`: each grid or flex-wrap switch from 320 to 1600 px with its narrowest column in ch. A report, not a gate.
 
