@@ -15,7 +15,9 @@ claude plugin marketplace add benjamin-carrasco-inno/bstack
 claude plugin install bstack@bstack
 ```
 
-Then, in a Claude Code session, run `/bstack:setup`. It turns on auto-update for this marketplace (off by default for third-party marketplaces), turns off AI attribution, and checks node, git and gh. Updates then arrive on their own after each merge to `main`. The plugin has no `version` on purpose, so installs track commits.
+Then, in a Claude Code session, run `/bstack:setup`, in every Claude config dir you use (`~/.claude` and any other set through `CLAUDE_CONFIG_DIR`). It turns on auto-update for this marketplace (off by default for third-party marketplaces, so an install without it stays on the commit it was installed at), turns off AI attribution, and checks node, git and gh. Updates then arrive on their own after each merge to `main`. The plugin has no `version` on purpose, so installs track commits.
+
+To see whether a machine is current, run `node <plugin dir>/scripts/install-status.mjs <config dir>...`. It prints the installed commit against `main`, whether auto-update is on, and the command that updates a profile that is behind.
 
 Requirements: Node 18+ on `PATH` (the hooks are Node scripts), git, and the GitHub CLI (`gh`) logged in for the repos you work on.
 
