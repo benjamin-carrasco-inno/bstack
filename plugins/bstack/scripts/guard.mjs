@@ -528,8 +528,8 @@ function inWorktree(c, ctx) {
 
 const PATH_LIKE = /[\\/]|^\.\.?$|^~|[$`%(]/;
 
-function argsInsideRule(c, ctx) {
-  for (let i = 0; i < c.args.length; i++) {
+function argsInsideRule(c, ctx, from = 0) {
+  for (let i = from; i < c.args.length; i++) {
     const a = c.args[i];
     const expression = c.expressions?.has(i) ?? false;
     if (!expression && /^\d*[<>]/.test(a)) continue;
@@ -681,7 +681,7 @@ function gitAllowed(c, ctx) {
     const repo = !dir ? here : dirExpression ? undefined : writeTarget(dir, here, c.dialect, ctx.host, false);
     const otherTree = globals.some(a => /^--(work-tree|git-dir)\b/.test(a));
     if (otherTree || !repo || !owns(ctx.root, repo, ctx.host)) return refuse(ctx.agent, `git ${sub} on a checkout outside its own worktree (${ctx.root}), or one the guard cannot locate`, 'Read with git diff or git show instead.');
-    return null;
+    return argsInsideRule({ ...c, cmd: `git ${sub}`, cwd: repo, cwdKnown: true }, ctx, c.args.length - rest.length);
   }
   return refuse(ctx.agent, `git ${[sub, ...rest.slice(0, 2)].join(' ')} is not on the list`, 'Read with git status, log, show or diff; restore a file in your own worktree with git restore or git checkout <commit> -- <path>.');
 }
