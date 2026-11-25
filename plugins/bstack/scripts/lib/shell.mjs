@@ -289,7 +289,7 @@ export function redirectTargets(segment, dialect = 'posix') {
   return targets;
 }
 
-const ESCAPE = { posix: '\\', powershell: '`', cmd: '^' };
+export const ESCAPE = { posix: '\\', powershell: '`', cmd: '^' };
 const TRAILING_REDIRECT = /(.?)\d*>>?$/s;
 
 export function endsInRedirect(segment, dialect = 'posix') {
