@@ -31,7 +31,18 @@ const PATH_RULES = [
   [/(import|sync|upsert|ingest|backfill)[^/]*\.(py|rs|js|mjs|ts)$/i, 'importer or sync code'],
 ];
 
-const SAME_ORIGIN_WRITE = /<form\b(?![^>]{0,1000}?(?:\baction\s*=\s*['"]?\s*(?:[a-z][\w+.-]*:|\/\/|\\)|\bfetch\s*\())[^>]{0,1000}>|\bfetch\s*\(\s*(['"`])\.?\/(?![/\\]|\$\{)[^'"`]{0,1000}\1\s*,\s*\{[^{}]{0,1000}\}\s*\)/gi;
+const TEMPLATE_VAR = String.raw`\{\{[^{}"'<>]*\}\}`;
+const PLAIN_VALUE = String.raw`(?:[^"'{}<>\\]|${TEMPLATE_VAR})*`;
+const APP_PATH = String.raw`(?:${TEMPLATE_VAR})?\/(?![/\\\s])${PLAIN_VALUE}`;
+const URL_ATTR = String.raw`(?:action|formaction|hx-(?:get|post|put|patch|delete))\b`;
+const FORM_ATTR = [
+  String.raw`\s+(?!${URL_ATTR}|on)[a-z][\w.]*(?:-(?!on)[\w.]+)*(?:\s*=\s*(?:"${PLAIN_VALUE}"|'${PLAIN_VALUE}'|[\w.-]+))?`,
+  String.raw`\s+(?!formaction)${URL_ATTR}\s*=\s*(?:"${APP_PATH}"|'${APP_PATH}')`,
+  String.raw`\s*\{%[^{}<>]*%\}`,
+].join('|');
+const APP_FORM = new RegExp(String.raw`<form(?:${FORM_ATTR})*\s*>`, 'gi');
+const APP_FETCH = /(?<![.\w$])fetch\s*\(\s*(['"`])\.?\/(?![/\\\s]|\$\{)[^'"`]{0,1000}\1\s*,\s*\{(?![^{}]{0,1000}(?:base|:\/\/))[^{}]{0,1000}\}\s*\)/g;
+const withoutAppWrites = l => (/formaction/i.test(l) ? l : l.replace(APP_FORM, '')).replace(APP_FETCH, '');
 const SCHEMA_STATEMENT = /\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i;
 
 const ADDED_OR_REMOVED = [
@@ -39,7 +50,7 @@ const ADDED_OR_REMOVED = [
   [/\bDELETE\s+FROM\b|\bTRUNCATE\b|\bUPDATE\s+[\w."]+\s+SET\b|\bINSERT\s+(OR\s+\w+\s+)?INTO\b|\bON\s+CONFLICT\b/i, 'SQL that writes data'],
   [/\b(os\.remove|os\.unlink|shutil\.rmtree|\.unlink\(|\.rmdir\(|fs\.(rm|rmSync|unlink|unlinkSync|rmdir)\(|remove_file|remove_dir_all)\b/, 'code that removes files'],
   [/\b(requests|httpx|session|client|reqwest|axios)\s*\.\s*(post|put|patch|delete)\s*\(|Method::(POST|PUT|PATCH|DELETE)/i, 'outbound call with side effects'],
-  [/method\s*[:=]\s*['"](POST|PUT|PATCH|DELETE)['"]/i, 'outbound call with side effects', SAME_ORIGIN_WRITE],
+  [/method\s*[:=]\s*['"](POST|PUT|PATCH|DELETE)['"]/i, 'outbound call with side effects', withoutAppWrites],
   [/\b(smtplib|sendmail|send_mail|lettre|nodemailer|webhook)\b/i, 'mail or webhook'],
   [/\b(threading|multiprocessing|asyncio\.(Lock|gather|create_task)|tokio::spawn|Mutex|RwLock|BEGIN\s+(IMMEDIATE|EXCLUSIVE))\b/, 'concurrency'],
 ];
@@ -214,7 +225,7 @@ export function riskTier(diff, { extraPaths = [], readFile } = {}) {
     if (CODE.test(p) && !isTest) {
       for (const l of [...f.added, ...f.removed]) {
         if (/^\s*(#|\/\/|\*)/.test(l) || /^\s*@/.test(l)) continue; // comments and decorators
-        for (const [re, why, sameOrigin] of ADDED_OR_REMOVED) if (re.test(l) && (!sameOrigin || re.test(l.replace(sameOrigin, '')))) raise(2, `${why}: ${p}`);
+        for (const [re, why, appOnly] of ADDED_OR_REMOVED) if (re.test(l) && (!appOnly || re.test(appOnly(l)))) raise(2, `${why}: ${p}`);
       }
     }
   }
