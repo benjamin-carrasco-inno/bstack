@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { decide } from '../plugins/bstack/scripts/guard.mjs';
+import { handle } from '../plugins/bstack/scripts/verdict.mjs';
 import { mergeInChain, sameChange } from '../plugins/bstack/scripts/lib/carry.mjs';
 import { commentBody } from '../plugins/bstack/scripts/lib/verdicts.mjs';
 import { tierZeroDocs } from '../plugins/bstack/scripts/risk-tier.mjs';
@@ -249,4 +250,48 @@ test('a docs-named file listed in .github/risk-paths.txt compares strictly and c
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }
+});
+
+const reviewedAt = (at = JUDGED) => ({ agent_type: 'bstack:reviewer', cwd: '/repo', last_assistant_message: `Works.\nbstack-verdict: PASS pr=5 sha=${at}` });
+
+test('the verdict hook posts a report whose head moved only by a merge of main, on the judged SHA', () => {
+  const out = handle(reviewedAt(), fakeGitHub({ diffs: {}, comments: [] }).deps.gh);
+  assert.equal(out.block, undefined, out.block);
+  assert.equal(out.post.sha, JUDGED);
+  assert.match(out.post.body, new RegExp(`^bstack-verdict: PASS sha=${JUDGED}$`, 'm'));
+  assert.ok(out.post.body.includes(`Judged on ${JUDGED}. The PR head has since moved to ${MERGE} by a merge-in of main.`), out.post.body);
+  assert.match(out.post.body, /^Works\.$/m);
+});
+
+test('the verdict hook posts across two merges of main in a row', () => {
+  const commits = [...MERGED_ONCE, commit(MERGE2, MERGE, MAIN_TIP2)];
+  const out = handle(reviewedAt(), fakeGitHub({ head: MERGE2, commits, diffs: {}, comments: [] }).deps.gh);
+  assert.ok(out.post?.body.includes(`Judged on ${JUDGED}. The PR head has since moved to ${MERGE2} by a merge-in of main.`), out.block);
+});
+
+test('the verdict hook refuses a report when a PR commit follows the judged SHA', () => {
+  const afterNonMerge = [commit(PR_COMMIT, BASE_OLD), commit(JUDGED, PR_COMMIT), commit(EXTRA, JUDGED)];
+  const afterPrMerge = [commit(PR_COMMIT, BASE_OLD), commit(JUDGED, PR_COMMIT), commit(EXTRA, BASE_OLD), commit(MERGE, JUDGED, EXTRA)];
+  for (const [head, commits] of [[EXTRA, afterNonMerge], [MERGE, afterPrMerge]]) {
+    const out = handle(reviewedAt(), fakeGitHub({ head, commits, diffs: {}, comments: [] }).deps.gh);
+    assert.equal(out.post, undefined);
+    assert.ok(out.block.startsWith(`PR 5 head is now ${head}, not ${JUDGED}. Check out the new head`), out.block);
+  }
+});
+
+test('the verdict hook refuses a moved head whose commits it cannot read or GitHub cannot list in full', () => {
+  const unreadable = handle(reviewedAt(), fakeGitHub({ failApi: true, diffs: {}, comments: [] }).deps.gh);
+  assert.equal(unreadable.post, undefined);
+  assert.match(unreadable.block, /head is now 5{40}, not 2{40}, and bstack could not read its commits \(HTTP 504: gateway timeout\)/);
+  const many = Array.from({ length: 250 }, (_, i) => commit(i.toString(16).padStart(40, 'f'), BASE_OLD));
+  const tooMany = handle(reviewedAt(), fakeGitHub({ commits: [...many, ...MERGED_ONCE], diffs: {}, comments: [] }).deps.gh);
+  assert.equal(tooMany.post, undefined);
+  assert.match(tooMany.block, /could not read its commits \(the PR has 253 commits, and GitHub lists at most 250\)/);
+});
+
+test('the guard carries a verdict the hook posted after a merge-in to the new head', () => {
+  const out = handle(reviewedAt(), fakeGitHub({ diffs: {}, comments: [] }).deps.gh);
+  const github = fakeGitHub({ diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [{ body: out.post.body, createdAt: '2026-11-25T10:00:00Z' }] });
+  assert.equal(merge(github), null);
+  assert.ok(github.posted[0].body.includes(`- reviewer verdict PASS, judged on ${JUDGED}`), github.posted[0].body);
 });
