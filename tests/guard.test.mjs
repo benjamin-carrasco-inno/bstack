@@ -714,6 +714,144 @@ test('#34: no-authoring agents restore and check out only paths inside their cwd
   allowed(shell('git restore ../checkout/a.mjs'));
 });
 
+const refusedFor = agent => (input, d = onHost(GIT_BASH_HOST)) => assert.match(decide({ ...input, agent_type: agent }, d) ?? '', /runs only allowlisted commands/, input.tool_input.command);
+const allowedFor = agent => (input, d = onHost(GIT_BASH_HOST)) => assert.equal(decide({ ...input, agent_type: agent }, d), null, input.tool_input.command);
+
+test('#34: no-authoring agents run git ls-remote, config and remote only in their read forms', () => {
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      'git ls-remote --upload-pack="echo PWNED>&2; false" .', 'git ls-remote --upload-pack=/tmp/x.sh .', 'git ls-remote -u /tmp/x.sh .',
+      'git ls-remote --unknown-flag origin',
+      'git config --replace-all core.fsmonitor "echo PWNED>&2" --get-all', 'git config set user.name x --list', 'git config --unset user.name --get',
+      'git config --add user.name x --list', 'git config --edit --list', 'git config core.pager evil --list', 'git config --get x --global y z',
+      'git config --get --list', 'git config user.name x',
+      'git remote -v add evil /x', 'git remote --verbose set-url origin /x', 'git remote add evil /x', 'git remote -v remove origin',
+    ]) refused(shell(command));
+    refused(ps('git config --replace-all core.fsmonitor "echo PWNED>&2" --get-all'));
+
+    for (const command of [
+      'git ls-remote origin', 'git ls-remote --heads origin main', 'git ls-remote --tags --refs origin', 'git ls-remote --symref origin HEAD',
+      'git config --get user.name', 'git config --get-all remote.origin.fetch', 'git config --list --show-origin', 'git config -l',
+      'git config get user.name', 'git config list --global', 'git config --global --get core.pager', "git config --get-regexp '^remote\\.'",
+      'git config --type=bool --get core.bare', 'git config --default main --get init.defaultBranch',
+      'git remote', 'git remote -v', 'git remote --verbose', 'git remote get-url origin', 'git remote get-url --push origin', 'git remote show origin',
+    ]) ok(shell(command));
+  }
+});
+
+test('#34: no-authoring agents: a PowerShell writer fed from a pipeline names every path itself', () => {
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      'Get-ChildItem C:/checkout | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue', 'Get-ChildItem C:/checkout | Remove-Item -Recurse -ErrorAction:SilentlyContinue',
+      'Get-ChildItem C:/checkout | Remove-Item -Recurse -OutVariable o', 'Get-ChildItem C:/checkout | Remove-Item -Recurse -Verbose -Force',
+      'Write-Output C:/checkout/a | Remove-Item -ErrorAction 0', 'Write-Output C:/checkout/a | Remove-Item -ea 0 -ev e',
+      'Get-Item C:/checkout/a.mjs | Rename-Item -NewName b.mjs', 'Get-ChildItem C:/checkout/src | Move-Item -Destination C:/repo/x',
+      'Get-ChildItem C:/checkout/src | Copy-Item -Destination C:/repo/x', 'Get-ChildItem C:/checkout/*.mjs | Set-Content -Value x -ErrorAction Stop',
+      'Get-ChildItem C:/checkout | Clear-Content -ErrorAction Stop', 'Get-Item C:/checkout | New-Item -Name x -ItemType File',
+      "[pscustomobject]@{Destination='C:/checkout/x'} | Move-Item C:/repo/a",
+    ]) refused(ps(command));
+
+    for (const command of [
+      'Get-ChildItem | Select-Object Name', 'Get-Content a.txt | Set-Content b.txt', 'Get-Content a.txt | Set-Content -Path b.txt -ErrorAction Stop',
+      '"x" | Out-File -Encoding utf8 out.txt', 'Get-Content a.txt | Out-File -FilePath C:/repo/out.txt -ErrorAction Stop',
+      'Get-ChildItem | Move-Item -Path C:/repo/a -Destination C:/repo/b', 'Get-ChildItem | Remove-Item -LiteralPath C:/repo/out -Recurse',
+      'Remove-Item -Path C:/repo/out -Recurse -ErrorAction SilentlyContinue', 'Remove-Item C:/repo/out -Recurse -ea 0',
+      'Set-Content -Path out.txt -Value x -ErrorAction Stop', 'New-Item -ItemType Directory -Force C:/Temp/x | Out-Null',
+    ]) ok(ps(command));
+  }
+});
+
+test('#34: no-authoring agents: .ForEach and .Where take a script block, never a method name', () => {
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      "(Get-ChildItem C:/checkout -Recurse -File).ForEach('Delete')", "(Get-Item C:/checkout/a.mjs).ForEach('MoveTo', 'C:/checkout/b.mjs')",
+      "$f = Get-Item C:/checkout/a.mjs; $f.ForEach('Delete')", '@(Get-Item C:/checkout/a.mjs).ForEach("Delete")', '(Get-Item C:/checkout/a.mjs).ForEach($m)',
+      "(Get-Item C:/checkout/a.mjs).Where('Delete')",
+    ]) refused(ps(command));
+
+    for (const command of ['(Get-ChildItem).ForEach({ $_.Name })', '(Get-ChildItem).Where({ $_.Length -gt 0 }, \'First\')', '(Get-ChildItem).foreach{ $_.Name.Trim() }']) ok(ps(command));
+  }
+});
+
+test('#34: no-authoring agents do not assign to a property of an object', () => {
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      '(Get-Item C:/checkout/a.mjs).IsReadOnly = $true', '$f = Get-Item C:/checkout/a.mjs; $f.IsReadOnly = $true', '$f.IsReadOnly=$true',
+      '(Get-Item C:/checkout/a.mjs).LastWriteTime = Get-Date', 'Get-ChildItem C:/checkout | ForEach-Object { $_.Attributes = \'Hidden\' }',
+    ]) refused(ps(command));
+
+    for (const command of ['$x = (Get-Item a.mjs).Name', '$n = 1; $n += 2', 'if ((Get-Item a.mjs).Length -eq 0) { Write-Output empty }']) ok(ps(command));
+  }
+});
+
+test('#34: no-authoring agents set only allowlisted environment variables', () => {
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      'PYTEST_ADDOPTS=--basetemp=/checkout pytest -q', 'export PYTEST_ADDOPTS=--basetemp=/checkout; pytest -q', 'CARGO_TARGET_DIR=/checkout/t cargo build',
+      'npm_config_global=true npm install left-pad', 'env npm_config_global=true npm install left-pad', 'HOME=/tmp/h git diff', 'HOME=/tmp/h; git diff',
+      'XDG_CONFIG_HOME=/tmp/x git diff', 'export npm_config_global=true; npm install left-pad', 'set -a; npm_config_global=true; npm install left-pad',
+      'set -o allexport; x=1; npm test',
+    ]) refused(shell(command));
+    for (const command of [
+      "$env:PYTEST_ADDOPTS = '--basetemp=C:/checkout'; pytest -q", "$env:CARGO_TARGET_DIR = 'C:/checkout/t'; cargo build",
+      "$env:npm_config_global = 'true'; npm install left-pad", "$env:HOME = 'C:/Temp/h'; git diff", "${env:XDG_CONFIG_HOME} = 'C:/Temp/x'; git diff",
+      "Set-Item env:PYTEST_ADDOPTS '--basetemp=C:/checkout'; pytest -q", "New-Item env:PYTEST_ADDOPTS -Value x; pytest -q",
+    ]) refused(ps(command));
+
+    for (const command of [
+      'NODE_ENV=test npm test', 'CI=true FORCE_COLOR=0 node --test', 'set -euo pipefail; export NODE_ENV=test; npm test', 'x=$(git rev-parse HEAD); echo "$x"',
+      'NO_COLOR=1 pytest -q', 'set +e; npm test',
+    ]) ok(shell(command));
+    for (const command of ["$env:NODE_ENV = 'test'; npm test", "$env:CI = 'true'; npm test", '$sha = git rev-parse HEAD']) ok(ps(command));
+  }
+});
+
+test('#34: no-authoring agents: curl --write-out writes no file, and node flag clusters with e or p run inline code', () => {
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      "curl -s -w '%output{/checkout/pwn}hello' http://localhost:3000/", "curl -s --write-out '%output{/checkout/pwn}x' http://127.0.0.1:1/",
+      'curl -s --write-out=%output{/checkout/pwn}x http://127.0.0.1:1/', 'curl -s -w%output{/checkout/pwn}x http://127.0.0.1:1/',
+      'node -pe "require(\'fs\').rmSync(\'..\',{recursive:true})"', 'node -ep 1', 'node -pe 1', 'node --no-warnings -pe 1', 'node -ip 1', 'node -p 1',
+    ]) refused(shell(command));
+    refused(ps("curl.exe -s -w '%output{C:/checkout/pwn}x' http://127.0.0.1:1/"));
+
+    for (const command of [
+      'curl -s http://localhost:3000/', "curl -s -w '%{http_code}' -o /dev/null http://localhost:3000/", 'curl -s --write-out=%{json} http://localhost:3000/',
+      'node --test x', 'node --test', 'node /tmp/repro.mjs', 'node --no-warnings /tmp/repro.mjs', 'pytest -q',
+    ]) ok(shell(command));
+  }
+});
+
+test('#34: no-authoring agents: an unquoted heredoc body runs its substitutions, a quoted one is text', () => {
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      'cat <<EOF\n$(rm -rf /checkout)\nEOF', 'cat <<EOF\n`rm -rf /checkout`\nEOF', 'cat <<-EOF\n\t$(rm -rf /checkout)\n\tEOF',
+      'cat <<EOF\n${x:-$(rm -rf /checkout)}\nEOF', 'cat > /tmp/a.txt <<EOF\nok\n$(git -C /checkout reset --hard)\nEOF',
+      "cat <<'A' <<B\n$(x)\nA\n$(rm -rf /checkout)\nB", 'cat > /tmp/f.mjs <<EOF\nconst f = x => `${x}`;\nEOF',
+    ]) refused(shell(command));
+
+    for (const command of [
+      "cat <<'EOF'\n$(rm -rf /checkout)\nEOF", 'cat <<"EOF"\n$(rm -rf /checkout)\nEOF', 'cat <<\\EOF\n$(rm -rf /checkout)\nEOF',
+      'cat > /tmp/notes.txt <<EOF\nplain text ${HOME}\nEOF', 'cat <<EOF\n$(git rev-parse HEAD)\nEOF', 'cat <<EOF\n\\$(rm -rf /checkout)\nEOF',
+      "cat > /tmp/f.mjs <<'EOF'\nconst f = x => `${x}`;\nEOF",
+    ]) ok(shell(command));
+  }
+});
+
 const NO_AUTHORING = ['bstack:comment-critic', 'bstack:reviewer', 'bstack:adversary'];
 const asAgent = agent => command => ({ ...shell(command), agent_type: agent });
 const psAsAgent = agent => command => ({ ...ps(command), agent_type: agent });
@@ -971,7 +1109,7 @@ test('no-authoring agents: heredoc bodies are text, not redirects', () => {
     const as = asAgent(agent);
     allowed(as("cat > /tmp/repro.mjs <<'EOF'\nconst out = cases.map(c => decide(c));\nEOF\nnode /tmp/repro.mjs"));
     blocked(as("cat <<'EOF' | node --input-type=module\nconsole.log([1].map(x => String(x)));\nEOF"));
-    allowed(as('cat > /tmp/f.mjs <<EOF\nconst f = x => `${x}`;\nEOF'));
+    blocked(as('cat > /tmp/f.mjs <<EOF\nconst f = x => `${x}`;\nEOF'));
     allowed(as("cat <<-'A' > /tmp/a.txt\n\tx => y\n\tA\ncat <<B\nz > w(1)\nB"));
 
     blocked(as("cat > /checkout/a.mjs <<'EOF'\nx\nEOF"));
