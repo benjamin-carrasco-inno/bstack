@@ -74,6 +74,10 @@ function connect(url) {
   const pending = new Map();
   const eventWaiters = new Set();
   let next = 0;
+  let fail;
+  const failed = new Promise((_, reject) => { fail = reject; });
+  failed.catch(() => {});
+  const unlessFailed = call => Promise.race([call, failed]);
   ws.addEventListener('message', event => {
     const msg = JSON.parse(event.data);
     if (msg.method) {
@@ -86,22 +90,22 @@ function connect(url) {
     if (msg.error) waiter.reject(new Error(msg.error.message));
     else waiter.resolve(msg.result);
   });
-  const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
+  const send = (method, params = {}, sessionId) => unlessFailed(new Promise((resolve, reject) => {
     const id = ++next;
     pending.set(id, { resolve, reject });
     ws.send(JSON.stringify({ id, method, params, sessionId }));
-  });
-  const nextEvent = (method, sessionId) => new Promise(resolve => {
+  }));
+  const nextEvent = (method, sessionId) => unlessFailed(new Promise(resolve => {
     const waiter = msg => {
       if (msg.method !== method || msg.sessionId !== sessionId) return;
       eventWaiters.delete(waiter);
       resolve(msg.params);
     };
     eventWaiters.add(waiter);
-  });
+  }));
   const on = (method, handler) => eventWaiters.add(msg => msg.method === method && handler(msg));
   return new Promise((resolve, reject) => {
-    ws.addEventListener('open', () => resolve({ send, nextEvent, on, close: () => ws.close() }));
+    ws.addEventListener('open', () => resolve({ send, nextEvent, on, fail, close: () => ws.close() }));
     ws.addEventListener('error', () => reject(new Error(`cannot connect to ${url}`)));
   });
 }
@@ -118,9 +122,27 @@ function failureOf({ exception, text }) {
   return deliberate ? description.split('\n')[0].replace(/^Error: /, '') : description;
 }
 
-async function openStartPage(cdp, start) {
+const CRASH_SIGNALS = {
+  'Target.targetCrashed': (msg, page) => msg.params.targetId === page.targetId && msg.params.status,
+  'Inspector.targetCrashed': (msg, page) => msg.sessionId === page.sessionId && 'renderer crashed',
+  'Inspector.detached': (msg, page) => msg.sessionId === page.sessionId && msg.params.reason,
+};
+
+async function failOnCrash(cdp, page, paths) {
+  for (const [method, crashOf] of Object.entries(CRASH_SIGNALS)) {
+    cdp.on(method, msg => {
+      const cause = crashOf(msg, page);
+      if (cause) cdp.fail(new Error(`the page crashed while checking ${paths.join(', ')} (${cause})`));
+    });
+  }
+  await cdp.send('Target.setDiscoverTargets', { discover: true });
+  await cdp.send('Inspector.enable', {}, page.sessionId);
+}
+
+async function openStartPage(cdp, start, paths) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  await failOnCrash(cdp, { targetId, sessionId }, paths);
   await cdp.send('Page.enable', {}, sessionId);
   cdp.on('Page.javascriptDialogOpening', msg => cdp.send('Page.handleJavaScriptDialog', { accept: true }, msg.sessionId).catch(() => {}));
   const loaded = cdp.nextEvent('Page.loadEventFired', sessionId);
@@ -162,7 +184,7 @@ async function runCheck(cdp, args, check) {
   const [start] = pages;
   const sameOriginPath = url => (url.origin === start.origin ? url.pathname + url.search + url.hash : url.href);
   const paths = pages.map(sameOriginPath);
-  const sessionId = await openStartPage(cdp, start);
+  const sessionId = await openStartPage(cdp, start, paths);
   const statuses = await pageStatuses(cdp, sessionId, pages, paths);
   const redirects = statuses.filter(s => s.status >= 300 && s.status < 400 && s.landed);
   if (redirects.length) throw redirectError(redirects.map(s => [s.requested, s.landed]), start.origin);
