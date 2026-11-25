@@ -58,6 +58,8 @@ const routes = {
   '/login': html(fixture('clean.html')),
   '/spa': html(String(fixture('clean.html')).replace('</body>', '<script>history.replaceState(null, "", "/spa?tab=home")</script></body>')),
   '/app/docs/a': html(fixture('clean.html')),
+  '/alert': html(String(fixture('clean.html')).replace('</body>', '<script>alert("Welcome")</script></body>')),
+  '/csp-blocked-style': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'content-security-policy': "style-src 'none'" }).end(String(fixture('clean.html')).replace('</body>', '<style>body::after { content: ""; display: block; inline-size: 3000px; block-size: 1px; }</style></body>')),
   '/csp-connect-none': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'content-security-policy': "connect-src 'none'" }).end(fixture('clean.html')),
   '/query': (req, res) => html(fixture(req.url.endsWith('?v=bad') ? 'defects.html' : 'clean.html'))(req, res),
 };
@@ -155,6 +157,18 @@ test('browser check runner accepts a start page that rewrites its own query with
 test('browser check runner checks a page whose CSP blocks the page from fetching its own origin', { skip: noBrowser }, async () => {
   const run = await runAsync([origin, '/csp-connect-none']);
   assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { findings: [], breakpoints: [] });
+});
+
+test('browser check runner dismisses an alert on the start page and in the checked pages', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/alert', '/clean', '/alert', '--timeout', '20']);
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { findings: [], breakpoints: [] });
+});
+
+test('browser check runner leaves the page CSP in force, so a style the CSP blocks causes no overflow', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/csp-blocked-style']);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.deepEqual(JSON.parse(run.stdout), { findings: [], breakpoints: [] });
 });
 
