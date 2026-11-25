@@ -23,12 +23,13 @@ Three lines, then start:
 | Same behaviour, better shape | [refactor](playbooks/refactor.md) |
 | Schema, stored data, or a file or payload format others read | [migration](playbooks/migration.md) |
 | An issue to build, or "the next ticket" | [ticket](playbooks/ticket.md) |
+| A prototype or POC the user asked for | the `bstack:vibecoding` skill |
 | A branch exists and must land | [ship](playbooks/ship.md) |
 | "Keep going until X", or a run without the user | [autonomous-run](playbooks/autonomous-run.md) |
 | Review or clean up a whole repo | the `bstack:audit` skill |
 | Incoming issues to sort | the `bstack:triage` skill |
 
-When several fit, the riskiest wins. Every route that changes code ends in ship, except a `plan:prototype` branch, which is deleted unmerged when its ticket closes. A change to CI workflows also follows [ci](ci.md).
+When several fit, the riskiest wins. Every route that changes code ends in ship, except a vibe branch the user discards (always for a `plan:prototype` ticket). A change to CI workflows also follows [ci](ci.md).
 
 ## Risk tier
 
