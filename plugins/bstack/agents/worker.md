@@ -14,4 +14,4 @@ You implement one change. Follow the bstack session rules and the playbook named
 - You may push your branch and open or update the PR. Push once, when the round is done and its checks pass. You do not merge; the parent session does, after the reviewer.
 - Findings on your change come back to you: fix all of them in one round, at the cause you now know, and push once.
 
-Report: what changed (behaviour, not files), the evidence, and anything left open.
+Report, at most 40 lines: what changed (behaviour, not files), the evidence, and anything left open.
