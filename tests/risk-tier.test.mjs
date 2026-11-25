@@ -5,7 +5,8 @@ import { parseDiff, riskTier } from '../plugins/bstack/scripts/risk-tier.mjs';
 const file = (p, { add = [], del = [], created = false, deleted = false } = {}) =>
   [`diff --git a/${p} b/${p}`, created ? 'new file mode 100644' : '', deleted ? 'deleted file mode 100644' : '', `--- a/${p}`, `+++ b/${p}`,
     ...del.map(l => `-${l}`), ...add.map(l => `+${l}`)].filter(Boolean).join('\n');
-const tier = (...files) => riskTier(files.join('\n')).tier;
+const addedAsHead = diff => p => parseDiff(diff).find(f => f.path === p)?.added.join('\n') ?? null;
+const tier = (...files) => { const diff = files.join('\n'); return riskTier(diff, { readFile: addedAsHead(diff) }).tier; };
 
 test('docs only is tier 0', () => {
   assert.equal(tier(file('README.md', { add: ['words'] }), file('docs/setup.md', { add: ['more'] })), 0);
@@ -51,6 +52,182 @@ test('weakened checks are tier 2', () => {
 test('markdown that names a suppression token is not a suppression', () => {
   assert.equal(tier(file('plugins/bstack/agents/comment-critic.md', { add: ['Look for `eslint-disable`, `# noqa` and `@ts-ignore`.'] })), 1);
   assert.equal(tier(file('docs/guide.md', { add: ['Never add `type: ignore`.'] })), 0);
+});
+
+test('markdown that names a test skip or an allowed failure is not a weakened check', () => {
+  assert.equal(tier(file('plugins/bstack/agents/reviewer.md', { add: ['Flag a new `it.skip(` or `|| true`.'] })), 1);
+  assert.equal(tier(file('docs/ci.md', { add: ['Never add `continue-on-error: true` or `@pytest.mark.skip`.'] })), 0);
+});
+
+test('a test skip or an allowed failure outside prose is tier 2', () => {
+  assert.equal(tier(file('tests/api.test.mjs', { add: ["it.skip('flaky', () => {});"] })), 2);
+  assert.equal(tier(file('.github/workflows/ci.yml', { add: ['      - run: npm test || true'] })), 2);
+  assert.equal(tier(file('.github/workflows/ci.yml', { add: ['        continue-on-error: true'] })), 2);
+  assert.equal(tier(file('package.json', { add: ['    "test": "node --test || true",'] })), 2);
+  assert.equal(tier(file('scripts/check.sh', { add: ['pyright || true'] })), 2);
+});
+
+test('an allowed failure in a CMakeLists.txt is tier 2', () => {
+  const line = 'add_custom_target(check COMMAND sh -c "ctest || true")';
+  assert.equal(tier(file('CMakeLists.txt', { add: [line] })), 2);
+  assert.equal(tier(file('src/CMakeLists.txt', { add: [line] })), 2);
+});
+
+test('an allowed failure in a command file that Claude Code executes is tier 2', () => {
+  assert.equal(tier(file('.claude/commands/test.md', { add: ['!`npm test || true`'] })), 2);
+  assert.equal(tier(file('plugins/x/commands/check.md', { add: ['!`node --test || true`'] })), 2);
+  assert.equal(tier(file('plugins/x/commands/check.md', { add: ['Run `npm test || true` and report.'] })), 2);
+});
+
+test('an allowed failure in an executed line of a markdown file is tier 2', () => {
+  assert.equal(tier(file('plugins/bstack/skills/x/SKILL.md', { add: ['!`npm test || true`'] })), 2);
+  assert.equal(tier(file('docs/x.md', { add: ['Run it: !`node --test || true`'] })), 2);
+  assert.equal(tier(file('plugins/bstack/agents/x.md', { add: ['!`echo ok` then flag a new `|| true`.'] })), 2);
+});
+
+test('an allowed failure in a fenced block that Claude Code executes is tier 2', () => {
+  assert.equal(tier(file('plugins/bstack/skills/x/SKILL.md', { add: ['```!', 'npm test || true', '```'] })), 2);
+  assert.equal(tier(file('docs/x.md', { add: ['```!', 'node --test || true', '```'] })), 2);
+  assert.equal(tier(file('docs/x.md', { add: ['```! npm test || true```'] })), 2);
+});
+
+test('a fenced block that is not executed, or executes nothing weakened, keeps its tier', () => {
+  assert.equal(tier(file('plugins/bstack/skills/x/SKILL.md', { add: ['```!', 'npm test', '```'] })), 1);
+  assert.equal(tier(file('docs/x.md', { add: ['```bash', 'npm test || true', '```'] })), 0);
+});
+
+test('an edit inside an executed block whose fence is outside the diff is tier 2', () => {
+  const head = ['# Check', '', '```!', 'npm ci', 'npm test || true', '```', '', 'Never write `|| true` yourself.'].join('\n');
+  const diff = ['diff --git a/plugins/bstack/skills/x/SKILL.md b/plugins/bstack/skills/x/SKILL.md', '--- a/plugins/bstack/skills/x/SKILL.md',
+    '+++ b/plugins/bstack/skills/x/SKILL.md', '@@ -5 +5 @@', '-npm test', '+npm test || true'].join('\n');
+  assert.equal(riskTier(diff, { readFile: () => head }).tier, 2);
+  assert.equal(riskTier(diff, { readFile: () => head.replace(/\n/g, '\r\n') }).tier, 2);
+  const prose = diff.replace('+npm test || true', '+Never write `|| true` yourself.');
+  assert.equal(riskTier(prose, { readFile: () => head }).tier, 1);
+});
+
+test('an allowed failure in a frontmatter hook of a skill or agent file is tier 2', () => {
+  const hook = '          command: "npm test || true"';
+  const named = 'Never write `|| true` yourself.';
+  const head = ['---', 'name: x', 'description: y', 'hooks:', '  PostToolUse:', '    - matcher: "Edit|Write"', '      hooks:', '        - type: command',
+    hook, '---', '', '# X', '', named].join('\n');
+  const edit = (p, line) => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  for (const p of ['plugins/bstack/skills/x/SKILL.md', '.claude/agents/a.md', 'plugins/bstack/agents/a.md']) {
+    assert.equal(riskTier(edit(p, hook), { readFile: () => head }).tier, 2, p);
+    assert.equal(riskTier(edit(p, hook), { readFile: () => `﻿${head.replace(/\n/g, '\r\n')}` }).tier, 2, p);
+    assert.equal(riskTier(edit(p, named), { readFile: () => head }).tier, 1, p);
+  }
+});
+
+test('an executed block after frontmatter that names an executed form is tier 2', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  const named = 'Never write `|| true` yourself.';
+  const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  const fence = ['---', 'name: x', 'description: Explains the ```! block form', '---', '', '```!', 'npm test || true', '```', '', named].join('\n');
+  const inline = ['---', 'name: x', 'description: Lines that start with !` run', '---', '', 'Run !`npm test || true` first.', '', named].join('\n');
+  assert.equal(riskTier(edit('npm test || true'), { readFile: () => fence }).tier, 2);
+  assert.equal(riskTier(edit('Run !`npm test || true` first.'), { readFile: () => inline }).tier, 2);
+  assert.equal(riskTier(edit(named), { readFile: () => fence }).tier, 1);
+  assert.equal(riskTier(edit(named), { readFile: () => inline }).tier, 1);
+});
+
+test('frontmatter whose opening or closing dashes have trailing whitespace is executed', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  const hook = '          command: npm test || true';
+  const named = 'Never write `|| true` yourself.';
+  const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  const head = (open, close) => [open, 'name: x', 'hooks:', '  Stop:', '    - hooks:', '        - type: command', hook, close, '', named].join('\n');
+  for (const [open, close] of [['--- ', '---'], ['---', '--- ']]) {
+    assert.equal(riskTier(edit(hook), { readFile: () => head(open, close) }).tier, 2, JSON.stringify([open, close]));
+    assert.equal(riskTier(edit(named), { readFile: () => head(open, close) }).tier, 1, JSON.stringify([open, close]));
+  }
+  const rule = ['# X', '', 'Intro.', '', '---', '', named].join('\n');
+  assert.equal(riskTier(edit(named), { readFile: () => rule }).tier, 1);
+});
+
+test('an inline command after a code span that ends in ! is executed', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  const sameLine = 'Type `cd !` then !`npm test || true`.';
+  const nextLine = 'then run !`npm test || true` now.';
+  const twoLines = ['---', 'name: x', 'description: y', '---', 'Type `cd !` first,', nextLine].join('\n');
+  assert.equal(riskTier(edit(sameLine), { readFile: () => sameLine }).tier, 2);
+  assert.equal(riskTier(edit(nextLine), { readFile: () => twoLines }).tier, 2);
+  const named = 'Type `cd !` then never write `|| true` yourself.';
+  assert.equal(riskTier(edit(named), { readFile: () => named }).tier, 2);
+});
+
+test('an inline command right after an argument placeholder is executed', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  for (const line of ['$ARGUMENTS!`npm test || true`', '$name!`npm test || true`']) {
+    const head = ['---', 'name: x', 'description: y', '---', 'Run the suite:', line, ''].join('\n');
+    const edit = [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+    assert.equal(riskTier(edit, { readFile: () => head }).tier, 2, line);
+  }
+});
+
+test('an empty argument placeholder between ! and the backtick still makes an inline command', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  for (const line of ['Run !$ARGUMENTS`npm test || true` first.', 'Run !$target`npm test || true`', 'Run !$1`npm test || true`', 'Run !${x}$ARGUMENTS[0]`npm test || true`', 'Run !$issue-number`npm test || true`', 'Run !$file.path`npm test || true`', 'Run !$navn_ø`npm test || true`']) {
+    assert.equal(riskTier(edit(line), { readFile: () => `Intro\n${line}\n` }).tier, 2, line);
+  }
+  const head = ['Run !$ARGUMENTS`', 'npm test || true`', '', 'Cost: $5 and `|| true` in prose.'].join('\n');
+  assert.equal(riskTier(edit('npm test || true`'), { readFile: () => head }).tier, 2);
+  assert.equal(riskTier(edit('Cost: $5 and `|| true` in prose.'), { readFile: () => head }).tier, 1);
+});
+
+test('text that becomes executed once empty argument placeholders are removed is executed', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  const fenceOpened = ['```$ARGUMENTS!', 'npm test || true', '```', ''].join('\n');
+  assert.equal(riskTier(edit('npm test || true'), { readFile: () => fenceOpened }).tier, 2);
+  const pairingShifted = ['```!', 'echo start', '``$ARGUMENTS`', 'prose', '```!', 'npm test || true', '```', ''].join('\n');
+  assert.equal(riskTier(edit('npm test || true'), { readFile: () => pairingShifted }).tier, 2);
+  const spacedName = 'Run !$the mode`npm test || true` now.';
+  assert.equal(riskTier(edit(spacedName), { readFile: () => `---\narguments: ["the mode"]\n---\n${spacedName}\n` }).tier, 2);
+});
+
+test('a long run of placeholders after ! is classified quickly', () => {
+  const p = 'docs/guide.md';
+  const line = `Example: !${'${}'.repeat(40)}x`;
+  const edit = [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, '+Never add `|| true`.'].join('\n');
+  const started = Date.now();
+  riskTier(edit, { readFile: () => `${line}\nNever add \`|| true\`.\n` });
+  assert.ok(Date.now() - started < 500, `took ${Date.now() - started} ms`);
+});
+
+test('an inline command that continues on the next line is executed there too', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  const head = ['Run !`npm test', '|| true` now.', '', 'Never write `|| true` yourself.'].join('\n');
+  assert.equal(riskTier(edit('|| true` now.'), { readFile: () => head }).tier, 2);
+  assert.equal(riskTier(edit('Never write `|| true` yourself.'), { readFile: () => head }).tier, 1);
+});
+
+test('a prose file whose head cannot be read keeps the weakening rules', () => {
+  const diff = file('docs/ci.md', { add: ['Never add `|| true`.'] });
+  assert.equal(riskTier(diff).tier, 2);
+  assert.equal(riskTier(diff, { readFile: () => null }).tier, 2);
+  assert.equal(riskTier(diff, { readFile: () => { throw new Error('404'); } }).tier, 2);
+  assert.equal(riskTier(diff, { readFile: () => 'another text' }).tier, 2);
+});
+
+test('the head of a prose file is read only when an added line matches a weakening rule', () => {
+  const read = [];
+  const readFile = p => { read.push(p); return 'Never add `|| true`.'; };
+  riskTier([file('docs/a.md', { add: ['words'] }), file('app/main.py', { add: ['x = 1 || true'] }), file('docs/ci.md', { add: ['Never add `|| true`.'] })].join('\n'), { readFile });
+  assert.deepEqual(read, ['docs/ci.md']);
+});
+
+test('a commands directory at the root of a single-plugin repo is executed, not docs', () => {
+  assert.equal(tier(file('commands/check.md', { add: ['!`npm test || true`'] })), 2);
+  assert.equal(tier(file('commands/check.md', { add: ['Run the tests.'] })), 1);
+});
+
+test('a command file is not docs', () => {
+  assert.equal(tier(file('.claude/commands/x.md', { add: ['Run the tests.'] })), 1);
+  assert.equal(tier(file('plugins/x/commands/x.md', { add: ['Run the tests.'] })), 1);
 });
 
 test('prose in non-source files that names a suppression token is not a suppression', () => {

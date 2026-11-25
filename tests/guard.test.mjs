@@ -364,6 +364,27 @@ test('tier 2 merge also needs a clean interrogate', () => {
   allowed(shell('gh pr merge 5 --squash'), d([verdict('PASS'), interrogate(0)]));
 });
 
+test('the merge gate reads a prose file that names a weakening at the PR head to decide its tier', () => {
+  const PROSE_DIFF = 'diff --git a/docs/my ci.md b/docs/my ci.md\n--- a/docs/my ci.md\n+++ b/docs/my ci.md\n+Never add `|| true`.\n';
+  const gate = (head, comments = []) => {
+    const calls = [];
+    const base = deps({ diff: PROSE_DIFF, pr: { comments } });
+    const gh = (cwd, args) => {
+      calls.push(args);
+      if (args[0] !== 'api') return base.gh(cwd, args);
+      if (head instanceof Error) throw head;
+      return head;
+    };
+    return { d: { ...base, gh }, calls };
+  };
+  const named = gate('# CI\n\nNever add `|| true`.\n');
+  allowed(shell('gh pr merge 5 --squash'), named.d);
+  assert.deepEqual(named.calls.find(a => a[0] === 'api'), ['api', '-H', 'Accept: application/vnd.github.raw', `repos/o/r/contents/docs/my%20ci.md?ref=${SHA}`]);
+  blocked(shell('gh pr merge 5 --squash'), gate('```!\nnpm test\n```\n\nNever add `|| true`.\n```!\nNever add `|| true`.\n```\n', [verdict('PASS')]).d);
+  blocked(shell('gh pr merge 5 --squash'), gate(new Error('HTTP 404'), [verdict('PASS')]).d);
+  allowed(shell('gh pr merge 5 --squash'), gate(new Error('HTTP 404'), [verdict('PASS'), interrogate(0)]).d);
+});
+
 test('only blocking interrogate findings block a merge', () => {
   const d = comments => deps({ diff: DATA_DIFF, pr: { comments } });
   allowed(shell('gh pr merge 5 --squash'), d([verdict('PASS'), interrogate(3, 0)]));
