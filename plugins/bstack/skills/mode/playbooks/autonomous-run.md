@@ -5,7 +5,7 @@ For "keep going until X", background sessions and runs nobody watches.
 1. **Write the stop condition as a checkable predicate**, not a duration: "every finding in the audit list has a merged PR or a stated reason", "every ticket under the spec is closed, or handed to the user as `ready-for-human`". State it in the first reply.
 2. **One change and one check per round.** Measure before and after.
 3. **On a plateau, change approach**: a different hypothesis, a smaller step, a fresh subagent. Never relax the predicate to reach it.
-4. **Working a queue of tickets**: one at a time through [ticket](ticket.md). Tickets that need the user (`ready-for-human`, `plan:grill`, `plan:prototype`) are collected for them, not done.
+4. **Working a queue of tickets**: one at a time through [ticket](ticket.md), each in a fresh context: a session that merged a ticket does not build the next. Tickets that need the user (`ready-for-human`, `plan:grill`, `plan:prototype`) are collected for them, not done.
 5. **Stops still apply**: anything on the stop list in the session rules waits for the user. Collect those questions and keep working on everything else.
 6. **Leave a trail without a log file.** When quota runs out or the session is stopped, stop as [ticket](ticket.md) says, so a new session can pick up from GitHub alone.
 7. Every change lands through [ship](ship.md), gates included. A run is done when the predicate holds on main.

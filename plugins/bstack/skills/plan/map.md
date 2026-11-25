@@ -4,7 +4,7 @@ For work where the destination is known but the way is not. The map finds the wa
 
 ## The map issue
 
-One issue labelled `plan:map`. It is an index, not a store: each decision lives in its ticket, and the map gives a one-line gist and a link. Open tickets are not listed in it; they are its open sub-issues.
+One issue labelled `plan:map`. An index, not a store: each decision lives in its ticket, the map holds a one-line gist and link. Open tickets are its open sub-issues, not listed.
 
 ```markdown
 ## Destination
@@ -29,27 +29,27 @@ Sub-issues of the map, each a question sized to one session, body `## Question`.
 - `plan:research` (agent alone): a fact a decision waits on, from primary sources (docs, APIs, the code). Run in a fresh subagent; the answer comment cites its sources.
 - `plan:prototype` (with the user): a cheap, rough artifact to react to (a page, a stub, a sample output) when "how should it look or behave" is the question. Build it with `bstack:vibecoding`, never merged, deleted when the ticket closes; the decision is what survives.
 - `plan:grill` (with the user): a conversation. The default type.
-- `plan:task` (agent alone where it can, otherwise a precise checklist for the user): work that must happen before a decision can be made, such as getting access or looking at real data. The answer records what was done and the facts later tickets need (where a credential lives, not the credential).
+- `plan:task` (agent alone where it can, otherwise a precise checklist for the user): work a decision waits on, such as getting access or looking at real data. The answer records what was done and the facts later tickets need (where a credential lives, not the credential).
 
-A ticket with the user is only resolved by the user. An agent that answers its own grilling question has broken it.
+A ticket with the user is resolved only by the user.
 
-**Fog or ticket?** Ticket when you can state the question sharply now, even if it is blocked. Fog when you cannot yet. Do not pre-slice fog into tickets.
+**Fog or ticket?** Ticket when you can state the question sharply now, even if it is blocked. Fog when you cannot yet. Never pre-slice fog.
 
 ## Chart (one session)
 
-1. Grill the user until the destination is settled. It fixes the scope.
+1. Grill the user until the destination, and so the scope, is settled.
 2. Grill again, breadth first: the open decisions across the whole space and the first ones takeable now. If no fog turns up, the work does not need a map; say so and go to [tickets](tickets.md).
 3. Run `tracker.mjs labels`, create the map, then the tickets you can state now as sub-issues, then wire blocking in a second pass.
 4. Start the research tickets in parallel subagents. Resolve nothing else in this session.
 
 ## Work the map (one ticket per session)
 
-1. Read the map, not every ticket. Take the ticket the user named, or the first from `tracker.mjs next <map>`. Claim it.
+1. Read the map, not every ticket. Take the user's ticket, or the first from `tracker.mjs next <map>`. Claim it.
 2. Resolve it as its label says. Read related closed tickets on demand.
 3. Record: the answer as a comment, close the ticket, add the gist line to Decisions so far.
 4. Move the frontier: new tickets for fog that is now sharp (and remove it from Not yet specified), close tickets the answer made moot or out of scope, fix tickets the answer changed.
 
-Research tickets may run several per session; every other type is one per session, so each decision gets a full context. Other sessions may be working the same map; re-read before you write.
+Research tickets may share a session; every other type gets its own, so each decision has a full context. Other sessions may work the same map; re-read before writing.
 
 ## Finish
 
