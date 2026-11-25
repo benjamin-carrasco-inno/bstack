@@ -15,14 +15,16 @@ export function mergeInChain(commits, head) {
   return chain;
 }
 
-// The merge-in chain from head, read from GitHub. Throws when the list cannot be read or may be cut off.
-export function prMergeInChain(api, repo, number, head) {
+// The PR's commits, read from GitHub. Throws when the list cannot be read or may be cut off.
+export function prCommits(api, repo, number) {
   if (!repo) throw new Error('the repository of the PR is unknown');
   const rows = api(['--paginate', `repos/${repo}/pulls/${number}/commits?per_page=100`, '--jq', '.[] | [.sha] + [.parents[].sha] | join(" ")'])
     .split(/\r?\n/).filter(Boolean).map(line => line.trim().split(/\s+/));
   if (rows.length >= GITHUB_COMMIT_LIST_LIMIT) throw new Error(`the PR has ${rows.length} commits, and GitHub lists at most ${GITHUB_COMMIT_LIST_LIMIT}`);
-  return mergeInChain(rows.map(([sha, ...parents]) => ({ sha, parents })), head);
+  return rows.map(([sha, ...parents]) => ({ sha, parents }));
 }
+
+export const prMergeInChain = (api, repo, number, head) => mergeInChain(prCommits(api, repo, number), head);
 
 const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@.*$/s;
 const MOVES_WITH_BASE = /^(index |similarity index |dissimilarity index )/;

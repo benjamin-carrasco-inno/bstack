@@ -63,7 +63,7 @@ The guard runs before every `Bash` and `PowerShell` command (Windows routes shel
 - `gh pr merge` only as `--squash`, never `--auto` or `--admin`, and only when:
   - CI is green on the head SHA (no checks, or only skipped checks, is not green),
   - the risk tier, computed by `risk-tier.mjs` from the PR diff, is 0 (docs only), or
-  - a reviewer verdict exists for that exact SHA (or carries to it, see below) and is not FAIL, and for tier 2 an interrogate result for that SHA reports zero blocking findings.
+  - a reviewer verdict exists for that exact SHA (or carries to it, see below) and is not FAIL, and for tier 2 the interrogate result the repo's [exposure](#exposure) asks for.
 - No merging or moving `main` through side doors: `gh api` merge and ref endpoints, the contents API on the default branch, GraphQL merge mutations, MCP merge or push tools.
 - Verdicts are posted by a `SubagentStop` hook when the reviewer or adversary agent finishes, after it checks that the SHA is still the PR head. The guard blocks the verdict marker anywhere else (commands, body files, file writes), and the reviewer, adversary and comment-critic cannot commit, push or post, run `git stash`, or rewrite files or a checkout outside their own worktree and the temp dir.
 - In a repo with `.github/comment-baseline.json` (written by `comments.mjs baseline`), no `git commit` whose version of a file has more comment lines than both its baseline and its previous version. The check counts the index with the `git add`, `git reset`, `git restore --staged` and `git rm --cached` earlier in the same command replayed, plus `-a` and pathspecs; it runs before the command, so a file written earlier in that command is not seen.
@@ -86,6 +86,10 @@ The guard then posts a comment with both heads, the merge commits and the diff f
 In prose files (`.md`, `.rst`, `.txt`, `.adoc`, not `CMakeLists.txt`), a skipped test or `|| true` counts only where Claude Code may execute it: inside a ```` ```! ```` block, on a line that contains `` !` `` anywhere (also with `$ARGUMENTS` or another argument placeholder between them) and on to the next backtick after it, in a file's leading YAML frontmatter (where skill and agent `hooks:` live), or anywhere in a file under `commands/`. The guard reads such a file at the PR head to see that; when it cannot, the line keeps tier 2.
 
 A repo can raise paths to tier 2 with globs in `.github/risk-paths.txt`. The guard and `risk-tier.mjs --pr` read it from the PR's base branch through `gh`, never from the checkout; without `--pr`, `risk-tier.mjs` reads it from `--base` (default `origin/HEAD`). A missing file means no extra paths; any other read failure blocks the merge. A PR that changes the file is tier 2.
+
+### Exposure
+
+`.github/bstack-exposure.txt` on the base branch decides how deep tier 2 goes; the levels are described in [interrogate](plugins/bstack/skills/interrogate/SKILL.md#exposure). The guard reads it like `risk-paths.txt`, and only at tier 2: a missing file is `external`, any other read failure blocks the merge. At `internal` the guard takes the newest interrogate result for the head or a commit in the PR's commit list; with blocking findings it must be on an earlier commit and older than the head's verdict. A PR that changes either policy file also needs the user's OK line for the head.
 
 ## Comments
 

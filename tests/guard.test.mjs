@@ -22,6 +22,7 @@ const userOk = (sha = SHA) => ({ body: `Read the report, merge it.\nbstack-user-
 const legacyInterrogate = n => ({ body: `<!-- bstack-interrogate v1 -->\nbstack-interrogate: confirmed=${n} sha=${SHA}\n\nreport\n`, createdAt: '2026-11-22T11:00:00Z' });
 
 const BASE_RISK_PATHS = /^repos\/([\w.-]+\/[\w.-]+)\/contents\/\.github\/risk-paths\.txt\?ref=(.+)$/;
+const BASE_EXPOSURE = /^repos\/[\w.-]+\/[\w.-]+\/contents\/\.github\/bstack-exposure\.txt\?ref=main$/;
 const NOT_FOUND = () => new Error('gh: Not Found (HTTP 404)');
 
 function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, files = {}, riskPaths = NOT_FOUND } = {}) {
@@ -35,6 +36,7 @@ function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, fil
       if (args[1] === 'view') return JSON.stringify({ number: 5, url: 'https://github.com/o/r/pull/5', headRefOid: SHA, baseRefName: 'main', state: 'OPEN', statusCheckRollup: GREEN, comments: [], ...pr });
       if (args[1] === 'diff') return diff;
       if (args[0] === 'api' && BASE_RISK_PATHS.test(args.at(-1))) { if (typeof riskPaths === 'function') throw riskPaths(); return riskPaths; }
+      if (args[0] === 'api' && BASE_EXPOSURE.test(args.at(-1))) throw NOT_FOUND();
       throw new Error(`unexpected gh ${args.join(' ')}`);
     },
     readFile: f => files[f.replace(/\\/g, '/').split('/').pop()] ?? null,

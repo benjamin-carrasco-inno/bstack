@@ -15,9 +15,9 @@ import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, ti
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
-import { prMergeInChain, sameChange } from './lib/carry.mjs';
+import { prCommits, prMergeInChain, sameChange } from './lib/carry.mjs';
 import { policyLines, readBasePolicy } from './lib/base-policy.mjs';
-import { RISK_PATHS, ghFileReader, riskTier, tierZeroDocs } from './risk-tier.mjs';
+import { EXPOSURE, RISK_PATHS, exposureOf, gatePlan, ghFileReader, riskTier, tierZeroDocs } from './risk-tier.mjs';
 
 const DEFAULT_BRANCH = /^(main|master)$/;
 const READ_ONLY = new Set(['grep', 'rg', 'findstr', 'select-string', 'sls', 'cat', 'type', 'get-content', 'gc', 'jq', 'less', 'head', 'tail', 'wc']);
@@ -1063,9 +1063,11 @@ function mergeGate(args, cwd, deps, c, line) {
   try { diff = deps.gh(cwd, ['pr', 'diff', pr.url, ...(repo ? ['-R', repo] : [])]); }
   catch (e) { return `bstack could not read the PR diff to compute the risk tier (${String(e.message ?? e).split('\n')[0]}). The gate fails closed.`; }
   const prRepo = repoOfUrl(pr.url) ?? repo;
+  const readPolicy = file => readBasePolicy(args => deps.gh(cwd, args), prRepo, pr.baseRefName, file);
+  const unreadable = (file, e) => `bstack could not read ${file} from ${pr.baseRefName} in ${prRepo} (${String(e?.stderr || e?.message || e).trim().split('\n')[0]}). Retry the merge once gh auth status and the network are fine; the gate fails closed.`;
   let extraPaths;
-  try { extraPaths = policyLines(readBasePolicy(args => deps.gh(cwd, args), prRepo, pr.baseRefName, RISK_PATHS)); }
-  catch (e) { return `bstack could not read ${RISK_PATHS} from ${pr.baseRefName} in ${prRepo} (${String(e?.stderr || e?.message || e).trim().split('\n')[0]}). Retry the merge once gh auth status and the network are fine; the gate fails closed.`; }
+  try { extraPaths = policyLines(readPolicy(RISK_PATHS)); }
+  catch (e) { return unreadable(RISK_PATHS, e); }
   const risk = riskTier(diff, { extraPaths, readFile: ghFileReader(args => deps.gh(cwd, args), prRepo, sha) });
   if (risk.tier === 0) return null;
 
@@ -1075,17 +1077,44 @@ function mergeGate(args, cwd, deps, c, line) {
   if (!verdict.result) return `Tier ${risk.tier}${why}: no reviewer verdict for head ${short}.${verdict.note ?? ''} Run the bstack:reviewer agent on ${pr.url}; its hook posts the verdict.`;
   if (verdict.result.result === 'FAIL') return `The latest verdict for ${verdict.from.slice(0, 7)} is FAIL. Fix it, push, and run bstack:reviewer again.`;
   if (risk.tier === 2) {
+    let plan = gatePlan(diff, 2, { extraPaths, exposure: 'internal' });
+    if (plan.flow === 'internal') {
+      try { plan = gatePlan(diff, 2, { extraPaths, exposure: exposureOf(readPolicy(EXPOSURE)) }); }
+      catch (e) { return unreadable(EXPOSURE, e); }
+    }
     const rounds = blockingRounds(pr.comments);
     if (rounds >= INTERROGATE_ROUNDS) {
       if (userOkFor(pr.comments, sha)) return postCarried(pr, risk, [verdict], cwd, deps);
       return `${rounds} interrogate rounds found blocking findings: stop and report to the user what is fixed, what is open and your recommendation. The guard merges ${short} only after the user comments this line on the PR: bstack-user-ok sha=${sha}`;
     }
+    if (plan.flow === 'internal') return internalInterrogate(pr, verdict, why, { cwd, deps, repo: prRepo }) ?? postCarried(pr, risk, [verdict], cwd, deps);
     const inter = judged('interrogate');
     if (!inter.result) return `Tier 2${why}: run bstack:interrogate on head ${short} before merging, and get the user's OK if a revert cannot undo it.${inter.note ?? ''}`;
     if (inter.result.blocking > 0) return `Interrogate found ${inter.result.blocking} blocking finding(s) on ${inter.from.slice(0, 7)}. Fix them through the bug-fix playbook, then review again.`;
+    if (plan.policyChange && !userOkFor(pr.comments, sha)) return `This PR changes ${RISK_PATHS} or ${EXPOSURE}. The guard merges ${short} only after the user comments this line on the PR: bstack-user-ok sha=${sha}`;
     return postCarried(pr, risk, [verdict, inter], cwd, deps);
   }
   return postCarried(pr, risk, [verdict], cwd, deps);
+}
+
+// Internal exposure: the newest interrogate result on a commit of this PR counts. Blocking findings
+// must be on an earlier commit, and the verdict judged after them.
+function internalInterrogate(pr, verdict, why, { cwd, deps, repo }) {
+  const head = pr.headRefOid;
+  const results = (pr.comments ?? []).filter(c => shaOf('interrogate', c.body)).sort((a, b) => timeOf(a) - timeOf(b));
+  let ofPr = new Set([head]);
+  if (results.some(c => shaOf('interrogate', c.body) !== head)) {
+    try { ofPr = new Set([head, ...prCommits(args => deps.gh(cwd, ['api', ...args]), repo, pr.number).map(c => c.sha)]); }
+    catch (e) { return `bstack could not read the commits of ${pr.url} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
+  }
+  const newest = results.filter(c => ofPr.has(shaOf('interrogate', c.body))).at(-1);
+  if (!newest) return `Tier 2${why}: run bstack:interrogate on head ${head.slice(0, 7)} before merging, and get the user's OK if a revert cannot undo it.`;
+  const judgedOn = shaOf('interrogate', newest.body);
+  const { blocking } = latestFor('interrogate', [newest], judgedOn);
+  if (!blocking) return null;
+  const verdictAt = Math.max(...pr.comments.filter(c => shaOf('verdict', c.body) === verdict.from).map(timeOf));
+  if (judgedOn !== head && verdictAt > timeOf(newest)) return null;
+  return `Interrogate found ${blocking} blocking finding(s) on ${judgedOn.slice(0, 7)}. Fix each as a failing test that now passes, push, and run bstack:reviewer on the new head.`;
 }
 
 // --- results judged on an older head, carried across merge-ins of the base branch -------------------

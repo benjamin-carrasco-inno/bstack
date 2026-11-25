@@ -126,8 +126,9 @@ test('a path listed in risk-paths.txt takes the external flow in an internal rep
 test('an exposure file only on the PR head is never read: the base decides', () => {
   const g = github({ diff: EXPOSURE_ON_HEAD, comments: [interrogate(EARLIER, 1), verdict(HEAD, 2), userOk(HEAD, 3)] });
   assert.match(merge(g) ?? '', HEAD_INTERROGATE);
-  const reads = g.calls.map(a => a.at(-1)).filter(e => /bstack-exposure/.test(e));
-  assert.deepEqual(reads, ['repos/o/r/contents/.github/bstack-exposure.txt?ref=main']);
+  const reads = g.calls.map(a => String(a.at(-1))).filter(e => /bstack-exposure/.test(e));
+  assert.ok(reads.every(e => e.endsWith('?ref=main')), reads.join('\n'));
+  assert.ok(!g.calls.some(a => a.some(x => String(x).includes(HEAD))), JSON.stringify(g.calls));
 });
 
 test('a PR that changes a policy file takes the external flow and needs the owner OK for the head', () => {
