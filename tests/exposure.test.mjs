@@ -14,6 +14,9 @@ const HEAD = 'a'.repeat(40);
 const EARLIER = 'c'.repeat(40);
 const FIRST = 'e'.repeat(40);
 const FOREIGN = 'd'.repeat(40);
+const BASE = 'f'.repeat(40);
+const MAIN_TIP = '1'.repeat(40);
+const MERGE_IN = '2'.repeat(40);
 const GREEN = [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }];
 const DATA_DIFF = 'diff --git a/app/db.py b/app/db.py\n--- a/app/db.py\n+++ b/app/db.py\n+conn.execute("DELETE FROM orders")\n';
 const fileDiff = (p, line) => `diff --git a/${p} b/${p}\nnew file mode 100644\n--- /dev/null\n+++ b/${p}\n+${line}\n`;
@@ -37,7 +40,7 @@ function github({ policy = {}, diff = DATA_DIFF, comments = [], commits = [FIRST
     readFile: () => null,
     insideBstackSource: () => false,
     pending: { list: () => [], remove: () => {} },
-    postComment: () => { throw new Error('unexpected comment'); },
+    postComment: () => {},
     gh: (_cwd, args) => {
       calls.push(args);
       if (args[1] === 'view') return JSON.stringify({ number: 5, url: 'https://github.com/o/r/pull/5', headRefOid: HEAD, baseRefName: 'main', state: 'OPEN', statusCheckRollup: GREEN, comments, ...pr });
@@ -49,9 +52,10 @@ function github({ policy = {}, diff = DATA_DIFF, comments = [], commits = [FIRST
         if (typeof value === 'function') return value();
         return value ?? notFound();
       }
+      if (/\/compare\/main\.\.\.[0-9a-f]{40}$/.test(endpoint)) return diff;
       if (/\/pulls\/\d+\/commits/.test(endpoint)) {
         if (failCommits) throw new Error('HTTP 502: bad gateway');
-        return commits.map(s => `${s} ${'f'.repeat(40)}`).join('\n');
+        return commits.map((c, i) => (Array.isArray(c) ? c : [c, i ? [].concat(commits[i - 1])[0] : BASE]).join(' ')).join('\n');
       }
       return notFound();
     },
@@ -85,6 +89,18 @@ test('internal tier 2 with blocking findings needs them on an earlier commit and
   assert.match(merge(github({ policy: internal, comments: [verdict(HEAD, 1), interrogate(EARLIER, 2, 2)] })) ?? '', /blocking/);
   assert.match(merge(github({ policy: internal, comments: [verdict(HEAD, 1), interrogate(HEAD, 2, 1)] })) ?? '', /blocking/);
   assert.match(merge(github({ policy: internal, comments: [interrogate(HEAD, 1, 1), verdict(HEAD, 2)] })) ?? '', /blocking/);
+});
+
+test('internal tier 2 does not let a merge-in of main stand in for a fix of blocking findings', () => {
+  const findings = [interrogate(EARLIER, 1, 2), verdict(HEAD, 2)];
+  const mergedOnly = [FIRST, EARLIER, [HEAD, EARLIER, MAIN_TIP]];
+  assert.match(merge(github({ policy: internal, commits: mergedOnly, comments: findings })) ?? '', /blocking/);
+  const carried = [interrogate(EARLIER, 1, 2), verdict(EARLIER, 2)];
+  assert.match(merge(github({ policy: internal, commits: mergedOnly, comments: carried })) ?? '', /blocking/);
+  const mergedTwice = [FIRST, EARLIER, [MERGE_IN, EARLIER, MAIN_TIP], [HEAD, MERGE_IN, BASE]];
+  assert.match(merge(github({ policy: internal, commits: mergedTwice, comments: findings })) ?? '', /blocking/);
+  const fixedAfterMerge = [FIRST, EARLIER, [MERGE_IN, EARLIER, MAIN_TIP], [HEAD, MERGE_IN]];
+  assert.equal(merge(github({ policy: internal, commits: fixedAfterMerge, comments: findings })), null);
 });
 
 test('internal tier 2 judges the newest interrogate result, not an older clean one', () => {
