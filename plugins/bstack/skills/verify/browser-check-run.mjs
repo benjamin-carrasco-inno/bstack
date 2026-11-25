@@ -76,6 +76,8 @@ function connect(url) {
   let next = 0;
   ws.addEventListener('message', event => {
     const msg = JSON.parse(event.data);
+    if (process.env.TRACE_CDP && !/targetCreated|targetInfoChanged/.test(event.data)) process.stderr.write(`TRACE ${String(event.data).slice(0, 200)}
+`);
     if (msg.method) {
       for (const waiter of eventWaiters) waiter(msg);
       return;

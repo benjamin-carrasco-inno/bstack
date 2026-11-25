@@ -238,6 +238,7 @@ async function crashPage(profile, urlPart) {
   const replies = new Map();
   ws.addEventListener('message', event => {
     const msg = JSON.parse(event.data);
+    globalThis.DIAG = (globalThis.DIAG ?? '') + String(event.data).slice(0, 200) + '\n';
     replies.get(msg.id)?.(msg.result);
   });
   const send = (method, params = {}, sessionId) => new Promise(resolve => {
@@ -255,7 +256,7 @@ async function crashPage(profile, urlPart) {
 test('browser check runner ends at once when the page renderer crashes, exits 2 and removes its profile', { skip: noBrowser }, async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
   const requested = once(server, 'never-requested');
-  const running = runAsync([origin, '/hanging-image', '--timeout', '30'], { TMPDIR: tmp, TEMP: tmp, TMP: tmp });
+  const running = runAsync([origin, '/hanging-image', '--timeout', '30'], { TMPDIR: tmp, TEMP: tmp, TMP: tmp, TRACE_CDP: '1' });
   await requested;
   const [profile] = fs.readdirSync(tmp).filter(name => name.startsWith('browser-check-'));
   const disconnect = await crashPage(path.join(tmp, profile), '/hanging-image');
@@ -264,7 +265,8 @@ test('browser check runner ends at once when the page renderer crashes, exits 2 
   const left = fs.readdirSync(tmp).filter(name => name.startsWith('browser-check-'));
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   assert.equal(run.status, 2, run.stderr);
-  assert.match(run.stderr, /the page crashed while checking \/hanging-image/);
+  assert.match(run.stderr, /the page crashed while checking \/hanging-image/, `${run.stderr}
+DIAG ${globalThis.DIAG}`);
   assert.doesNotMatch(run.stderr, /--timeout/);
   assert.ok(run.seconds < 15, `took ${run.seconds} s`);
   assert.deepEqual(left, []);
