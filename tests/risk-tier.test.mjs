@@ -166,6 +166,17 @@ test('an inline command right after an argument placeholder is executed', () => 
   }
 });
 
+test('an empty argument placeholder between ! and the backtick still makes an inline command', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  for (const line of ['Run !$ARGUMENTS`npm test || true` first.', 'Run !$target`npm test || true`', 'Run !$1`npm test || true`', 'Run !${x}$ARGUMENTS[0]`npm test || true`']) {
+    assert.equal(riskTier(edit(line), { readFile: () => `Intro\n${line}\n` }).tier, 2, line);
+  }
+  const head = ['Run !$ARGUMENTS`', 'npm test || true`', '', 'Cost: $5 and `|| true` in prose.'].join('\n');
+  assert.equal(riskTier(edit('npm test || true`'), { readFile: () => head }).tier, 2);
+  assert.equal(riskTier(edit('Cost: $5 and `|| true` in prose.'), { readFile: () => head }).tier, 1);
+});
+
 test('an inline command that continues on the next line is executed there too', () => {
   const p = 'plugins/bstack/skills/x/SKILL.md';
   const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
