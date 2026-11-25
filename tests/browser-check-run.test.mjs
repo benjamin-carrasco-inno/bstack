@@ -58,6 +58,7 @@ const routes = {
   '/login': html(fixture('clean.html')),
   '/spa': html(String(fixture('clean.html')).replace('</body>', '<script>history.replaceState(null, "", "/spa?tab=home")</script></body>')),
   '/app/docs/a': html(fixture('clean.html')),
+  '/csp-connect-none': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'content-security-policy': "connect-src 'none'" }).end(fixture('clean.html')),
   '/query': (req, res) => html(fixture(req.url.endsWith('?v=bad') ? 'defects.html' : 'clean.html'))(req, res),
 };
 const route = (req, res) => (routes[new URL(req.url, 'http://x').pathname] ?? ((_, r) => r.writeHead(404).end('not found')))(req, res);
@@ -147,6 +148,12 @@ test('browser check runner given a page URL with a query and no paths checks tha
 
 test('browser check runner accepts a start page that rewrites its own query with history.replaceState', { skip: noBrowser }, async () => {
   const run = await runAsync([origin, '/spa']);
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { findings: [], breakpoints: [] });
+});
+
+test('browser check runner checks a page whose CSP blocks the page from fetching its own origin', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/csp-connect-none']);
   assert.equal(run.status, 0, run.stderr);
   assert.deepEqual(JSON.parse(run.stdout), { findings: [], breakpoints: [] });
 });
