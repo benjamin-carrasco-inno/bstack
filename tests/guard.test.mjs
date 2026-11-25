@@ -414,7 +414,7 @@ test('the merge gate reads a prose file that names a weakening at the PR head to
     const base = deps({ diff: PROSE_DIFF, pr: { comments } });
     const gh = (cwd, args) => {
       calls.push(args);
-      if (args[0] !== 'api') return base.gh(cwd, args);
+      if (args[0] !== 'api' || BASE_RISK_PATHS.test(args.at(-1))) return base.gh(cwd, args);
       if (head instanceof Error) throw head;
       return head;
     };
@@ -422,7 +422,7 @@ test('the merge gate reads a prose file that names a weakening at the PR head to
   };
   const named = gate('# CI\n\nNever add `|| true`.\n');
   allowed(shell('gh pr merge 5 --squash'), named.d);
-  assert.deepEqual(named.calls.find(a => a[0] === 'api'), ['api', '-H', 'Accept: application/vnd.github.raw', `repos/o/r/contents/docs/my%20ci.md?ref=${SHA}`]);
+  assert.deepEqual(named.calls.find(a => a[0] === 'api' && !BASE_RISK_PATHS.test(a.at(-1))),['api', '-H', 'Accept: application/vnd.github.raw', `repos/o/r/contents/docs/my%20ci.md?ref=${SHA}`]);
   blocked(shell('gh pr merge 5 --squash'), gate('```!\nnpm test\n```\n\nNever add `|| true`.\n```!\nNever add `|| true`.\n```\n', [verdict('PASS')]).d);
   blocked(shell('gh pr merge 5 --squash'), gate(new Error('HTTP 404'), [verdict('PASS')]).d);
   allowed(shell('gh pr merge 5 --squash'), gate(new Error('HTTP 404'), [verdict('PASS'), interrogate(0)]).d);

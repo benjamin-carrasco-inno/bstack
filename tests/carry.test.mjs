@@ -34,8 +34,11 @@ const MERGED_ONCE = [commit(PR_COMMIT, BASE_OLD), commit(JUDGED, PR_COMMIT), com
 
 const verdict = (result, at = JUDGED) => ({ body: commentBody('verdict', result, at, 'report'), createdAt: '2026-11-25T10:00:00Z' });
 const interrogate = (blocking, at = JUDGED) => ({ body: commentBody('interrogate', { confirmed: blocking, blocking }, at, 'report'), createdAt: '2026-11-25T11:00:00Z' });
+const POLICY_READ = '/contents/.github/risk-paths.txt?ref=';
+const notFound = endpoint => { throw new Error(`HTTP 404: ${endpoint}`); };
+const carryApiCall = c => c.startsWith('api') && !c.includes(POLICY_READ);
 
-function fakeGitHub({ head = MERGE, commits = MERGED_ONCE, diffs, comments, checks = GREEN, files = {}, failApi = false, postFails = false, base = 'main' }) {
+function fakeGitHub({ head = MERGE, commits = MERGED_ONCE, diffs, comments, checks = GREEN, files = {}, basePolicy, failApi = false, postFails = false, base = 'main' }) {
   const posted = [];
   const calls = [];
   const deps = {
@@ -49,14 +52,15 @@ function fakeGitHub({ head = MERGE, commits = MERGED_ONCE, diffs, comments, chec
       if (args[1] === 'view') return JSON.stringify({ number: 5, url: 'https://github.com/o/r/pull/5', headRefOid: head, baseRefName: base, state: 'OPEN', statusCheckRollup: checks, comments });
       if (args[1] === 'diff') return diffs[head];
       if (args[0] !== 'api') throw new Error(`unexpected gh ${args.join(' ')}`);
-      if (failApi) throw new Error('HTTP 504: gateway timeout');
       const endpoint = args.find(a => a.startsWith('repos/'));
+      if (endpoint.includes(POLICY_READ)) return basePolicy ?? notFound(endpoint);
+      if (failApi) throw new Error('HTTP 504: gateway timeout');
       if (/\/pulls\/5\/commits/.test(endpoint)) return commits.map(c => [c.sha, ...c.parents].join(' ')).join('\n');
       const compared = /\/compare\/main\.\.\.([0-9a-f]{40})$/.exec(endpoint);
       if (compared) return diffs[compared[1]];
-      const file = /\/contents\/(.+)\?ref=([^&]+)$/.exec(endpoint);
+      const file = /\/contents\/(.+)\?ref=([0-9a-f]{40})$/.exec(endpoint);
       if (file && files[file[2]]?.[file[1]] !== undefined) return files[file[2]][file[1]];
-      throw new Error(`HTTP 404: ${endpoint}`);
+      return notFound(endpoint);
     },
   };
   return { deps, posted, calls };
@@ -177,7 +181,7 @@ test('a head with its own results reads no commits and posts nothing', () => {
   const github = fakeGitHub({ diffs: { [MERGE]: MERGED_DATA }, comments: [verdict('PASS', MERGE), interrogate(0, MERGE)] });
   assert.equal(merge(github), null);
   assert.equal(github.posted.length, 0);
-  assert.ok(github.calls.every(c => !c.startsWith('api')), github.calls.join('\n'));
+  assert.ok(!github.calls.some(carryApiCall), github.calls.join('\n'));
 });
 
 test('what the carry check cannot read from GitHub keeps the gate closed', () => {
@@ -190,7 +194,7 @@ test('what the carry check cannot read from GitHub keeps the gate closed', () =>
 test('a base branch name that cannot go into an API path as it is never carries', () => {
   const github = fakeGitHub({ base: 'main?x=1', diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [verdict('PASS')] });
   assert.match(merge(github) ?? '', /cannot go into a GitHub API path/);
-  assert.ok(github.calls.every(c => !c.startsWith('api')), github.calls.join('\n'));
+  assert.ok(!github.calls.some(carryApiCall), github.calls.join('\n'));
 });
 
 test('binary files in the PR diff never carry', () => {
@@ -238,8 +242,7 @@ test('a docs-named file listed in .github/risk-paths.txt compares strictly and c
   const moved = diffOf(codeFile(CODE), allowlist('7777777', 'allow-all'));
   assert.deepEqual(sameChange(judged, moved, tierZeroDocs(['security/*.txt'])).changed, ['security/admin-allowlist.txt']);
   const sameLines = diffOf(codeFile(CODE), allowlist('7777777', 'deny-all'));
-  const files = { main: { '.github/risk-paths.txt': 'security/*.txt\n' } };
-  const github = fakeGitHub({ diffs: { [JUDGED]: judged, [MERGE]: sameLines }, comments: [verdict('PASS'), interrogate(0)], files });
+  const github = fakeGitHub({ diffs: { [JUDGED]: judged, [MERGE]: sameLines }, comments: [verdict('PASS'), interrogate(0)], basePolicy: 'security/*.txt\n' });
   assert.match(merge(github) ?? '', /does not carry to 5555555: main changed security\/admin-allowlist\.txt, which this tier 2 PR also changes\./);
 });
 

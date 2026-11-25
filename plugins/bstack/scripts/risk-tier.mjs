@@ -4,10 +4,12 @@
 //   1  code, config, CI, instructions -> CI + reviewer verdict
 //   2  data, schema, side effects, auth, concurrency, importers, weakened checks -> + interrogate
 // Usage: node risk-tier.mjs [--pr <n>] [--base <ref>]   (prints JSON: { tier, reasons })
+// .github/risk-paths.txt comes from the base: the PR's base branch through gh, or <ref> through git.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { policyLines, readBasePolicy } from './lib/base-policy.mjs';
 import { repoOfUrl } from './lib/pending.mjs';
 
 const DOCS = /(^|\/)(LICENSE|NOTICE|CHANGELOG|README)(\.[a-z]+)?$|\.(md|rst|txt|adoc)$/i;
@@ -24,7 +26,9 @@ const SCHEMA_FILE = /(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql
 const STYLESHEET = /\.(css|scss|sass|less)$/i;
 
 const LITERAL_ITEM = /^\s*(["'`][^"'`]*["'`]|-?\d[\d_.]*)?\s*,?\s*$/;
+export const RISK_PATHS = '.github/risk-paths.txt';
 const PATH_RULES = [
+  [/^\.github\/risk-paths\.txt$/, 'risk policy file'],
   [SCHEMA_FILE, 'schema or migration file'],
   [/(^|\/)n8n\//i, 'n8n flow code (external consumer)'],
   [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code', (q, f) => STYLESHEET.test(q) || (runnableTest(q) && f.removed.every(l => LITERAL_ITEM.test(l)))],
@@ -233,13 +237,6 @@ export function riskTier(diff, { extraPaths = [], readFile } = {}) {
   return { tier, reasons: [...reasons].slice(0, 12) };
 }
 
-export function readRiskPaths(cwd) {
-  try {
-    return fs.readFileSync(path.join(cwd, '.github', 'risk-paths.txt'), 'utf8')
-      .split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
-  } catch { return []; }
-}
-
 export const ghFileReader = (gh, repo, sha) => p =>
   gh(['api', '-H', 'Accept: application/vnd.github.raw', `repos/${repo}/contents/${p.split('/').map(encodeURIComponent).join('/')}?ref=${sha}`]);
 
@@ -248,19 +245,22 @@ function main() {
   const opt = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
   const run = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', maxBuffer: 64 << 20 });
   let diff;
+  let policy;
   let readFile = p => fs.readFileSync(path.join(run('git', ['rev-parse', '--show-toplevel']).trim(), p), 'utf8');
   if (opt('--pr')) {
     diff = run('gh', ['pr', 'diff', opt('--pr')]);
-    const pr = JSON.parse(run('gh', ['pr', 'view', opt('--pr'), '--json', 'url,headRefOid']));
+    const pr = JSON.parse(run('gh', ['pr', 'view', opt('--pr'), '--json', 'url,headRefOid,baseRefName']));
     readFile = ghFileReader(a => run('gh', a), repoOfUrl(pr.url), pr.headRefOid);
+    policy = readBasePolicy(a => run('gh', a), repoOfUrl(pr.url), pr.baseRefName, RISK_PATHS);
   } else {
     let base = opt('--base');
     if (!base) {
       try { base = run('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).trim(); } catch { base = 'origin/main'; }
     }
     diff = run('git', ['diff', '--no-color', `${base}...HEAD`]) + run('git', ['diff', '--no-color', 'HEAD']);
+    policy = run('git', ['ls-tree', '--name-only', base, RISK_PATHS]).trim() ? run('git', ['show', `${base}:${RISK_PATHS}`]) : '';
   }
-  console.log(JSON.stringify(riskTier(diff, { extraPaths: readRiskPaths(process.cwd()), readFile }), null, 2));
+  console.log(JSON.stringify(riskTier(diff, { extraPaths: policyLines(policy), readFile }), null, 2));
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

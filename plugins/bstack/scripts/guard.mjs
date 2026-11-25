@@ -16,7 +16,8 @@ import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
 import { prMergeInChain, sameChange } from './lib/carry.mjs';
-import { ghFileReader, riskTier, readRiskPaths, tierZeroDocs } from './risk-tier.mjs';
+import { policyLines, readBasePolicy } from './lib/base-policy.mjs';
+import { RISK_PATHS, ghFileReader, riskTier, tierZeroDocs } from './risk-tier.mjs';
 
 const DEFAULT_BRANCH = /^(main|master)$/;
 const READ_ONLY = new Set(['grep', 'rg', 'findstr', 'select-string', 'sls', 'cat', 'type', 'get-content', 'gc', 'jq', 'less', 'head', 'tail', 'wc']);
@@ -1062,7 +1063,9 @@ function mergeGate(args, cwd, deps, c, line) {
   try { diff = deps.gh(cwd, ['pr', 'diff', pr.url, ...(repo ? ['-R', repo] : [])]); }
   catch (e) { return `bstack could not read the PR diff to compute the risk tier (${String(e.message ?? e).split('\n')[0]}). The gate fails closed.`; }
   const prRepo = repoOfUrl(pr.url) ?? repo;
-  const extraPaths = readRiskPaths(cwd);
+  let extraPaths;
+  try { extraPaths = policyLines(readBasePolicy(args => deps.gh(cwd, args), prRepo, pr.baseRefName, RISK_PATHS)); }
+  catch (e) { return `bstack could not read ${RISK_PATHS} from ${pr.baseRefName} in ${prRepo} (${String(e?.stderr || e?.message || e).trim().split('\n')[0]}). Retry the merge once gh auth status and the network are fine; the gate fails closed.`; }
   const risk = riskTier(diff, { extraPaths, readFile: ghFileReader(args => deps.gh(cwd, args), prRepo, sha) });
   if (risk.tier === 0) return null;
 

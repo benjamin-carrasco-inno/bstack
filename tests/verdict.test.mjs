@@ -214,7 +214,8 @@ test('a verdict that cannot be posted is saved by repo, PR and SHA, and the guar
   const posted = [];
   const deps = {
     gh: (_cwd, args) => {
-      if (args[1] === 'view') return JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, state: 'OPEN', statusCheckRollup: [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }], comments: [] });
+      if (args[1] === 'view') return JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, baseRefName: 'main', state: 'OPEN', statusCheckRollup: [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }], comments: [] });
+      if (args.at(-1) === 'repos/o/r/contents/.github/risk-paths.txt?ref=main') throw new Error('gh: Not Found (HTTP 404)');
       if (args[1] === 'diff') return 'diff --git a/app/main.py b/app/main.py\n--- a/app/main.py\n+++ b/app/main.py\n+x = 1\n';
       throw new Error(`unexpected gh ${args.join(' ')}`);
     },
