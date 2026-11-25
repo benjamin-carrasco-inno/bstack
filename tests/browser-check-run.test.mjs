@@ -238,8 +238,7 @@ async function crashPage(profile, urlPart) {
   const replies = new Map();
   ws.addEventListener('message', event => {
     const msg = JSON.parse(event.data);
-    globalThis.DIAG = (globalThis.DIAG ?? '') + String(event.data).slice(0, 300) + '
-';
+    globalThis.DIAG = (globalThis.DIAG ?? '') + String(event.data).slice(0, 300) + '\n';
     replies.get(msg.id)?.(msg.result);
   });
   const send = (method, params = {}, sessionId) => new Promise(resolve => {
