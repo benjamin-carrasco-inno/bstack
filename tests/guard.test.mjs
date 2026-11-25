@@ -547,6 +547,23 @@ test('#34: no-authoring agents may run what their instructions tell them to', ()
   }
 });
 
+test('#34: no-authoring agents run bash -c, pwsh -Command and iex only when every command they wrap is on the list', () => {
+  const host = onHost(GIT_BASH_HOST);
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    for (const command of ['bash -c "rm -rf /checkout"', 'sh -c "echo x > /checkout/a"', 'bash -c "git push origin feat/x"', 'pwsh -Command "Remove-Item C:/checkout -Recurse"', 'pwsh -Command $cmd']) {
+      assert.match(decide(as(command), host) ?? '', /runs only allowlisted commands/, `${agent} Bash: ${command}`);
+    }
+    for (const command of ['iex "Remove-Item C:/checkout -Recurse"', 'Invoke-Expression "git push origin main"', 'pwsh -Command "Set-Content C:/checkout/a x"', 'iex $cmd', 'Invoke-Expression (Get-Content x.ps1 -Raw)', 'pwsh -Command $cmd']) {
+      assert.match(decide(psAs(command), host) ?? '', /runs only allowlisted commands/, `${agent} PowerShell: ${command}`);
+    }
+    allowed(as('bash -c "git log --oneline -5"'), host);
+    allowed(as('pwsh -Command "git status --short"'), host);
+    allowed(psAs('iex "git diff --stat"'), host);
+  }
+});
+
 test('#34: no-authoring agents write files with the Write and Edit tools only inside their worktree or the temp dir', () => {
   const write = (file_path, agent = 'bstack:adversary', tool = 'Write') => ({ tool_name: tool, tool_input: { file_path, content: 'x', new_string: 'x' }, cwd: '/repo', agent_type: agent });
   allowed(write('/repo/tests/repro.test.mjs'));
