@@ -59,7 +59,7 @@ test('auto-update missing or not literally true is off, with the setting that tu
 test('a profile without bstack installed or without settings is behind, not an error', () => {
   const line = statusLine(profileState(profile({ settings: false })), MAIN);
   assert.match(line, /installed none, main aaaaaaa, behind, auto-update off/);
-  assert.match(line, /update: /);
+  assert.match(line, /update \(sh\): /);
 });
 
 test('an unreadable main commit never reports a profile as current', () => {

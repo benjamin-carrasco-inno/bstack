@@ -26,22 +26,32 @@ export function profileState(configDir) {
   };
 }
 
-export const updateCommand = configDir =>
-  `CLAUDE_CONFIG_DIR="${configDir}" claude plugin marketplace update ${MARKETPLACE} && claude plugin update ${PLUGIN}`;
+const MARKETPLACE_UPDATE = `claude plugin marketplace update ${MARKETPLACE}`;
+const PLUGIN_UPDATE = `claude plugin update ${PLUGIN}`;
+
+export const updateCommands = configDir => ({
+  sh: `export CLAUDE_CONFIG_DIR="${configDir}"; ${MARKETPLACE_UPDATE} && ${PLUGIN_UPDATE}`,
+  PowerShell: `$env:CLAUDE_CONFIG_DIR = "${configDir}"; ${MARKETPLACE_UPDATE}; if ($?) { ${PLUGIN_UPDATE} }`,
+});
 
 export function statusLine(state, mainSha) {
-  const short = sha => (sha ? sha.slice(0, 7) : 'none');
+  const short = (sha, missing) => (sha ? sha.slice(0, 7) : missing);
   const current = Boolean(state.installed) && state.installed === mainSha;
-  const parts = [`${state.configDir}: installed ${short(state.installed)}, main ${short(mainSha)}`];
+  const parts = [`${state.configDir}: installed ${short(state.installed, 'none')}, main ${short(mainSha, 'unknown')}`];
   parts.push(current ? 'current' : 'behind');
   parts.push(`auto-update ${state.autoUpdate ? 'on' : `off (set extraKnownMarketplaces.${MARKETPLACE}.autoUpdate: true in settings.json)`}`);
   const line = parts.join(', ');
-  return current ? line : `${line}\n  update: ${updateCommand(state.configDir)}, then restart open sessions`;
+  if (current) return line;
+  const forms = Object.entries(updateCommands(state.configDir)).map(([shell, command]) => `  update (${shell}): ${command}`);
+  return [line, ...forms, '  then restart open sessions'].join('\n');
 }
 
-function mainSha() {
-  const out = execFileSync('git', ['ls-remote', REPO_URL, 'refs/heads/main'], { encoding: 'utf8' });
-  return out.split(/\s/)[0] || null;
+export function mainSha(run = execFileSync) {
+  try {
+    return run('git', ['ls-remote', REPO_URL, 'refs/heads/main'], { encoding: 'utf8' }).split(/\s/)[0] || null;
+  } catch {
+    return null;
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
