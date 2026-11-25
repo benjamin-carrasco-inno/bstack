@@ -74,10 +74,6 @@ function connect(url) {
   const pending = new Map();
   const eventWaiters = new Set();
   let next = 0;
-  let fail;
-  const failed = new Promise((_, reject) => { fail = reject; });
-  failed.catch(() => {});
-  const unlessFailed = call => Promise.race([call, failed]);
   ws.addEventListener('message', event => {
     const msg = JSON.parse(event.data);
     if (msg.method) {
@@ -90,22 +86,22 @@ function connect(url) {
     if (msg.error) waiter.reject(new Error(msg.error.message));
     else waiter.resolve(msg.result);
   });
-  const send = (method, params = {}, sessionId) => unlessFailed(new Promise((resolve, reject) => {
+  const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
     const id = ++next;
     pending.set(id, { resolve, reject });
     ws.send(JSON.stringify({ id, method, params, sessionId }));
-  }));
-  const nextEvent = (method, sessionId) => unlessFailed(new Promise(resolve => {
+  });
+  const nextEvent = (method, sessionId) => new Promise(resolve => {
     const waiter = msg => {
       if (msg.method !== method || msg.sessionId !== sessionId) return;
       eventWaiters.delete(waiter);
       resolve(msg.params);
     };
     eventWaiters.add(waiter);
-  }));
+  });
   const on = (method, handler) => eventWaiters.add(msg => msg.method === method && handler(msg));
   return new Promise((resolve, reject) => {
-    ws.addEventListener('open', () => resolve({ send, nextEvent, on, fail, close: () => ws.close() }));
+    ws.addEventListener('open', () => resolve({ send, nextEvent, on, close: () => ws.close() }));
     ws.addEventListener('error', () => reject(new Error(`cannot connect to ${url}`)));
   });
 }
@@ -123,26 +119,22 @@ function failureOf({ exception, text }) {
 }
 
 const CRASH_SIGNALS = {
-  'Target.targetCrashed': (msg, page) => msg.params.targetId === page.targetId && msg.params.status,
-  'Inspector.targetCrashed': (msg, page) => msg.sessionId === page.sessionId && 'renderer crashed',
-  'Inspector.detached': (msg, page) => msg.sessionId === page.sessionId && msg.params.reason,
+  'Target.targetCrashed': (msg, page) => msg.params.targetId === page.targetId,
+  'Inspector.targetCrashed': (msg, page) => msg.sessionId === page.sessionId,
 };
 
-async function failOnCrash(cdp, page, paths) {
-  for (const [method, crashOf] of Object.entries(CRASH_SIGNALS)) {
-    cdp.on(method, msg => {
-      const cause = crashOf(msg, page);
-      if (cause) cdp.fail(new Error(`the page crashed while checking ${paths.join(', ')} (${cause})`));
-    });
+async function stopOnCrash(cdp, page, paths, stop) {
+  for (const [method, isPage] of Object.entries(CRASH_SIGNALS)) {
+    cdp.on(method, msg => isPage(msg, page) && stop(new Error(`the page crashed while checking ${paths.join(', ')}`)));
   }
   await cdp.send('Target.setDiscoverTargets', { discover: true });
   await cdp.send('Inspector.enable', {}, page.sessionId);
 }
 
-async function openStartPage(cdp, start, paths) {
+async function openStartPage(cdp, start, paths, stop) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
-  await failOnCrash(cdp, { targetId, sessionId }, paths);
+  await stopOnCrash(cdp, { targetId, sessionId }, paths, stop);
   await cdp.send('Page.enable', {}, sessionId);
   cdp.on('Page.javascriptDialogOpening', msg => cdp.send('Page.handleJavaScriptDialog', { accept: true }, msg.sessionId).catch(() => {}));
   const loaded = cdp.nextEvent('Page.loadEventFired', sessionId);
@@ -179,12 +171,12 @@ async function pageStatuses(cdp, sessionId, pages, paths) {
   }));
 }
 
-async function runCheck(cdp, args, check) {
+async function runCheck(cdp, args, check, stop) {
   const pages = args.paths.map(p => new URL(p, args.origin));
   const [start] = pages;
   const sameOriginPath = url => (url.origin === start.origin ? url.pathname + url.search + url.hash : url.href);
   const paths = pages.map(sameOriginPath);
-  const sessionId = await openStartPage(cdp, start, paths);
+  const sessionId = await openStartPage(cdp, start, paths, stop);
   const statuses = await pageStatuses(cdp, sessionId, pages, paths);
   const redirects = statuses.filter(s => s.status >= 300 && s.status < 400 && s.landed);
   if (redirects.length) throw redirectError(redirects.map(s => [s.requested, s.landed]), start.origin);
@@ -196,11 +188,13 @@ async function runCheck(cdp, args, check) {
 
 function giveUpSignal(seconds) {
   let timer;
+  let stop;
   const stopped = new Promise((_, reject) => {
+    stop = reject;
     timer = setTimeout(() => reject(new Error(`no result within ${seconds} s; a page or one of its resources may never finish loading (raise --timeout for a slow app)`)), seconds * 1000);
     for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => reject(new Error(`stopped by ${signal}`)));
   });
-  return { stopped, clear: () => clearTimeout(timer) };
+  return { stopped, stop, clear: () => clearTimeout(timer) };
 }
 
 async function main() {
@@ -213,7 +207,7 @@ async function main() {
   const { child, endpoint } = launch(browser, profile);
   let cdp;
   try {
-    const work = endpoint.then(connect).then(connected => runCheck(cdp = connected, args, check));
+    const work = endpoint.then(connect).then(connected => runCheck(cdp = connected, args, check, giveUp.stop));
     const report = await Promise.race([work, giveUp.stopped]);
     console.log(JSON.stringify(report, null, 2));
     process.exitCode = report.findings.length ? 1 : 0;

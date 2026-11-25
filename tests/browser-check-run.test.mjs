@@ -238,6 +238,8 @@ async function crashPage(profile, urlPart) {
   const replies = new Map();
   ws.addEventListener('message', event => {
     const msg = JSON.parse(event.data);
+    globalThis.DIAG = (globalThis.DIAG ?? '') + String(event.data).slice(0, 300) + '
+';
     replies.get(msg.id)?.(msg.result);
   });
   const send = (method, params = {}, sessionId) => new Promise(resolve => {
@@ -247,7 +249,9 @@ async function crashPage(profile, urlPart) {
   });
   const { targetInfos } = await send('Target.getTargets');
   const page = targetInfos.find(t => t.type === 'page' && t.url.includes(urlPart));
+  await send('Target.setDiscoverTargets', { discover: true });
   const { sessionId } = await send('Target.attachToTarget', { targetId: page.targetId, flatten: true });
+  await send('Inspector.enable', {}, sessionId);
   send('Page.crash', {}, sessionId);
   return () => ws.close();
 }
@@ -264,7 +268,7 @@ test('browser check runner ends at once when the page renderer crashes, exits 2 
   const left = fs.readdirSync(tmp).filter(name => name.startsWith('browser-check-'));
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   assert.equal(run.status, 2, run.stderr);
-  assert.match(run.stderr, /the page crashed while checking \/hanging-image/);
+  assert.match(run.stderr, /the page crashed while checking \/hanging-image/, `DIAG ${globalThis.DIAG}`);
   assert.doesNotMatch(run.stderr, /--timeout/);
   assert.ok(run.seconds < 15, `took ${run.seconds} s`);
   assert.deepEqual(left, []);
