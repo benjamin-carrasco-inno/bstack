@@ -56,6 +56,8 @@ const routes = {
   '/never': () => server.emit('never-requested'),
   '/settings': (_, res) => res.writeHead(302, { location: '/login' }).end(),
   '/login': html(fixture('clean.html')),
+  '/spa': html(String(fixture('clean.html')).replace('</body>', '<script>history.replaceState(null, "", "/spa?tab=home")</script></body>')),
+  '/app/docs/a': html(fixture('clean.html')),
   '/query': (req, res) => html(fixture(req.url.endsWith('?v=bad') ? 'defects.html' : 'clean.html'))(req, res),
 };
 const route = (req, res) => (routes[new URL(req.url, 'http://x').pathname] ?? ((_, r) => r.writeHead(404).end('not found')))(req, res);
@@ -141,6 +143,18 @@ test('browser check runner given a page URL with a query and no paths checks tha
   const run = await runAsync([`${origin}/query?v=bad`]);
   assert.equal(run.status, 1, run.stdout + run.stderr);
   assert.equal(JSON.parse(run.stdout).findings.length, 5);
+});
+
+test('browser check runner accepts a start page that rewrites its own query with history.replaceState', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/spa']);
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { findings: [], breakpoints: [] });
+});
+
+test('browser check runner resolves relative paths once, against an origin with a base path', { skip: noBrowser }, async () => {
+  const run = await runAsync([`${origin}/app/`, 'docs/a']);
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { findings: [], breakpoints: [] });
 });
 
 test('browser check runner exits 2 when a page does not load', { skip: noBrowser }, async () => {
