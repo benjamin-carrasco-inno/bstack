@@ -96,7 +96,8 @@ test('internal tier 2 does not let a merge-in of main stand in for a fix of bloc
   const mergedOnly = [FIRST, EARLIER, [HEAD, EARLIER, MAIN_TIP]];
   assert.match(merge(github({ policy: internal, commits: mergedOnly, comments: findings })) ?? '', /blocking/);
   const carried = [interrogate(EARLIER, 1, 2), verdict(EARLIER, 2)];
-  assert.match(merge(github({ policy: internal, commits: mergedOnly, comments: carried })) ?? '', /blocking/);
+  const sameBase = DATA_DIFF.replace('\n---', '\nindex 1111111..2222222 100644\n---');
+  assert.match(merge(github({ policy: internal, diff: sameBase, commits: mergedOnly, comments: carried })) ?? '', /blocking/);
   const mergedTwice = [FIRST, EARLIER, [MERGE_IN, EARLIER, MAIN_TIP], [HEAD, MERGE_IN, BASE]];
   assert.match(merge(github({ policy: internal, commits: mergedTwice, comments: findings })) ?? '', /blocking/);
   const fixedAfterMerge = [FIRST, EARLIER, [MERGE_IN, EARLIER, MAIN_TIP], [HEAD, MERGE_IN]];
