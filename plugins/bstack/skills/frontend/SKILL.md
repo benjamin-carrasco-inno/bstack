@@ -12,7 +12,7 @@ Right forms: [example.html](example.html). Starter tokens and utilities: [tokens
 ## Responsive order
 
 1. Intrinsic CSS first: `repeat(auto-fit, minmax(min(100%, 20rem), 1fr))`, `flex-wrap`, `max-inline-size`, `min()`, `max()`.
-2. Then a container query. The component makes its own parent the container with has-me, exactly `.card { :has(> &) { container-type: inline-size; } }`. Never `:has(&)`: without `>` it turns every ancestor into a container.
+2. Then a container query: the component makes its parent the container, exactly `.card { :has(> &) { container-type: inline-size; } }`. Without `>`, every ancestor becomes one.
 3. `@media` only for the viewport shell: page frame, header, modal, drawer, fixed elements.
 
 - A grid item that uses container queries gets its own cell (`li` or `div`), so the cell is measured, not the grid.
@@ -21,8 +21,8 @@ Right forms: [example.html](example.html). Starter tokens and utilities: [tokens
 
 ## Tokens
 
-- Names follow Automatic.css 4: `--primary`, `--accent`, `--base`, `--neutral` with `-ultra-light` to `-ultra-dark`, `--text-dark`, `--bg-light`, `--text-xs` to `--text-xxl`, `--h1` to `--h6`, `--space-xs` to `--space-xxl`, `--content-gap`, `--container-gap`, `--grid-gap`, `--radius`, `--border`, `--box-shadow-1`, `--gutter`, `--focus-color`. No ACSS install, no build step.
-- Values belong to the repo, in its own `:root`. A repo adopting tokens copies tokens.css once and owns it from then on.
+- Names follow Automatic.css 4, as listed in tokens.css (`--primary-dark`, `--text-m`, `--space-l`, `--radius`). No ACSS install, no build step.
+- Values belong to the repo: it copies tokens.css into its own `:root` once and owns it.
 - Names keep their light-scheme role; the dark scheme swaps the values, so `color: var(--text-dark)` works in both.
 - Component rules take colour, type, space, radius, border and shadow from tokens. No hex, no raw px. Units are `rem`; no `to-rem()`.
 - `clamp()` only in token definitions. Component rules use a token or `calc()` of tokens.
@@ -53,5 +53,5 @@ Web apps, not public sites, so basics only:
 
 ## Existing repos
 
-- No forced migration. A PR that touches a component's CSS moves that component to tokens and container queries, and resolves name collisions in the same PR. Example: a repo's `--text` colour collides with the `--text-*` size scale; the colour becomes `--text-dark`.
-- Harmonisation keeps function unchanged (routes, data, actions); the look may change. The evidence is before and after screenshots at 375 and 1280 px, not a zero pixel diff.
+- No forced migration. A PR that touches a component's CSS moves that component to tokens and container queries, and resolves name collisions there: a `--text` colour becomes `--text-dark`, freeing the `--text-*` sizes.
+- Harmonisation keeps function (routes, data, actions); the look may change, shown by before and after screenshots at 375 and 1280 px.
