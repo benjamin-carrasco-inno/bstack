@@ -249,7 +249,7 @@ async function crashPage(profile, urlPart) {
   const { targetInfos } = await send('Target.getTargets');
   const page = targetInfos.find(t => t.type === 'page' && t.url.includes(urlPart));
   const { sessionId } = await send('Target.attachToTarget', { targetId: page.targetId, flatten: true });
-  send('Page.crash', {}, sessionId);
+  send('Page.navigate', { url: 'chrome://crash' }, sessionId);
   return () => ws.close();
 }
 
