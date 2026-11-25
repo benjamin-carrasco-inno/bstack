@@ -853,6 +853,36 @@ test('#34: no-authoring agents: an unquoted heredoc body runs its substitutions,
   }
 });
 
+test('#34: no-authoring agents: abbreviated long options, flag clusters, >&file, escaped targets and dynamic method names', () => {
+  const hosts = [onHost(GIT_BASH_HOST), onHost(linuxHost({ TMPDIR: '/tmp' }))];
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      'git checkout -fB main --ignore-other-worktrees --', 'git checkout -fb newb --', 'git checkout -tb x origin/main --', 'git checkout --detach -qB main',
+      'git checkout --detach --orph=x', 'git switch -d -fc x', 'git switch -d -fC main', 'git switch -d --force-c main',
+      'echo x >&../other/f', 'echo x 1>&../other/f', 'echo x >& ../other/f', 'git diff >&/c/other/f', '{ echo x; } >&../other/f', 'echo x >&\\../other/f',
+      'git grep --open=rm a', 'git grep --open-files=rm a', 'git -C ../other grep --open=rm a', 'git grep -iOrm a',
+      'sort --outp=../other/x in.txt', 'sort --out ../other/x in.txt', 'sort --o=../other/x in.txt', 'sort --compress=sh in.txt',
+      'echo x >\\../other/x', 'cat a > \\../other/x', 'rm \\../other/x',
+      'pytest -o cache_dir=C:\\other\\pc', 'pytest -o cache_dir=/other/pc', 'pytest --override-ini=cache_dir=/other/c', 'pytest --override=cache_dir=/other/c',
+      'npm i --global=true left-pad', 'npm i -gD left-pad', 'npm test --global=true', 'npm i --glob left-pad', 'npm i --location=global left-pad',
+    ]) for (const host of hosts) refused(shell(command), host);
+    for (const command of [
+      "(Get-Item D:\\x).'Delete'()", '(Get-Item D:\\x)."Delete"()', "$m='Delete'; (Get-Item D:\\x).$m()", "(Get-Item D:\\x).'MoveTo'('C:\\repo\\y')",
+      "Get-ChildItem D:\\other -Recurse | ForEach-Object { $_.'Delete'() }", "$f = (Get-Item D:\\x).Delete; $f.'Invoke'()",
+      "Write-Output \"$((Get-Item D:\\x).'Delete'())\"", '(Get-Item D:\\x).($m)()', '(Get-Item D:\\x).Delete.Invoke()', 'Get-Item D:\\x | Where-Object { $_."Delete"() }',
+      'pytest -q -o cache_dir=C:\\other\\pc test_a.py', 'npm i --global=true left-pad', 'npm i -gD left-pad', 'git grep --open=rm a',
+    ]) refused(ps(command));
+
+    for (const command of [
+      'git checkout -- a.mjs', 'git checkout --detach HEAD', 'git switch --detach origin/main', 'echo x 2>&1', 'echo x >&2', 'echo x 2>&-',
+      'git grep foo', 'git diff --output-indicator-new=+', 'sort in.txt', 'sort -u in.txt', 'pytest -o addopts=-q', 'npm test', 'npm i', 'npm i --global=false',
+    ]) for (const host of hosts) ok(shell(command), host);
+    for (const command of ['(Get-Item a.txt).Name', '"a".ToUpper()', '$x = (Get-Item a.txt).Length', 'git grep foo', 'npm test']) ok(ps(command));
+  }
+});
+
 const NO_AUTHORING = ['bstack:comment-critic', 'bstack:reviewer', 'bstack:adversary'];
 const asAgent = agent => command => ({ ...shell(command), agent_type: agent });
 const psAsAgent = agent => command => ({ ...ps(command), agent_type: agent });
