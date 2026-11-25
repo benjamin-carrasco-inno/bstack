@@ -121,6 +121,7 @@ function failureOf({ exception, text }) {
 const CRASH_SIGNALS = {
   'Target.targetCrashed': (msg, page) => msg.params.targetId === page.targetId,
   'Inspector.targetCrashed': (msg, page) => msg.sessionId === page.sessionId,
+  'Target.detachedFromTarget': (msg, page) => msg.params.sessionId === page.sessionId,
   'Inspector.detached': (msg, page) => msg.sessionId === page.sessionId && msg.params.reason === 'Render process gone.',
 };
 
