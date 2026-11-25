@@ -177,6 +177,26 @@ test('an empty argument placeholder between ! and the backtick still makes an in
   assert.equal(riskTier(edit('Cost: $5 and `|| true` in prose.'), { readFile: () => head }).tier, 1);
 });
 
+test('text that becomes executed once empty argument placeholders are removed is executed', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  const fenceOpened = ['```$ARGUMENTS!', 'npm test || true', '```', ''].join('\n');
+  assert.equal(riskTier(edit('npm test || true'), { readFile: () => fenceOpened }).tier, 2);
+  const pairingShifted = ['```!', 'echo start', '``$ARGUMENTS`', 'prose', '```!', 'npm test || true', '```', ''].join('\n');
+  assert.equal(riskTier(edit('npm test || true'), { readFile: () => pairingShifted }).tier, 2);
+  const spacedName = 'Run !$the mode`npm test || true` now.';
+  assert.equal(riskTier(edit(spacedName), { readFile: () => `---\narguments: ["the mode"]\n---\n${spacedName}\n` }).tier, 2);
+});
+
+test('a long run of placeholders after ! is classified quickly', () => {
+  const p = 'docs/guide.md';
+  const line = `Example: !${'${}'.repeat(40)}x`;
+  const edit = [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, '+Never add `|| true`.'].join('\n');
+  const started = Date.now();
+  riskTier(edit, { readFile: () => `${line}\nNever add \`|| true\`.\n` });
+  assert.ok(Date.now() - started < 500, `took ${Date.now() - started} ms`);
+});
+
 test('an inline command that continues on the next line is executed there too', () => {
   const p = 'plugins/bstack/skills/x/SKILL.md';
   const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
