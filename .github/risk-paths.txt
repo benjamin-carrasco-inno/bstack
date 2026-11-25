@@ -1,0 +1,4 @@
+plugins/bstack/scripts/guard.mjs
+plugins/bstack/scripts/lib/*.mjs
+plugins/bstack/scripts/risk-tier.mjs
+plugins/bstack/hooks/hooks.json
