@@ -336,6 +336,9 @@ function builtBody(c, group, action) {
 
 // --- reviewer, adversary and comment-critic judge: they run only what this allowlist names -----------
 const nameSet = text => new Set(text.trim().split(/\s+/));
+const isLongOptionPrefixOf = (word, full) => { const name = word.split('=')[0]; return name.length > 2 && name.startsWith('--') && full.startsWith(name); };
+const clusterHas = (word, letters) => /^-[^-]/.test(word) && [...word.slice(1)].some(ch => letters.includes(ch));
+const namesAny = (word, letters, longs) => clusterHas(word, letters) || longs.some(full => isLongOptionPrefixOf(word, full));
 const ALLOWED_SUMMARY = 'read-only git and gh, file reads and searches, tests and the app run from its own worktree, HTTP to localhost, and file writes inside its worktree or the temp dir';
 const refuse = (agent, what, fix = 'Report what you would run instead.') => `The ${agent} agent runs only allowlisted commands (${ALLOWED_SUMMARY}). Refused: ${what}. ${fix}`;
 
@@ -352,7 +355,7 @@ const READS = {
 const POSIX_READ_LIMITS = {
   find: args => args.find(a => /^-(delete|exec|execdir|ok|okdir|fprint0?|fprintf|fls)$/.test(a)),
   rg: args => args.find(a => /^--pre(-glob)?(=|$)/.test(a)),
-  sort: args => args.find(a => /^(-[a-zA-Z]*o|--output)/.test(a)),
+  sort: args => args.find(a => namesAny(a, 'o', ['--output', '--compress-program'])),
   uniq: args => args.filter(a => !a.startsWith('-')).length > 1 && 'with an output file',
   set: args => args.find(a => !/^([-+][euxvo]+|pipefail|errexit|nounset|xtrace)$/.test(a)),
   export: args => args.find(a => !safeVariable(a.split('=')[0])),
@@ -411,7 +414,7 @@ function noAuthoringRule(line, dialect, cwd, agent, root, host) {
   const ctx = { agent, root, host };
   if (dialect === 'powershell' && CALL_OPERATOR.test(text)) return refuse(agent, 'the call operator & or dot-sourcing of a string, variable or expression', 'Name the command directly.');
   const parsed = commandsIn(text, 0, dialect);
-  const commands = located(parsed, cwd, host);
+  const commands = located(parsed, cwd, host).map(escapedArgsUnresolved);
   for (const [k, c] of commands.entries()) {
     const target = k > 0 && endsInRedirect(commands[k - 1].text, commands[k - 1].dialect) && words(c.text, c.dialect).length === 1;
     const reason = (target ? null : environmentRule(parsed[k], ctx) ?? agentCommandRule(c, ctx)) ?? redirectRule(c, ctx, commands[k + 1]);
@@ -422,6 +425,14 @@ function noAuthoringRule(line, dialect, cwd, agent, root, host) {
     if (reason) return reason;
   }
   return null;
+}
+
+const escapedByShell = (word, dialect) => dialect === 'posix' && word.unquoted.includes('\\');
+
+function escapedArgsUnresolved(c) {
+  const all = words(c.text, c.dialect);
+  const escaped = all.slice(all.length - c.args.length).flatMap((w, i) => (escapedByShell(w, c.dialect) ? [i] : []));
+  return escaped.length ? { ...c, expressions: new Set([...(c.expressions ?? []), ...escaped]) } : c;
 }
 
 function quotedSubstitutions(text, dialect) {
@@ -448,8 +459,11 @@ function agentCommandRule(c, ctx) {
   return (ps ? dotnetRule(c.text, ctx.agent) : null) ?? (ps && EXPRESSION_START.test(c.text) ? expressionRule(c, ctx) : commandRule(c, ctx));
 }
 
+const DYNAMIC_MEMBER = /(^\s*|[\w)\]}'])\.\s*['$({]/;
+
 function dotnetRule(text, agent) {
   const code = withoutStrings(text);
+  if (DYNAMIC_MEMBER.test(code)) return refuse(agent, 'a member named by a string, variable or expression', 'Name a method from the list directly.');
   for (const m of code.matchAll(/(\[[\w.]+\])?\s*::\s*(\w*)/g)) {
     if (!PURE_TYPE.test(m[1] ?? '')) return refuse(agent, `the .NET or provider call ${m[0].trim()}`, 'Use a cmdlet from the list.');
   }
@@ -550,6 +564,7 @@ function inWorktree(c, ctx) {
   return c.cwdKnown && c.cwd !== UNKNOWN_DIR && ctx.host.paths.contains(ctx.root, c.cwd);
 }
 
+const KEY_VALUE = /^[\w.-]+=(.*)$/s;
 const PATH_LIKE = /[\\/]|^\.\.?$|^~|[$`%(]/;
 
 function argsInsideRule(c, ctx, from = 0) {
@@ -559,7 +574,8 @@ function argsInsideRule(c, ctx, from = 0) {
     if (!expression && /^\d*[<>]/.test(a)) continue;
     const option = !expression && /^--?[\w.-]*(?:=(.*))?$/s.exec(a);
     if (!option && !expression && a.startsWith('-') && a !== '-') return refuse(ctx.agent, `${c.cmd} ${a} glues a value to an option`, 'Write the option and its value as separate words.');
-    const word = option ? option[1] : a;
+    const raw = option ? option[1] : a;
+    const word = raw === undefined ? raw : KEY_VALUE.exec(raw)?.[1] ?? raw;
     if (word === undefined || word.includes('://') || (!expression && !PATH_LIKE.test(word))) continue;
     const reason = insideRule(c, ctx, word, expression);
     if (reason) return reason;
@@ -605,7 +621,7 @@ function pythonProblem(args) {
 const PACKAGE_COMMANDS = /^(test|t|run|run-script|start|ci|install|i)$/;
 
 function packageProblem(args) {
-  const global = args.find(a => /^(-g|--global|--location(=global)?)$/.test(a));
+  const global = args.find(a => clusterHas(a, 'g') || (isLongOptionPrefixOf(a, '--global') && !a.endsWith('=false')) || (isLongOptionPrefixOf(a, '--location') && !/=(project|user)$/.test(a)));
   if (global) return `${global} installs outside its worktree`;
   const sub = args.find(a => !a.startsWith('-'));
   return sub === undefined || PACKAGE_COMMANDS.test(sub) ? null : `${sub} is not on the list (test, run, start, install, ci)`;
@@ -723,8 +739,8 @@ const GIT_READ_FORMS = {
   fetch: rest => onlyFlags(rest, FETCH_FLAGS) && !rest.some(a => a.includes(':')),
 };
 const GIT_IN_WORKTREE = {
-  checkout: rest => (rest.includes('--') || rest.includes('--detach')) && !rest.some(a => /^(-[bB]|--orphan)/.test(a)),
-  switch: rest => rest.some(a => a === '--detach' || a === '-d') && !rest.some(a => /^(-[cC]|--create|--force-create|--orphan)/.test(a)),
+  checkout: rest => (rest.includes('--') || rest.includes('--detach')) && !rest.some(a => namesAny(a, 'bB', ['--orphan'])),
+  switch: rest => rest.some(a => a === '--detach' || a === '-d') && !rest.some(a => namesAny(a, 'cC', ['--create', '--force-create', '--orphan'])),
   restore: () => true,
 };
 
@@ -732,7 +748,7 @@ function gitAllowed(c, ctx) {
   const { dir, dirExpression, config, sub, rest } = parseGit(c.args, c.expressions);
   const globals = c.args.slice(0, c.args.length - rest.length - (sub ? 1 : 0));
   if (config.length || globals.some(a => /^--exec-path=/.test(a))) return refuse(ctx.agent, `git ${globals.join(' ')}: configuration on the command line can run any program`, 'Run the git command without -c.');
-  const writes = rest.find(a => /^--output(=|$)/.test(a) || (sub === 'grep' && /^(-O|--open-files-in-pager)/.test(a)));
+  const writes = rest.find(a => isLongOptionPrefixOf(a, '--output') || (sub === 'grep' && namesAny(a, 'O', ['--open-files-in-pager'])));
   if (writes) return refuse(ctx.agent, `git ${sub} ${writes}, which writes a file or runs a program`);
   if (GIT_READS.has(sub) || GIT_READ_FORMS[sub]?.(rest)) return null;
   if (GIT_IN_WORKTREE[sub]?.(rest)) {
@@ -786,17 +802,11 @@ function namesParameter(flag, names, dialect) {
 
 const NULL_SINK = /^(\$null|\/dev\/(null|stdout|stderr)|nul)$/i;
 
-const PARENT_SEGMENT = /(^|[\\/])\.\.($|[\\/])/;
-
-function hidesParent(word) {
-  return PARENT_SEGMENT.test(word.replace(/\\(.)/g, '$1')) && !PARENT_SEGMENT.test(word);
-}
-
 function writeTarget(word, cwd, shellDialect, host, expression) {
   if (NULL_SINK.test(word)) return null;
   const { word: inTemp, dialect } = inTempDir(word, shellDialect, host);
   const expanded = inTemp.replace(HOME, os.homedir());
-  if (expression || OPAQUE.test(expanded) || hidesParent(expanded)) return undefined;
+  if (expression || OPAQUE.test(expanded)) return undefined;
   const asProvider = host.platform !== 'win32' && dialect === 'powershell' ? expanded.replace(/\\/g, '/') : expanded;
   if (cwd === undefined && !host.paths.isAbsolute(asProvider, dialect)) return undefined;
   return host.paths.resolvePath(cwd, asProvider, dialect);
@@ -812,8 +822,8 @@ function knownCwd(c) {
 
 function redirectRule(c, ctx, next) {
   const clobbered = next && endsInRedirect(c.text, c.dialect) ? words(next.text, next.dialect).slice(0, 1) : [];
-  for (const { text, expression } of [...redirectTargets(c.text, c.dialect), ...clobbered]) {
-    const reason = insideRule({ ...c, cmd: 'a redirect' }, ctx, text, expression);
+  for (const word of [...redirectTargets(c.text, c.dialect), ...clobbered]) {
+    const reason = insideRule({ ...c, cmd: 'a redirect' }, ctx, word.text, word.expression || escapedByShell(word, c.dialect));
     if (reason) return reason;
   }
   return null;

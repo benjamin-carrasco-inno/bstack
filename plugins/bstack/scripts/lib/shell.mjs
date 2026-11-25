@@ -263,6 +263,8 @@ export function tokenize(segment, dialect = 'posix') {
   return words(segment, dialect).map(w => w.text);
 }
 
+const DESCRIPTOR = /^(\d+|-)$/;
+
 export function redirectTargets(segment, dialect = 'posix') {
   const targets = [];
   let quote = null;
@@ -278,10 +280,11 @@ export function redirectTargets(segment, dialect = 'posix') {
     if (ch === '"' || ch === "'") { quote = ch; continue; }
     if (ch !== '>') continue;
     if (segment[i + 1] === '>') i++;
-    if (segment[i + 1] === '&') { i++; continue; }
+    const duplicates = segment[i + 1] === '&';
+    if (duplicates) i++;
     if (segment[i + 1] === '|') i++;
     const [word] = words(segment.slice(i + 1), dialect);
-    if (word?.text) targets.push(word);
+    if (word?.text && !(duplicates && DESCRIPTOR.test(word.text))) targets.push(word);
   }
   return targets;
 }
