@@ -127,7 +127,7 @@ export function closingBacktick(line, open) {
   return -1;
 }
 
-const LINE_CONTINUATION = /\\\r?\n/y;
+const LINE_CONTINUATION = /\\\n/y;
 
 function lineContinuation(line, i, dialect) {
   if (dialect !== 'posix') return 0;
