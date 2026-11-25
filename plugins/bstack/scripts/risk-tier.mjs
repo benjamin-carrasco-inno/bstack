@@ -46,13 +46,17 @@ const WEAKENING_ADDED = [
 const PROSE_EXTENSION = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
 const isProse = p => PROSE_EXTENSION.test(p) && !BUILD_TXT.test(p) && !COMMANDS.test(p);
 const CLAUDE_CODE_FRONTMATTER = /^﻿?---\s*\n([\s\S]*?)---\s*\n?/d;
-const CLAUDE_CODE_EXECUTED_BODY = [/```!\s*\n?([\s\S]*?)\n?```/dg, /(?<=^|\s)!`([^`]+)`/dgm];
+const CLAUDE_CODE_EXECUTED_FENCE = /```!\s*\n?([\s\S]*?)\n?```/dg;
+const CLAUDE_CODE_EXECUTED_INLINE = /(?<=^|\s)!`([^`]+)`/dgm;
+const blankCodeSpans = text => text.replace(/`[^`\n]+`/g, (span, at) =>
+  text[at - 1] === '!' || text[at - 1] === '`' ? span : '`' + ' '.repeat(span.length - 2) + '`');
 
 function executedRegions(text) {
   const frontmatter = text.match(CLAUDE_CODE_FRONTMATTER);
   const bodyStart = frontmatter ? frontmatter[0].length : 0;
   const body = text.slice(bodyStart);
-  const inBody = CLAUDE_CODE_EXECUTED_BODY.flatMap(x => [...body.matchAll(x)].map(m => m.indices[1].map(i => i + bodyStart)));
+  const searches = [[CLAUDE_CODE_EXECUTED_FENCE, body], [CLAUDE_CODE_EXECUTED_INLINE, body], [CLAUDE_CODE_EXECUTED_INLINE, blankCodeSpans(body)]];
+  const inBody = searches.flatMap(([re, searched]) => [...searched.matchAll(re)].map(m => m.indices[1].map(i => i + bodyStart)));
   return frontmatter ? [frontmatter.indices[1], ...inBody] : inBody;
 }
 
