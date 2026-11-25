@@ -29,7 +29,7 @@ function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, fil
       throw new Error(`not a git repository: git ${args.join(' ')}`);
     },
     gh: (_cwd, args) => {
-      if (args[1] === 'view') return JSON.stringify({ number: 5, url: 'https://github.com/o/r/pull/5', headRefOid: SHA, state: 'OPEN', statusCheckRollup: GREEN, comments: [], ...pr });
+      if (args[1] === 'view') return JSON.stringify({ number: 5, url: 'https://github.com/o/r/pull/5', headRefOid: SHA, baseRefName: 'main', state: 'OPEN', statusCheckRollup: GREEN, comments: [], ...pr });
       if (args[1] === 'diff') return diff;
       throw new Error(`unexpected gh ${args.join(' ')}`);
     },
@@ -262,7 +262,7 @@ test('a short-flag cluster that ends in R names the merge repo', () => {
   for (const command of ['gh pr merge 7 --squash -dR o/r', 'gh pr merge 7 --squash -dRo/r', 'gh pr merge 7 -sdR o/r', 'gh pr merge 7 -sdR=o/r']) {
     const { reason, views } = mergeReads(shell(command));
     assert.equal(reason, null, command);
-    assert.deepEqual(views, ['pr view 7 -R o/r --json number,url,headRefOid,state,statusCheckRollup,comments'], command);
+    assert.deepEqual(views, ['pr view 7 -R o/r --json number,url,headRefOid,baseRefName,state,statusCheckRollup,comments'], command);
   }
   assert.match(mergeReads(shell('gh pr merge 7 -sdR $R')).reason ?? '', /write the repository out/i);
 });
@@ -274,7 +274,7 @@ test('a squash flag with a false value is not a squash merge', () => {
   for (const command of ['gh pr merge 7 -s -R o/r', 'gh pr merge 7 -s=true -R o/r', 'gh pr merge 7 -ds=T -R o/r', 'gh pr merge 7 --squash=1 -R o/r', 'gh pr merge 7 --squash=false -s -R o/r']) {
     const { reason, views } = mergeReads(shell(command));
     assert.equal(reason, null, command);
-    assert.deepEqual(views, ['pr view 7 -R o/r --json number,url,headRefOid,state,statusCheckRollup,comments'], command);
+    assert.deepEqual(views, ['pr view 7 -R o/r --json number,url,headRefOid,baseRefName,state,statusCheckRollup,comments'], command);
   }
 });
 
@@ -297,7 +297,7 @@ test('GH_REPO from a prefix on the merge command or the hook environment names t
 
 test('an empty GH_REPO prefix reads the cwd repo, and the guard gh never inherits GH_REPO', () => {
   for (const command of ['GH_REPO= gh pr merge 7 --squash', 'GH_REPO=o/r GH_REPO= gh pr merge 7 --squash']) {
-    assert.deepEqual(mergeReads(shell(command), linuxHost({ GH_REPO: 'x/y' })).views, ['pr view 7 --json number,url,headRefOid,state,statusCheckRollup,comments'], command);
+    assert.deepEqual(mergeReads(shell(command), linuxHost({ GH_REPO: 'x/y' })).views, ['pr view 7 --json number,url,headRefOid,baseRefName,state,statusCheckRollup,comments'], command);
   }
   const fakeGh = tempDir();
   fs.copyFileSync(process.execPath, path.join(fakeGh, process.platform === 'win32' ? 'gh.exe' : 'gh'));

@@ -17,6 +17,7 @@ const NOT_DOCS = /(^|\/)(AGENTS|CLAUDE)\.md$|(^|\/)\.github\/[^/]+\.txt$|(^|\/)(
 const CONFIG = /(^|\/)(\.github\/workflows\/|\.claude\/)|(^|\/)(pyproject\.toml|setup\.cfg|ruff\.toml|\.ruff\.toml|pyrightconfig\.json|eslint\.config\.[cm]?js|\.eslintrc[^/]*|Cargo\.toml|clippy\.toml|rustfmt\.toml|package\.json|tsconfig[^/]*\.json|Dockerfile|docker-compose[^/]*\.ya?ml|\.pre-commit-config\.yaml)$/i;
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)test_[^/]+\.py$|_test\.(py|go|rs)$|\.(test|spec)\.[cm]?[jt]sx?$/i;
 const CODE = /\.(py|pyi|js|mjs|cjs|ts|tsx|jsx|rs|go|sql|sh|ps1|html|css|vue|svelte)$/i;
+export const isDocs = p => DOCS.test(p) && !NOT_DOCS.test(p) && !BUILD_TXT.test(p) && !COMMANDS.test(p);
 const runnableTest = p => TEST_PATH.test(p) && CODE.test(p);
 const FIXTURE = /(^|\/)(fixtures|__fixtures__|testdata)\//i;
 const SCHEMA_FILE = /(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i;
@@ -150,8 +151,7 @@ export function riskTier(diff, { extraPaths = [], readFile } = {}) {
 
   for (const f of files) {
     const p = f.path.replace(/\\/g, '/');
-    const docs = DOCS.test(p) && !NOT_DOCS.test(p) && !BUILD_TXT.test(p) && !COMMANDS.test(p);
-    if (!docs) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
+    if (!isDocs(p)) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
     if (extra.some(re => re.test(p))) raise(2, `listed in .github/risk-paths.txt: ${p}`);
     const paths = f.oldPath ? [p, f.oldPath.replace(/\\/g, '/')] : [p];
     const fixture = paths.every(q => FIXTURE.test(q));
