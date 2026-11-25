@@ -1,11 +1,11 @@
 ---
 name: setup
-description: One-time setup of bstack on a machine. Turns on auto-update for the bstack marketplace, turns off AI attribution, and checks that git, gh and node work. Use after installing bstack on a new PC, or when the user says "setup bstack".
+description: Set up bstack on a machine: auto-update on, AI attribution off, git, gh and node checked, installs brought to main. Use after installing, or for "setup bstack".
 ---
 
 # Setup
 
-Bring `~/.claude/settings.json` (user scope) to this state, editing only these keys and keeping everything else:
+In every Claude config dir (`~/.claude`, and each `~/.claude*` used through `CLAUDE_CONFIG_DIR`), bring `settings.json` to this state, changing only these keys:
 
 ```json
 {
@@ -17,10 +17,11 @@ Bring `~/.claude/settings.json` (user scope) to this state, editing only these k
 }
 ```
 
-Then check, and report each result in one line:
-1. `node --version` works (the hooks run on node).
-2. `gh auth status` shows a logged-in account for the repos you work in.
-3. `git config --get user.email` is set for those repos.
-4. Old copies of the same rules (a global CLAUDE.md or skills that repeat done-means-merged, review or merge rules) are listed for the user to trim. Do not delete them yourself.
+Then check, one line each:
+1. `node --version` works (hooks need it).
+2. `gh auth status` is logged in for your repos.
+3. `git config --get user.email` is set.
+4. List old copies of bstack's rules (a global CLAUDE.md, other skills) for the user to trim; never delete them.
+5. `node "${CLAUDE_PLUGIN_ROOT}/scripts/install-status.mjs" <each config dir>` compares the installed commit with main. Behind: run the command it prints.
 
-The new settings take effect in the next session.
+Settings and updates take effect in the next session.
