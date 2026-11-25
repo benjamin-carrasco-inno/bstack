@@ -405,3 +405,15 @@ test('a stylesheet listed in risk-paths stays tier 2', () => {
   assert.equal(r.tier, 2);
   assert.ok(r.reasons.includes('listed in .github/risk-paths.txt: src/styles/tokens.scss'), r.reasons.join());
 });
+
+test('a new file that removes files at runtime is tier 2 with a reason that does not read as a deletion', () => {
+  const p = 'plugins/bstack/skills/verify/browser-check-run.mjs';
+  const r = riskTier(file(p, { created: true, add: ['fs.rmSync(tmp, { recursive: true, force: true });'] }));
+  assert.equal(r.tier, 2);
+  assert.deepEqual(r.reasons, [`code that removes files: ${p}`]);
+});
+
+test('a deleted source file without removal calls gets no removal-code reason', () => {
+  const r = riskTier(file('app/util.py', { deleted: true, del: ['def f():', '    return 1'] }));
+  assert.ok(!r.reasons.some(x => /removes files|deletes files/.test(x)), r.reasons.join('; '));
+});
