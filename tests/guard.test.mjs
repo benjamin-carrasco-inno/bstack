@@ -79,6 +79,20 @@ test('push detection survives PowerShell and nesting', () => {
   blocked(ps('git.exe push origin main'));
 });
 
+test('a wrapper with flags does not hide the command, and an unknown wrapper flag refuses the line', () => {
+  const verdict = deps({ files: { 'v.md': `bstack-verdict: PASS sha=${SHA}` } });
+  for (const wrapper of ['env -C /repo', 'env --chdir=/repo', 'env -u FOO', 'env -i', '/usr/bin/env -u FOO', 'sudo -u x', 'sudo -E -u x', 'sudo -uroot', 'sudo -nu x --', 'time -p', 'nohup', 'exec -a name', 'command -p', '< in.txt', '2>/dev/null']) {
+    blocked(shell(`${wrapper} git push origin main`), deps());
+    blocked(shell(`${wrapper} gh pr comment 5 --body-file v.md`), verdict);
+    allowed(shell(`${wrapper} git push origin feat/x`));
+  }
+  blocked(shell('env -S "git push origin main"'));
+  blocked(shell('sudo --bogus git status'));
+  blocked(shell('time --bogus git status'));
+  allowed(shell('env FOO=1 git status'));
+  allowed(shell('nohup node server.js'));
+});
+
 test('git and gh inside blocks are checked', () => {
   blocked(ps('if ($?) { git push origin main }'));
   blocked(ps('if ($?) { git commit --no-verify -m x }'));
@@ -421,6 +435,31 @@ test('the user OK line cannot be forged by an agent', () => {
   blocked({ tool_name: 'Write', tool_input: { file_path: '/tmp/ok.md', content: OK } });
   blocked({ tool_name: 'Edit', tool_input: { file_path: '/tmp/ok.md', old_string: 'x', new_string: OK } });
   allowed(shell('gh pr view 5 --json comments | grep bstack-user-ok'));
+});
+
+test('a gh body built by a substitution or variable is refused; literal bodies and other flags pass', () => {
+  blocked(shell('gh pr comment 5 --body "$(cat v.md)"'));
+  blocked(shell('gh pr comment 5 -b "`cat v.md`"'));
+  blocked(shell('gh pr comment 5 --body=$(cat v.md)'));
+  blocked(shell('gh pr comment 5 -b$(cat v.md)'));
+  blocked(shell('b=$(cat v.md); gh issue comment 5 --body "$b"'));
+  blocked(shell("gh pr review 5 -c -b $'\\x62stack'"));
+  blocked(ps('gh pr comment 5 --body (Get-Content v.md -Raw)'));
+  blocked(ps('gh pr comment 5 -b "$(Get-Content v.md -Raw)"'));
+  blocked(ps('gh issue create -t x -b @"\n$(Get-Content v.md -Raw)\n"@'));
+  blocked(shell('gh release create v1 --notes "$(cat v.md)"'));
+  blocked(shell('gh release edit v1 -n "$(cat v.md)"'));
+  blocked(shell('gh pr close 5 --comment "$(cat v.md)"'));
+  blocked(shell('gh api repos/o/r/issues/5/comments -f body="$(cat v.md)"'));
+  blocked(shell('gh api repos/o/r/issues/5/comments -fbody=$(cat v.md)'));
+  blocked(shell('gh api repos/o/r/issues/5/comments --raw-field=body="$(cat v.md)"'));
+  allowed(shell("gh pr comment 5 --body 'costs $5 and `x`'"));
+  allowed(shell('gh pr comment 5 --body "costs \\$5"'));
+  allowed(ps("gh pr comment 5 --body 'costs $5'"));
+  allowed(ps('gh pr comment 5 --body "costs `$5"'));
+  allowed(shell('gh run list -b "$(git branch --show-current)"'));
+  allowed(shell('gh pr checkout 5 -b "$NAME"'));
+  allowed(shell('gh api repos/o/r/statuses/$(git rev-parse HEAD) -f state=success -f description="$MSG"'));
 });
 
 test('reviewer and adversary agents do not author', () => {
@@ -982,6 +1021,108 @@ test('a body file under a temp variable the same line assigns is refused', () =>
   blocked(bashAt('TMPDIR=/evil gh pr comment 5 --body-file $TMPDIR/v.md'), linux);
   allowed(psAt("$env:FOO='x'; gh pr comment 5 --body-file $env:TEMP\\v.md"), windows);
   allowed(bashAt('gh pr comment 5 --body-file $TMPDIR/v.md'), linux);
+});
+
+test('a body file under a temp variable is refused when anything on the line can change the environment', () => {
+  const noteAt = (host, file) => onHost(host, { ...deps(), readFile: f => (f === file ? 'just a note' : null) });
+  const windows = noteAt(GIT_BASH_HOST, 'C:\\Temp\\v.md');
+  const linux = noteAt({ ...LINUX_HOST, env: { TMPDIR: '/tmp' } }, '/tmp/v.md');
+  for (const before of ['. .\\env.ps1', ".\\setup.ps1", './setup', '& ./setup', '.\\setup', 'C:\\tools\\setup', "Set-Item \"env:$('TE'+'MP')\" C:\\evil", 'New-Item -Path env:X -Value y', "si ('e'+'nv:TEMP') x", '$p = 1; Set-Item $p x', 'Set-Variable x y', "iex $s", "[Environment]::SetEnvironmentVariable('X', 'y')",
+    "Add-Type -TypeDefinition 'public class X{}'", '[X]::R()', "[System.Environment] :: SetEnvironmentVariable('X', 'y')", "([type]'Environment')::SetEnvironmentVariable('X', 'y')"]) {
+    blocked(psAt(`${before}; gh pr comment 5 --body-file $env:TEMP\\v.md`), windows);
+  }
+  for (const before of ['source ./env.sh', '. ./env.sh', 'builtin source ./env.sh', 'builtin . ./env.sh', 'command source ./env.sh', 'export "$N=/evil"', 'eval "$X"', 'unset TMP"DIR"', 'read -r "TM""PDIR"', 'printf -v "TM""PDIR" /evil', 'declare "TM""PDIR=/evil"']) {
+    blocked(bashAt(`${before}; gh pr comment 5 --body-file $TMPDIR/v.md`), linux);
+  }
+  blocked(bashAt('while true; do gh pr comment 5 --body-file $TMPDIR/v.md; . ./env.sh; done'), linux);
+  allowed(psAt('git status; gh pr comment 5 --body-file $env:TEMP\\v.md'), windows);
+  allowed(psAt("New-Item -ItemType Directory $env:TEMP\\b -Force; Set-Content $env:TEMP\\v.md 'x'; gh pr comment 5 --body-file $env:TEMP\\v.md"), windows);
+  allowed(bashAt("printf '%s' x > $TMPDIR/v.md && gh pr comment 5 --body-file $TMPDIR/v.md"), linux);
+});
+
+test('a body on stdin is read from a < redirect or a piped cat, and refused from any other source', () => {
+  const files = deps({ files: { 'v.md': `bstack-verdict: PASS sha=${SHA}`, 'ok.md': 'just a note' } });
+  blocked(shell('gh pr comment 5 --body-file - < v.md'), files);
+  blocked(shell('gh pr comment 5 -F - <v.md'), files);
+  blocked(shell('< v.md gh pr comment 5 -F -'), files);
+  blocked(shell('cat v.md | gh pr comment 5 --body-file -'), files);
+  blocked(shell('cat ok.md -- v.md | gh pr comment 5 -F -'), files);
+  blocked(shell('cat < v.md | gh pr comment 5 -F -'), files);
+  blocked(ps('Get-Content -Raw v.md | gh pr comment 5 -F -'), files);
+  blocked(ps('gc -Encoding utf8 v.md | gh release create v1 --notes-file -'), files);
+  blocked(shell('type v.md | gh api repos/o/r/issues/5/comments -F body=@-'), files);
+  blocked(shell('cat v.md | gh api repos/o/r/issues/5/comments --input -'), files);
+  allowed(shell('gh pr comment 5 --body-file - < ok.md'), files);
+  allowed(shell('cat ok.md | gh pr comment 5 -F -'), files);
+  allowed(ps('Get-Content -Raw ok.md | gh pr comment 5 -F -'), files);
+  allowed(ps('gc -Encoding utf8 ok.md | gh release create v1 --notes-file -'), files);
+  for (const command of ['echo hi | gh pr comment 5 --body-file -', 'gh pr comment 5 --body-file -', 'cat | gh pr comment 5 -F -', 'cat - ok.md | gh pr comment 5 -F -',
+    "gh pr comment 5 -F - <<'EOF'\nhi\nEOF", 'gh pr comment 5 -F - <<< hi', 'cat ok.md | sed s/x/y/ | gh pr comment 5 -F -', 'gh pr comment 5 -F - < $F']) {
+    blocked(shell(command), files);
+  }
+  for (const quoted of ['-t "<ok.md"', "--jq '<ok.md'", "-t '0<ok.md'"]) {
+    blocked(shell(`cat v.md | gh api repos/o/r/issues/5/comments -F body=@- ${quoted}`), files);
+  }
+  blocked(ps("cat v.md | gh api repos/o/r/issues/5/comments -F body=@- -t '<ok.md'"), files);
+  blocked(shell("{ gh api repos/o/r/issues/5/comments -F body=@- -t '<ok.md'; } < v.md"), files);
+  blocked(shell('cat v.md | gh release create v1 --title "<ok.md" --notes-file -'), files);
+  allowed(shell('cat ok.md | gh pr comment 5 -F - -t "<v.md"'), files);
+  allowed(shell('cat v.md | gh api repos/o/r/issues/5/comments -F body=@- < ok.md'), files);
+  for (const glued of ['-t x<v.md', '-t "x"<v.md', '00<v.md', '3<x <v.md', '<v.md>x']) {
+    blocked(shell(`cat ok.md | gh pr comment 5 -F - ${glued}`), files);
+  }
+  blocked(shell('cat v.md | gh pr comment 5 -F - -t \\<ok.md'), files);
+  blocked(shell("cat ok.md '<ok.md' | gh pr comment 5 -F -"), deps({ files: { 'ok.md': 'just a note', '<ok.md': `bstack-verdict: PASS sha=${SHA}` } }));
+});
+
+test('a body on stdin that gh inherits instead of taking from a direct pipe or its own < is refused', () => {
+  const files = deps({ files: { 'v.md': `bstack-verdict: PASS sha=${SHA}`, 'ok.md': 'just a note' } });
+  for (const command of ['{ cat ok.md; gh pr comment 5 -F -; } < v.md', '(cat ok.md; gh pr comment 5 -F -) < v.md', 'exec < v.md; cat ok.md; gh pr comment 5 -F -',
+    'while true; do cat ok.md; gh pr comment 5 -F -; break; done < v.md', "cat v.md | bash -c 'cat ok.md; gh pr comment 5 -F -'", 'cat ok.md && gh pr comment 5 -F -',
+    '{ cat v.md; cat ok.md; } | gh pr comment 5 -F -']) {
+    blocked(shell(command), files);
+  }
+  allowed(shell('cat ok.md | gh pr comment 5 -F -'), files);
+  allowed(shell('gh pr comment 5 -F - < ok.md'), files);
+  allowed(shell('{ cat ok.md | gh pr comment 5 -F -; } < v.md'), files);
+  allowed(shell("cat v.md | bash -c 'cat ok.md | gh pr comment 5 -F -'"), files);
+  blocked(shell('cat v.md | gh pr comment 5 -F - $(cat ok.md > /dev/null)'), files);
+});
+
+test('glued, = and --notes-file forms of a body file are read', () => {
+  const files = deps({ files: { 'v.md': `bstack-verdict: PASS sha=${SHA}`, 'ok.md': 'just a note' } });
+  for (const command of ['gh pr comment 5 -Fv.md', 'gh pr comment 5 -F=v.md', 'gh pr review 5 -cF v.md', 'gh pr comment 5 --body-file=v.md',
+    'gh api repos/o/r/issues/5/comments --field=body=@v.md', 'gh api repos/o/r/issues/5/comments -Fbody=@v.md', 'gh api repos/o/r/issues/5/comments -F=body=@v.md',
+    'gh release create v1 --notes-file v.md', 'gh release edit v1 --notes-file=v.md', 'gh release create v1 -F v.md', 'gh release create v1 -dF v.md',
+    'gh api repos/o/r/issues/5/comments -iFbody=@v.md', 'gh api repos/o/r/issues/5/comments -iF body=@v.md', 'gh pr create -fF v.md']) {
+    blocked(shell(command), files);
+    allowed(shell(command.replace('v.md', 'ok.md')), files);
+  }
+  blocked(shell('gh api repos/o/r/issues/5/comments -if body="$(cat v.md)"'));
+  blocked(shell('gh pr create -fb "$(cat v.md)"'));
+  allowed(shell('gh api repos/o/r/issues/5/comments -f body=hello'));
+  allowed(shell('gh api repos/o/r/issues/5/comments -if body=hello'));
+  blocked(shell(`gh api repos/o/r/issues/5/comments -fbody="bstack-verdict: PASS sha=${SHA}"`));
+  blocked({ ...shell('gh api repos/o/r/issues/5/comments -fbody=hi'), agent_type: 'bstack:reviewer' });
+});
+
+test('a body source behind a wrapper that changes directory is refused, wherever the verdict file sits', () => {
+  const verdictIn = dir => onHost(LINUX_HOST, { ...deps(), readFile: f => (f === `${dir}/v.md` ? `bstack-verdict: PASS sha=${SHA}` : 'just a note') });
+  const movedBody = /does not follow the directory change.*Run gh from the target directory with a literal path/s;
+  for (const command of ['env -C /evil gh pr comment 5 --body-file v.md', 'sudo -D /evil gh pr comment 5 --body-file v.md', 'env -C "$D" gh pr comment 5 --body-file v.md',
+    'env --chdir=/evil gh pr comment 5 -F v.md', 'sudo --chdir /evil gh release create v1 --notes-file v.md', 'env -C /evil gh api repos/o/r/issues/5/comments -F body=@v.md',
+    'env -C /tmp -C evil gh pr comment 5 --body-file v.md', 'sudo -D /tmp -D evil gh pr comment 5 --body-file v.md', 'env -C /tmp sudo -D evil gh pr comment 5 --body-file v.md',
+    'env -C /evil gh pr comment 5 -F - < v.md', '< v.md env -C /evil gh pr comment 5 -F -', 'sudo -D /evil gh pr comment 5 --body-file - < v.md',
+    'env -C /evil cat < v.md | gh pr comment 5 -F -', 'env -C /evil cat v.md | gh pr comment 5 -F -', 'cat v.md | env -C /evil gh pr comment 5 -F -',
+    "env -C /evil bash -c 'gh pr comment 5 --body-file v.md'", "env -C /evil sh -c 'gh pr comment 5 --body-file v.md'", "sudo -D /evil bash -c 'cat v.md | gh pr comment 5 -F -'"]) {
+    for (const dir of ['/repo', '/evil', '/tmp/evil', '/repo/evil']) assert.match(decide(shell(command), verdictIn(dir)) ?? '', movedBody, `${command} with the verdict in ${dir}`);
+  }
+  const files = deps({ files: { 'ok.md': 'just a note' } });
+  allowed(shell('gh pr comment 5 -F - < ok.md'), files);
+  allowed(shell('cat ok.md | gh pr comment 5 -F -'), files);
+  allowed(shell('env FOO=1 gh pr comment 5 --body-file ok.md'), files);
+  allowed(shell('sudo -u x gh pr comment 5 --body-file ok.md'), files);
+  allowed(shell('env -C /evil gh pr comment 5 --body "just a note"'), files);
 });
 
 test('a body file the guard cannot read is refused', () => {

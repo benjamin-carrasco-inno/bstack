@@ -12,7 +12,7 @@ test('segments split on operators outside quotes', () => {
 test('a | after > always splits, even when the > is escaped', () => {
   assert.deepEqual(splitSegments('echo x >| a.txt | tee b'), ['echo x >', 'a.txt', 'tee b']);
   assert.deepEqual(splitSegments('echo \\>|git push'), ['echo \\>', 'git push']);
-  assert.deepEqual(redirectTargets('echo x >| a.txt'), [{ text: 'a.txt', expression: false }]);
+  assert.deepEqual(redirectTargets('echo x >| a.txt'), [{ text: 'a.txt', unquoted: 'a.txt', expression: false, expands: false }]);
 });
 
 test('a dangling redirect is one whose > ends the segment unescaped', () => {

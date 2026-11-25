@@ -30,12 +30,13 @@ export function decide(input, deps) {
   const line = String(input.tool_input?.command ?? '');
   const dialect = tool === 'PowerShell' ? 'powershell' : 'posix';
   const host = withPaths(deps.host ?? REAL_HOST);
-  const hostDeps = { ...deps, host: { ...host, tempNames: plainTempNames(line) } };
+  const tempNames = commandsIn(withoutHeredocBodies(line), 0, dialect).some(changesEnv) ? NO_TEMP_NAMES : plainTempNames(line);
+  const hostDeps = { ...deps, host: { ...host, tempNames } };
   const root = host.paths.resolvePath(cwd);
   const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
   const looped = loopBodies(line).some(body => commandsIn(body, 0, dialect).some(createsCommit));
   for (const [k, c] of commands.entries()) {
-    const reason = markerRule(c, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
+    const reason = hiddenRule(c) ?? markerRule(c, hostDeps) ?? agentRule(c, agent) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
     if (reason) return reason;
   }
   return agentWritesRule(line, dialect, cwd, agent, root, hostDeps.host);
@@ -64,6 +65,27 @@ const TEMP_NAME_MENTION = /(?<![\w$])(?:\$\{|\$env:|\$)?(TMPDIR|TEMP|TMP)(?!\w)/
 const PLAIN_TEMP_READ = /^(?:\$\{\w+\}|\$(?:env:)?\w+)(?:\s*(?:$|[;|&\n])|['"\\/])/i;
 const NO_TEMP_NAMES = new Set();
 
+const ENV_CHANGERS = new Set(['.', 'source', 'eval', 'export', 'declare', 'typeset', 'local', 'readonly', 'read', 'unset', 'mapfile', 'readarray', 'let', 'getopts', 'for',
+  'set', 'set-variable', 'sv', 'new-variable', 'nv', 'remove-variable', 'rv', 'clear-variable', 'clv', 'invoke-expression', 'iex', 'import-module', 'ipmo', 'add-type']);
+const DYNAMIC_COMMAND = /[$`]|%[^%]+%/;
+const POWERSHELL_SCRIPT = /\.psm?1$/;
+const INVOKED_BY_PATH = /[\\/]|^\./;
+const STATIC_MEMBER = /::/;
+const LEADING_ENV_READ = /^\$(\{env:\w+\}|env:\w+)/i;
+const REACHES_ENV_DRIVE = /env:|environment::|[$`]/i;
+const LITERAL_ASSIGNMENT = /^\$(\{[^}]+\}|[\w:]+)\s*=\s*('[^']*'|"[^"$`]*"|[\w.\\/:-]+)$/;
+
+function changesEnv(c) {
+  if (c.dialect === 'powershell' && LITERAL_ASSIGNMENT.test(c.text)) return false;
+  if (ENV_CHANGERS.has(c.cmd) || DYNAMIC_COMMAND.test(c.cmd) || POWERSHELL_SCRIPT.test(c.cmd)) return true;
+  if (c.cmd === 'printf') return c.args.some(a => a.startsWith('-v'));
+  if (c.dialect !== 'powershell') return false;
+  if (STATIC_MEMBER.test(c.text)) return true;
+  if (INVOKED_BY_PATH.test(c.program ?? '')) return true;
+  const paths = (FILE_WRITERS[c.cmd] ?? ITEM_PATHS[c.cmd])?.(c.args, c.dialect) ?? [];
+  return paths.some(p => isExpressionArg(c, p) || REACHES_ENV_DRIVE.test(p.replace(LEADING_ENV_READ, '')));
+}
+
 function plainTempNames(line) {
   const mentions = [...line.matchAll(TEMP_NAME_MENTION)];
   const names = new Set(mentions.map(m => m[1].toUpperCase()));
@@ -90,9 +112,11 @@ function tempDirNamed(name, host) {
 
 function located(commands, start, host) {
   const scopes = new Map();
+  const placed = new Map();
   return commands.map(c => {
     const shell = shellState(scopes, c.scope ?? '', start);
-    const at = { ...c, cwd: shell.here.dir, cwdKnown: shell.here.known, env: { ...shell.env, ...c.env } };
+    const at = { ...c, cwd: shell.here.dir, cwdKnown: shell.here.known, env: { ...shell.env, ...c.env }, pipedFrom: placed.get(c.pipedFrom) };
+    placed.set(c, at);
     changeDir(shell, c, host);
     setVariables(shell.env, c);
     return at;
@@ -144,7 +168,13 @@ function resolvedDir(target, here, dialect, paths) {
   return paths.resolvePath(here ?? '', literal, dialect);
 }
 
+function hiddenRule(c) {
+  if (!c.hidden) return null;
+  return `The guard cannot tell which command ${c.text.split(c.hidden)[0]}${c.hidden} runs, so it cannot check it. Drop the ${c.hidden} flag or run the command without the wrapper.`;
+}
+
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
+const MOVED_BODY = 'The guard does not follow the directory change of env -C, env --chdir, sudo -D or sudo --chdir, so it cannot see which file the gh body is read from. Run gh from the target directory with a literal path instead.';
 const SAVED_VERDICTS = 'Saved verdicts are written only by the bstack hook when GitHub does not answer; the guard posts them at the next merge. Run the bstack:reviewer or bstack:adversary agent instead.';
 
 function markerRule(c, deps) {
@@ -153,18 +183,79 @@ function markerRule(c, deps) {
   if (MARKER.test(c.text) && !READ_ONLY.has(c.cmd) && !readOnlyGh) {
     return 'Verdict and interrogate lines are posted by the bstack hook when the bstack:reviewer or bstack:adversary agent finishes, and only the user writes the user-OK line on GitHub. Run that agent or ask the user instead of writing the line yourself.';
   }
-  if (!READ_ONLY.has(c.cmd) && pathArgs(c).some(a => PENDING_PATH.test(a))) return SAVED_VERDICTS;
-  if (c.cmd === 'gh') {
-    const { host } = deps;
-    for (const file of bodyFiles(c.args)) {
-      const { word, dialect } = inTempDir(file, c.dialect, host);
-      const target = resolvedDir(word, c.cwdKnown ? c.cwd : UNKNOWN_DIR, dialect, host.paths);
-      const text = target === UNKNOWN_DIR ? null : deps.readFile(target);
-      if (text === null) return `The guard cannot read the body file ${file} to check it for a bstack verdict line. Give a literal path to a file that exists.`;
-      if (MARKER.test(text)) return `The body file ${file} contains a bstack verdict or user-OK line. Only the bstack hook and the user write those.`;
+  if (!READ_ONLY.has(c.cmd) && [...pathArgs(c), ...redirectTargets(c.text).map(w => w.text)].some(a => PENDING_PATH.test(a))) return SAVED_VERDICTS;
+  if (c.cmd !== 'gh') return null;
+  const built = builtBody(c, ghGroup, ghAction);
+  if (built) return `The ${built} text comes from a substitution or variable the guard cannot see, so it cannot check it for a bstack verdict line. Write the text to a file and pass the file (--body-file, --notes-file or -F body=@<path>).`;
+  for (const file of bodyFiles(c.args)) {
+    const sources = file === '-' ? stdinFiles(c) : [{ file, at: c }];
+    if (c.movesDir || sources?.some(source => source.at.movesDir)) return MOVED_BODY;
+    if (!sources) return 'The guard cannot see what reaches the body on stdin, so it cannot check it for a bstack verdict line. Redirect a file with < <path>, pipe one with cat <path> |, or give the body file as a path.';
+    for (const source of sources) {
+      const reason = bodyFileReason(source, deps);
+      if (reason) return reason;
     }
   }
   return null;
+}
+
+function bodyFileReason({ file, at }, deps) {
+  const { word, dialect } = inTempDir(file, at.dialect, deps.host);
+  const target = resolvedDir(word, at.cwdKnown ? at.cwd : UNKNOWN_DIR, dialect, deps.host.paths);
+  const text = target === UNKNOWN_DIR ? null : deps.readFile(target);
+  if (text === null) return `The guard cannot read the body file ${file} to check it for a bstack verdict line. Give a literal path to a file that exists.`;
+  if (MARKER.test(text)) return `The body file ${file} contains a bstack verdict or user-OK line. Only the bstack hook and the user write those.`;
+  return null;
+}
+
+const STDIN_FD = /^0*$/;
+const OTHER_FD = /^\d+$/;
+const REDIRECT_CHAR = /[<>]/;
+const UNREADABLE_INPUT = /^[<&(>]/;
+const STDIN_READERS = new Set(['cat', 'type', 'get-content', 'gc']);
+const READER_VALUED = ['encoding', 'totalcount', 'head', 'first', 'tail', 'last', 'readcount', 'delimiter', 'stream', 'filter', 'include', 'exclude'];
+
+function inputRedirects(text) {
+  const all = words(text);
+  const files = [];
+  for (let i = 0; i < all.length; i++) {
+    const { text: word, unquoted } = all[i];
+    const at = unquoted.indexOf('<');
+    if (at < 0) continue;
+    const fd = unquoted.slice(0, at);
+    if (REDIRECT_CHAR.test(fd + unquoted.slice(at + 1))) return null;
+    if (!STDIN_FD.test(fd)) { if (OTHER_FD.test(fd)) continue; return null; }
+    const target = at + 1 < word.length ? { text: word.slice(at + 1), unquoted: unquoted.slice(at + 1) } : all[++i];
+    if (!target?.text || REDIRECT_CHAR.test(target.unquoted) || UNREADABLE_INPUT.test(target.text)) return null;
+    files.push(target.text);
+  }
+  return files;
+}
+
+function stdinFiles(c) {
+  const redirected = inputRedirects(c.text);
+  if (redirected?.length) return redirected.map(file => ({ file, at: c }));
+  const reader = c.pipedFrom;
+  if (!redirected || !STDIN_READERS.has(reader?.cmd)) return null;
+  const files = readerFiles(reader);
+  return files?.length ? files.map(file => ({ file, at: reader })) : null;
+}
+
+function readerFiles(reader) {
+  const files = inputRedirects(reader.text);
+  if (!files) return null;
+  const all = words(reader.text);
+  const args = all.slice(all.length - reader.args.length);
+  let operands = false;
+  for (let i = 0; i < args.length; i++) {
+    const { text: a, unquoted } = args[i];
+    if (a === '-') return null;
+    if (/^(\d*[<>]|&>)/.test(unquoted)) { if (/^(\d*[<>]{1,2}|&>>?)$/.test(unquoted)) i++; continue; }
+    if (operands || !a.startsWith('-')) files.push(a);
+    else if (a === '--') operands = true;
+    else if (reader.dialect === 'powershell' && namesParameter(a, READER_VALUED, 'powershell')) i++;
+  }
+  return files;
 }
 
 const PENDING_PATH = new RegExp(String.raw`(^|[\\/>=])${PENDING_NAME.source}([\\/]|$)`, 'i');
@@ -198,16 +289,46 @@ function shortFIsField(args) {
   return GH_SHORT_F_IS_FIELD.has(cmd) || GH_SHORT_F_IS_FIELD.has(`${cmd} ${sub}`);
 }
 
-function bodyFiles(args) {
-  const files = [];
-  const fileFlags = shortFIsField(args) ? ['--body-file', '--input'] : ['--body-file', '-F', '--input'];
+const GH_BOOLEAN_SHORTHANDS = 'acdefiprwy';
+
+function flagValues(args, long, short) {
+  const cluster = short && new RegExp(`^-[${GH_BOOLEAN_SHORTHANDS}]*[${short}](=?)(.*)$`, 's');
+  const found = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (fileFlags.includes(a)) files.push(args[i + 1]);
-    else if (a.startsWith('--body-file=') || a.startsWith('--input=')) files.push(a.split('=').slice(1).join('='));
-    if ((a === '-F' || a === '--field') && /=@/.test(args[i + 1] ?? '')) files.push(args[i + 1].split('=@')[1]);
+    const name = a.split('=')[0];
+    const m = !a.startsWith('--') && cluster?.exec(a);
+    if (a.startsWith('--') && long.includes(name)) found.push(a === name ? { at: ++i, value: args[i] } : { at: i, value: a.slice(name.length + 1) });
+    else if (m) found.push(m[1] || m[2] ? { at: i, value: m[2] } : { at: ++i, value: args[i] });
   }
-  return files.filter(f => f && f !== '-' && !f.includes('=@'));
+  return found.filter(f => f.value !== undefined);
+}
+
+function fieldFile(value) {
+  const v = value.slice(value.indexOf('=') + 1);
+  return value.includes('=') && v.startsWith('@') ? v.slice(1) : null;
+}
+
+function bodyFiles(args) {
+  const fieldShort = shortFIsField(args) ? 'F' : null;
+  const files = flagValues(args, ['--body-file', '--input', '--notes-file'], fieldShort ? null : 'F').map(f => f.value);
+  const fields = flagValues(args, ['--field'], fieldShort).map(f => fieldFile(f.value));
+  return [...files, ...fields].filter(Boolean);
+}
+
+const BODY_FLAGS = { body: [['--body'], 'b'], comment: [['--comment'], 'c'], notes: [['--notes'], 'n'] };
+const BODY_TEXT = {
+  'pr comment': 'body', 'pr create': 'body', 'pr edit': 'body', 'pr review': 'body',
+  'issue comment': 'body', 'issue create': 'body', 'issue edit': 'body',
+  'pr close': 'comment', 'issue close': 'comment', 'release create': 'notes', 'release edit': 'notes',
+};
+
+function builtBody(c, group, action) {
+  const built = f => c.expands?.has(f.at) || c.expressions?.has(f.at);
+  const kind = BODY_TEXT[`${group} ${action}`];
+  if (kind && flagValues(c.args, ...BODY_FLAGS[kind]).some(built)) return BODY_FLAGS[kind][0][0];
+  if (group === 'api' && flagValues(c.args, ['--field', '--raw-field'], 'fF').some(f => f.value.startsWith('body=') && built(f))) return 'body field';
+  return null;
 }
 
 // --- reviewer, adversary and comment-critic judge; they never author ---------------------------------
@@ -309,6 +430,7 @@ const FILE_WRITERS = {
   curl: args => optionValues(args, /^(-[a-zA-Z]*o|--output|--output-dir)$/, /^--output(-dir)?=/),
   patch: patchTargets,
 };
+const ITEM_PATHS = { 'set-item': WRITES_CONTENT, si: WRITES_CONTENT, 'clear-item': WRITES_CONTENT, cli: WRITES_CONTENT, ...Object.fromEntries(Object.keys(DIR_MOVES).map(k => [k, WRITES_CONTENT])) };
 
 function positionalArgs(args, valued) {
   return args.filter((a, i) => !a.startsWith('-') && !valued.test(args[i - 1] ?? ''));
@@ -533,9 +655,9 @@ function ghRule(c, cwd, deps, line) {
 }
 
 function hasWriteFields(args) {
-  return args.some(a => /^(-f|-F|--field|--raw-field|--input)$/.test(a) || /^--(field|raw-field|input)=/.test(a)) ||
+  return args.some(a => /^-[a-zA-Z]*[fF]|^--(field|raw-field|input)(=|$)/.test(a)) ||
     args.some((a, i) => (a === '-X' || a === '--method') && !/^GET$/i.test(args[i + 1] ?? '')) ||
-    args.some(a => /^--method=(?!GET$)/i.test(a));
+    args.some(a => /^(-X=?|--method=)(?!GET$)./i.test(a));
 }
 
 const API_VALUE_OPTS = new Set(['-X', '--method', '-H', '--header', '-f', '--raw-field', '-F', '--field', '--input', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']);
