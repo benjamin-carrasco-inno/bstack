@@ -16,3 +16,20 @@ test('browser check fixtures exist', () => {
     assert.ok(fs.existsSync(new URL(`fixtures/browser-check/${name}`, import.meta.url)), name);
   }
 });
+
+test('browser check rejects with the path and the cause when a page refuses framing', async () => {
+  const frame = {
+    style: {},
+    contentDocument: null,
+    setAttribute() {},
+    addEventListener(_, onLoad) { this.onLoad = onLoad; },
+    remove() {},
+  };
+  const document = { createElement: () => frame, body: { append: f => setTimeout(() => f.onLoad()) } };
+  const check = vm.runInNewContext(source, { document });
+  await assert.rejects(check({ paths: ['/denied'] }), error => {
+    assert.equal(error.constructor.name, 'Error');
+    assert.match(error.message, /^\/denied refuses framing \(X-Frame-Options or CSP frame-ancestors\)/);
+    return true;
+  });
+});
