@@ -15,7 +15,7 @@ import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, ti
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
-import { GITHUB_COMMIT_LIST_LIMIT, mergeInChain, sameChange } from './lib/carry.mjs';
+import { prMergeInChain, sameChange } from './lib/carry.mjs';
 import { ghFileReader, riskTier, readRiskPaths, tierZeroDocs } from './risk-tier.mjs';
 
 const DEFAULT_BRANCH = /^(main|master)$/;
@@ -1107,10 +1107,7 @@ function carrier(pr, risk, { cwd, deps, repo, extraPaths }) {
 
   const loadChain = () => {
     if (!PLAIN_BRANCH.test(base ?? '')) throw new Error(`the base branch name ${JSON.stringify(base)} cannot go into a GitHub API path as it is`);
-    const rows = api(['--paginate', `repos/${repo}/pulls/${pr.number}/commits?per_page=100`, '--jq', '.[] | [.sha] + [.parents[].sha] | join(" ")'])
-      .split(/\r?\n/).filter(Boolean).map(line => line.trim().split(/\s+/));
-    if (rows.length >= GITHUB_COMMIT_LIST_LIMIT) throw new Error(`the PR has ${rows.length} commits, and GitHub lists at most ${GITHUB_COMMIT_LIST_LIMIT}`);
-    return mergeInChain(rows.map(([sha, ...parents]) => ({ sha, parents })), head);
+    return prMergeInChain(api, repo, pr.number, head);
   };
 
   const check = (from, merges) => {

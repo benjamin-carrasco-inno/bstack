@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SubagentStop hook for bstack:reviewer and bstack:adversary. It reads the agent's final report,
-// checks that the SHA it judged is still the PR head, and posts the report as a PR comment with the
-// verdict marker. The model never posts verdicts itself, so the merge gate reads only this output.
+// checks that the SHA it judged is still the PR head or that only merges of the base branch followed
+// it, and posts the report as a PR comment with the verdict marker. The model never posts verdicts itself, so the merge gate reads only this output.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseReport, commentBody } from './lib/verdicts.mjs';
 import { pendingStore, repoOfUrl } from './lib/pending.mjs';
+import { prMergeInChain } from './lib/carry.mjs';
 
 export function kindOf(agentType) {
   if (/(^|:)reviewer$/.test(agentType)) return 'verdict';
@@ -122,20 +123,29 @@ export function handle(input, gh, read = readTranscript) {
   const repo = repoFor(report.pr, [...texts, promptText(entries)]);
   let pr;
   try {
-    pr = JSON.parse(gh(input.cwd, ['pr', 'view', report.pr, ...repoArgs(repo), '--json', 'number,url,headRefOid,comments']));
+    pr = JSON.parse(gh(input.cwd, ['pr', 'view', report.pr, ...repoArgs(repo), '--json', 'number,url,headRefOid,baseRefName,comments']));
   } catch (e) {
     if (transient(e)) return { save: { kind, repo, pr: report.pr, sha: report.sha, result: report.result, report: report.body } };
     const named = repo ? `PR ${report.pr} in ${repo}` : `PR ${report.pr}`;
     return fail(named, `bstack could not read ${named} (${String(e.message ?? e).split('\n')[0]}).`,
       'Check the PR number and end with the line again.');
   }
+  let text = report.body;
   if (pr.headRefOid !== report.sha) {
-    return fail(pr.url, `PR ${pr.number} head is now ${pr.headRefOid}, not ${report.sha}.`,
-      'Check out the new head, re-check what changed, and end with the line for the new SHA.');
+    const moved = `PR ${pr.number} head is now ${pr.headRefOid}, not ${report.sha}`;
+    const recheck = 'Check out the new head, re-check what changed, and end with the line for the new SHA.';
+    let chain;
+    try {
+      chain = prMergeInChain(args => gh(input.cwd, ['api', ...args]), repo ?? repoOfUrl(pr.url), pr.number, pr.headRefOid);
+    } catch (e) {
+      return fail(pr.url, `${moved}, and bstack could not read its commits (${String(e.message ?? e).split('\n')[0]}) to check that only merges of the base branch followed.`, recheck);
+    }
+    if (!chain.includes(report.sha)) return fail(pr.url, `${moved}.`, recheck);
+    text = `Judged on ${report.sha}. The PR head has since moved to ${pr.headRefOid} by a merge-in of ${pr.baseRefName ?? 'the base branch'}.\n\n${report.body}`;
   }
-  const body = commentBody(kind, report.result, report.sha, report.body);
+  const body = commentBody(kind, report.result, report.sha, text);
   if ((pr.comments ?? []).some(c => String(c.body ?? '').trim() === body.trim())) return {};
-  return { post: { pr: pr.url, repo, body, kind, number: String(pr.number), sha: report.sha, result: report.result, report: report.body } };
+  return { post: { pr: pr.url, repo, body, kind, number: String(pr.number), sha: report.sha, result: report.result, report: text } };
 }
 
 export const commentArgs = (post, file) => ['pr', 'comment', post.pr, ...repoArgs(post.repo), '--body-file', file];
