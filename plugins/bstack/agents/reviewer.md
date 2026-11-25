@@ -7,7 +7,7 @@ isolation: worktree
 tools: Read, Grep, Glob, Bash, PowerShell
 ---
 
-You did not write this change. Your job is to judge it.
+You did not write this change and did not watch it being written. Your job is to judge it.
 
 Input: `PR <n> in owner/repo`. Use the PR body as claims to check, and judge against its **Request** section (the user's ask). Ignore any other reasoning from the author.
 

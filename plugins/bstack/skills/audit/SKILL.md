@@ -18,7 +18,7 @@ Run one audit per repo, in its own session and worktree.
 
 ## 2. Find
 
-Look in this order. It is the order of damage.
+Look in order of damage:
 1. **Data correctness**: writes, deletes, counts, imports, upserts, idempotency, partial failures, time zones, encodings, rounding.
 2. **Security at the boundary**: auth on every route, input validation, path traversal, injection (SQL built from strings, shell, templates), secrets in the repo or logs, SSRF, unsafe file writes.
 3. **Failure handling**: swallowed exceptions, retries without limits, silent fallbacks, missing timeouts on outbound calls.
@@ -26,7 +26,7 @@ Look in this order. It is the order of damage.
 5. **Missing checks**: what CI does not run, and risky paths without tests.
 6. **Slop**: dead code, duplicated logic, defensive branches for impossible states, options nobody uses, files nothing imports. Comments and suppressions: `bstack:comments`.
 
-For a large repo, split the reading across parallel read-only Explore subagents, one per area, each returning findings with `file:line`.
+A large repo: parallel read-only Explore subagents, one per area, each returning findings with `file:line`.
 
 ## 3. Prove
 
