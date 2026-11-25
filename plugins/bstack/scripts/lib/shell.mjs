@@ -127,6 +127,8 @@ export function closingBacktick(line, open) {
   return -1;
 }
 
+const UNSEEN_PIPE_SOURCE = Object.freeze({ cmd: '', args: [], text: '' });
+
 export function splitSegments(line, dialect = 'posix') {
   return segmentsOf(line, dialect).map(s => s.text);
 }
@@ -178,7 +180,10 @@ function segmentsOf(line, dialect) {
     if (ch in CLOSER) {
       const splits = opensGroup(cur);
       groups.push({ closer: CLOSER[ch], splits });
-      if (splits) { emit(); pipedFrom = undefined; } else cur += ch;
+      if (!splits) { cur += ch; continue; }
+      const intoGroup = !cur.trim() && pipedFrom;
+      emit();
+      pipedFrom = intoGroup ? UNSEEN_PIPE_SOURCE : undefined;
       continue;
     }
     if (ch === groups.at(-1)?.closer) {
@@ -190,7 +195,7 @@ function segmentsOf(line, dialect) {
       const pipe = line[i + 1] !== '|';
       if (!pipe) i++;
       const source = emit();
-      pipedFrom = pipe ? source : undefined;
+      pipedFrom = pipe ? source ?? UNSEEN_PIPE_SOURCE : undefined;
       continue;
     }
     if (ch === '&') {
@@ -289,7 +294,7 @@ export function endsInRedirect(segment, dialect = 'posix') {
   return Boolean(m) && m[1] !== ESCAPE[dialect];
 }
 
-const HEREDOC_OPEN = /<<[-~]?[ \t]*(['"]?)([\w.-]+)\1/y;
+const HEREDOC_OPEN = /<<[-~]?[ \t]*(\\|(['"]))?([\w.-]+)\2/y;
 
 function heredocWords(text, state) {
   const words = [];
@@ -312,9 +317,23 @@ function heredocWords(text, state) {
     if (text[i + 2] === '<') { i += 2; continue; }
     HEREDOC_OPEN.lastIndex = i;
     const m = HEREDOC_OPEN.exec(text);
-    if (m) { words.push(m[2]); i = HEREDOC_OPEN.lastIndex - 1; }
+    if (m) { words.push({ word: m[3], literal: Boolean(m[1]) }); i = HEREDOC_OPEN.lastIndex - 1; }
   }
   return words;
+}
+
+function substitutionsIn(body) {
+  const found = [];
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] === '\\') { i++; continue; }
+    const dollar = body.startsWith('$(', i);
+    if (!dollar && body[i] !== '`') continue;
+    const close = dollar ? closingParen(body, i + 1) : closingBacktick(body, i);
+    if (close < 0) return [body.slice(i)];
+    found.push(body.slice(i + (dollar ? 2 : 1), close));
+    i = close;
+  }
+  return found;
 }
 
 function terminatorLine(lines, word, after) {
@@ -326,14 +345,21 @@ export function withoutHeredocBodies(line) {
   const out = [...lines];
   const state = { quote: null, parens: 0 };
   for (let n = 0; n < lines.length; n++) {
+    const heredocs = heredocWords(lines[n], state);
+    if (!heredocs.length) continue;
     let end = n;
-    for (const word of heredocWords(lines[n], state)) {
-      end = terminatorLine(lines, word, end);
-      if (end < 0) break;
+    const bodies = heredocs.map(({ word, literal }) => {
+      const from = end + 1;
+      end = end < 0 ? -1 : terminatorLine(lines, word, end);
+      return { from, close: end, literal };
+    });
+    if (end < 0) continue;
+    if (!tokenize(lines[n]).some(w => SHELLS.has(programName(w)))) {
+      for (const { from, close, literal } of bodies) {
+        out.fill('', from, close + 1);
+        if (!literal) out[from] = substitutionsIn(lines.slice(from, close).join('\n')).join('\n');
+      }
     }
-    if (end <= n) continue;
-    const executed = tokenize(lines[n]).some(w => SHELLS.has(programName(w)));
-    if (!executed) out.fill('', n + 1, end + 1);
     n = end;
   }
   return out.join('\n');
@@ -379,7 +405,7 @@ export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shell
     const expressions = new Set(parsed.slice(1).flatMap((w, i) => (w.expression ? [i] : [])));
     const expands = new Set(parsed.slice(1).flatMap((w, i) => (w.expands ? [i] : [])));
     if (hidden) { out.push({ cmd, args, expressions, expands, text: segment, dialect, env, scope, hidden }); continue; }
-    const command = { cmd, program: parsed[0].text, args, expressions, expands, text: segment, dialect, env, scope, movesDir, pipedFrom: commandOf.get(part.pipedFrom) };
+    const command = { cmd, program: parsed[0].text, args, expressions, expands, text: segment, dialect, env, scope, movesDir, pipedFrom: part.pipedFrom && (commandOf.get(part.pipedFrom) ?? UNSEEN_PIPE_SOURCE) };
     const unreadableFrom = at => args.some((a, i) => i >= at && (expressions.has(i) || UNRESOLVED.test(a)));
     if (depth < 3 && SHELLS.has(cmd)) {
       const at = args.findIndex(a => /^(-c|-command|\/c|-encodedcommand)$/i.test(a));

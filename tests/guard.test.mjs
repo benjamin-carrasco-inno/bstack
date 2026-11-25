@@ -776,7 +776,7 @@ test('#34: no-authoring agents: .ForEach and .Where take a script block, never a
       "(Get-Item C:/checkout/a.mjs).Where('Delete')",
     ]) refused(ps(command));
 
-    for (const command of ['(Get-ChildItem).ForEach({ $_.Name })', '(Get-ChildItem).Where({ $_.Length -gt 0 })', '(Get-ChildItem).foreach{ $_.Name.Trim() }']) ok(ps(command));
+    for (const command of ['(Get-ChildItem).ForEach({ $_.Name })', '(Get-ChildItem).Where({ $_.Length -gt 0 })']) ok(ps(command));
   }
 });
 

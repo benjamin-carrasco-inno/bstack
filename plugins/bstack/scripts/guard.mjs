@@ -118,7 +118,7 @@ function located(commands, start, host) {
   const placed = new Map();
   return commands.map(c => {
     const shell = shellState(scopes, c.scope ?? '', start);
-    const at = { ...c, cwd: shell.here.dir, cwdKnown: shell.here.known, env: { ...shell.env, ...c.env }, pipedFrom: placed.get(c.pipedFrom) };
+    const at = { ...c, cwd: shell.here.dir, cwdKnown: shell.here.known, env: { ...shell.env, ...c.env }, pipedFrom: placed.get(c.pipedFrom) ?? c.pipedFrom };
     placed.set(c, at);
     changeDir(shell, c, host);
     setVariables(shell.env, c);
@@ -354,23 +354,35 @@ const POSIX_READ_LIMITS = {
   rg: args => args.find(a => /^--pre(-glob)?(=|$)/.test(a)),
   sort: args => args.find(a => /^(-[a-zA-Z]*o|--output)/.test(a)),
   uniq: args => args.filter(a => !a.startsWith('-')).length > 1 && 'with an output file',
-  set: args => args.find(a => !/^([-+][a-zA-Z]*|pipefail|errexit|nounset|xtrace)$/.test(a)),
-  export: args => args.find(a => !/^-?[A-Za-z_]\w*(=.*)?$/s.test(a) || RISKY_VARIABLE.test(a.split('=')[0])),
+  set: args => args.find(a => !/^([-+][euxvo]+|pipefail|errexit|nounset|xtrace)$/.test(a)),
+  export: args => args.find(a => !safeVariable(a.split('=')[0])),
 };
 
+const SAFE_VARIABLES = nameSet('CI NODE_ENV FORCE_COLOR NO_COLOR TERM LANG LC_ALL TZ DEBUG');
+const safeVariable = name => SAFE_VARIABLES.has(name.toUpperCase());
+const inEnvironment = (name, host) => Object.keys(host.env ?? {}).some(key => key.toUpperCase() === name.toUpperCase());
+
+function environmentRule(c, ctx) {
+  const names = Object.keys(c.env).filter(name => !safeVariable(name));
+  const exported = c.cmd === '' ? names.find(name => /[A-Z]/.test(name) || inEnvironment(name, ctx.host)) : names[0];
+  return exported ? refuse(ctx.agent, `setting ${exported}, which can change what a command runs or where it writes`, `Set only ${[...SAFE_VARIABLES].join(', ')}.`) : null;
+}
+
 const FILTERS = ['filter', 'include', 'exclude', 'credential'];
-const CONTENT = { data: ['value', 'encoding', 'stream', ...FILTERS], content: true };
+const COMMON_VALUED = ['erroraction', 'ea', 'warningaction', 'wa', 'informationaction', 'infa', 'outvariable', 'ov', 'errorvariable', 'ev',
+  'warningvariable', 'wv', 'informationvariable', 'iv', 'pipelinevariable', 'pv', 'outbuffer', 'ob'];
+const CONTENT = { data: ['value', 'encoding', 'stream', ...FILTERS], content: true, piped: ['path'] };
 const POWERSHELL_WRITERS = {
-  'remove-item': { data: ['stream', ...FILTERS] },
-  'copy-item': { data: FILTERS },
-  'move-item': { data: FILTERS },
+  'remove-item': { data: ['stream', ...FILTERS], piped: ['path'] },
+  'copy-item': { data: FILTERS, piped: ['path', 'destination'] },
+  'move-item': { data: FILTERS, piped: ['path', 'destination'] },
   'rename-item': { data: ['credential'] },
   'new-item': { data: ['itemtype', 'credential'] },
   'set-content': CONTENT,
   'add-content': CONTENT,
-  'clear-content': { data: ['stream', ...FILTERS] },
-  'out-file': { data: ['encoding', 'inputobject', 'width'] },
-  'tee-object': { data: ['inputobject', 'variable'] },
+  'clear-content': { data: ['stream', ...FILTERS], piped: ['path'] },
+  'out-file': { data: ['encoding', 'inputobject', 'width'], piped: [] },
+  'tee-object': { data: ['inputobject', 'variable'], piped: [] },
 };
 const POWERSHELL_WRITER_ALIASES = {
   rm: 'remove-item', ri: 'remove-item', del: 'remove-item', erase: 'remove-item', rd: 'remove-item', rmdir: 'remove-item',
@@ -382,24 +394,27 @@ const POWERSHELL_PATH_TAKERS = { ...POWERSHELL_WRITERS, 'set-item': CONTENT, 'cl
 const POWERSHELL_PATH_TAKER_ALIASES = { ...POWERSHELL_WRITER_ALIASES, si: 'set-item', cli: 'clear-item' };
 const WRITERS = { posix: nameSet('rm rmdir mkdir cp mv touch tee'), cmd: nameSet('del erase rd rmdir md mkdir copy move ren') };
 
-const RISKY_VARIABLE = /^(GIT_\w*|PATH|PATHEXT|\w*_OPTIONS|LD_\w+|DYLD_\w+|BASH_ENV|ENV|\w*PAGER|\w*EDITOR|PYTHONSTARTUP|PYTHONPATH|NODE_PATH|COMSPEC|SHELLOPTS|PS4|PROMPT_COMMAND)$/i;
 const EXPRESSION_START = /^([$'"@(\[\d-]|\.(?![\\/.\s]))/;
 const POWERSHELL_ASSIGNMENT = /^\$\{?([\w:]+)\}?\s*(?:[+\-*/%]|\?\?)?=(?!=)\s*(.*)$/s;
 const POWERSHELL_OPERATOR = /^-[ci]?(eq|ne|gt|ge|lt|le|like|notlike|match|notmatch|replace|split|join|contains|notcontains|in|notin|is|isnot|as|and|or|xor|not|band|bor|bxor|bnot|shl|shr|f)$/i;
 const CALL_OPERATOR = /(^|[\n;|({"])\s*[&.]\s*['"$(@]/;
 const PURE_TYPE = /^\[(System\.)?(IO\.Path|Math|String|Convert|Text\.RegularExpressions\.Regex|Regex|DateTime|TimeSpan|Guid|Int32|Int64|int|long|char|bool)\]$/i;
 const PURE_METHODS = nameSet(`trim trimstart trimend split substring tolower toupper tolowerinvariant toupperinvariant contains startswith endswith
-  indexof lastindexof padleft padright equals tostring gettype where foreach`);
+  indexof lastindexof padleft padright equals tostring gettype`);
+const SCRIPT_BLOCK_METHODS = nameSet('where foreach');
+const MEMBER_ASSIGNMENT = /^([^=]*?[\w)\]}])?\s*(\.\s*\w+|\[[^\]]*\])\s*(?:[+\-*/%]|\?\?)?=(?!=)/;
+const DEFAULT_PARAMETERS = /(^|:)PSDefaultParameterValues$/i;
 const withoutStrings = text => text.replace(/'(?:[^']|'')*'|"(?:[^"`]|`.)*"/gs, "''");
 
 function noAuthoringRule(line, dialect, cwd, agent, root, host) {
   const text = withoutHeredocBodies(line);
   const ctx = { agent, root, host };
   if (dialect === 'powershell' && CALL_OPERATOR.test(text)) return refuse(agent, 'the call operator & or dot-sourcing of a string, variable or expression', 'Name the command directly.');
-  const commands = located(commandsIn(text, 0, dialect), cwd, host);
+  const parsed = commandsIn(text, 0, dialect);
+  const commands = located(parsed, cwd, host);
   for (const [k, c] of commands.entries()) {
     const target = k > 0 && endsInRedirect(commands[k - 1].text, commands[k - 1].dialect) && words(c.text, c.dialect).length === 1;
-    const reason = (target ? null : agentCommandRule(c, ctx)) ?? redirectRule(c, ctx, commands[k + 1]);
+    const reason = (target ? null : environmentRule(parsed[k], ctx) ?? agentCommandRule(c, ctx)) ?? redirectRule(c, ctx, commands[k + 1]);
     if (reason) return reason;
   }
   for (const inner of quotedSubstitutions(text, dialect)) {
@@ -430,8 +445,6 @@ function quotedSubstitutions(text, dialect) {
 
 function agentCommandRule(c, ctx) {
   const ps = c.dialect === 'powershell';
-  const risky = Object.keys(c.env).find(name => RISKY_VARIABLE.test(name));
-  if (risky) return refuse(ctx.agent, `setting ${risky}, which changes what the next command runs or where git writes`);
   return (ps ? dotnetRule(c.text, ctx.agent) : null) ?? (ps && EXPRESSION_START.test(c.text) ? expressionRule(c, ctx) : commandRule(c, ctx));
 }
 
@@ -440,8 +453,9 @@ function dotnetRule(text, agent) {
   for (const m of code.matchAll(/(\[[\w.]+\])?\s*::\s*(\w*)/g)) {
     if (!PURE_TYPE.test(m[1] ?? '')) return refuse(agent, `the .NET or provider call ${m[0].trim()}`, 'Use a cmdlet from the list.');
   }
-  for (const m of code.matchAll(/\.\s*([A-Za-z_]\w*)\s*\(/g)) {
-    if (!PURE_METHODS.has(m[1].toLowerCase())) return refuse(agent, `the method call .${m[1]}()`, 'Use a cmdlet from the list.');
+  for (const m of code.matchAll(/\.\s*([A-Za-z_]\w*)\s*\(\s*(\{)?/g)) {
+    const name = m[1].toLowerCase();
+    if (!PURE_METHODS.has(name) && !(SCRIPT_BLOCK_METHODS.has(name) && m[2])) return refuse(agent, `the method call .${m[1]}()`, 'Use a cmdlet from the list; .ForEach and .Where take only a script block.');
   }
   return null;
 }
@@ -450,11 +464,13 @@ function expressionRule(c, ctx) {
   const set = POWERSHELL_ASSIGNMENT.exec(c.text);
   if (set) {
     const variable = /^env:(\w+)$/i.exec(set[1]);
-    if (variable && RISKY_VARIABLE.test(variable[1])) return refuse(ctx.agent, `setting $env:${variable[1]}, which changes what the next command runs or where git writes`);
+    if (variable && !safeVariable(variable[1])) return refuse(ctx.agent, `setting $env:${variable[1]}, which can change what a command runs or where it writes`, `Set only ${[...SAFE_VARIABLES].join(', ')}.`);
+    if (DEFAULT_PARAMETERS.test(set[1])) return refuse(ctx.agent, `setting $${set[1]}, which changes where cmdlets write`);
     const value = set[2].trim();
     if (!value || EXPRESSION_START.test(value)) return value ? expressionRule({ ...c, text: value }, ctx) : null;
     return commandsIn(value, 1, 'powershell').map(inner => agentCommandRule({ ...c, ...inner, env: c.env }, ctx)).find(Boolean) ?? null;
   }
+  if (MEMBER_ASSIGNMENT.test(withoutStrings(c.text))) return refuse(ctx.agent, 'assigning to a property or element of an object, which can change a file or a setting', 'Read the value instead.');
   const [first, second] = words(c.text, 'powershell');
   if (!second || first.text.endsWith(',') || /^[,+*/%=!<>.|]/.test(second.text) || POWERSHELL_OPERATOR.test(second.text) || /^-?\d/.test(second.text)) return null;
   return refuse(ctx.agent, `${first.text} ${second.text} runs a value as a command`, 'Name the command directly.');
@@ -479,6 +495,8 @@ function writerRule(c, spec, ctx) {
   const targets = writerTargets(c, spec);
   if (typeof targets === 'string') return refuse(ctx.agent, `${c.cmd} ${targets} glues a value to an option`, 'Write the option and its value as separate words.');
   if (ps && !targets.length) return refuse(ctx.agent, `${c.cmd} without a literal path takes its targets from the pipeline`, 'Name the path.');
+  const unnamed = ps && c.pipedFrom &&(spec.piped ? spec.piped.find(param => !targets.some(t => t.param === param)) : 'target');
+  if (unnamed) return refuse(ctx.agent, `${c.cmd} fed from a pipeline can take its ${unnamed} from the pipeline`, 'Name every path on the command line with -Path or -LiteralPath (and -Destination), or do not pipe into it.');
   for (const { text, expression } of targets) {
     const reason = UNRESOLVABLE[c.dialect]?.test(text) ? refuse(ctx.agent, `${c.cmd} ${text}: the path cannot be resolved before it runs`, 'Use a literal path.') : insideRule(c, ctx, text, expression);
     if (reason) return reason;
@@ -489,25 +507,31 @@ function writerRule(c, spec, ctx) {
 function writerTargets(c, spec) {
   const ps = c.dialect === 'powershell';
   const namedPath = ps && c.args.some(a => namesParameter(a.split(':')[0], PATH_NAMES, 'powershell'));
+  const dataNames = [...(spec.data ?? []), ...COMMON_VALUED];
   const out = [];
-  let positional = 0;
+  let positional = namedPath ? 1 : 0;
   for (let i = 0; i < c.args.length; i++) {
     const a = c.args[i];
     const expression = c.expressions?.has(i) ?? false;
     if (a === '--' || (c.dialect === 'cmd' && /^\/[a-z?]$/i.test(a))) continue;
     if (expression || !a.startsWith('-') || a === '-') {
-      if (!(spec.content && positional++ >= (namedPath ? 0 : 1))) out.push({ text: a, expression });
+      const param = POSITIONAL_PARAMETERS[positional++];
+      if (!(spec.content && param !== 'path')) out.push({ text: a, expression, param });
       continue;
     }
     const option = /^--?([a-z][\w-]*)(?:[=:](.*))?$/is.exec(a);
     if (!option) return a;
-    const data = ps && namesParameter(`-${option[1]}`, spec.data ?? [], 'powershell');
-    if (option[2] !== undefined) { if (!data) out.push({ text: option[2], expression }); continue; }
+    const flag = `-${option[1]}`;
+    const data = ps && namesParameter(flag, dataNames, 'powershell');
+    const param = namesParameter(flag, PATH_NAMES, 'powershell') ? 'path' : namesParameter(flag, ['destination'], 'powershell') ? 'destination' : undefined;
+    if (option[2] !== undefined) { if (!data) out.push({ text: option[2], expression, param }); continue; }
     if (!ps || namesParameter(a, POWERSHELL_SWITCHES, 'powershell')) continue;
-    if (++i < c.args.length && !data) out.push({ text: c.args[i], expression: c.expressions?.has(i) ?? false });
+    if (++i < c.args.length && !data) out.push({ text: c.args[i], expression: c.expressions?.has(i) ?? false, param });
   }
   return out;
 }
+
+const POSITIONAL_PARAMETERS = ['path', 'destination'];
 
 const UNRESOLVABLE = {
   posix: /[{}]|^~[^/]/,
@@ -555,7 +579,7 @@ const VERSION = /^(--version|-v|-V)$/;
 
 function nodeProblem(args) {
   if (args.length === 1 && VERSION.test(args[0])) return null;
-  const inline = args.find(a => /^(-e|--eval|-p|--print|-i|--interactive|-|--input-type)(=|$)/.test(a) || a.includes('data:'));
+  const inline = args.find(a => a === '-' || /^-[a-zA-Z]*[epi]/.test(a) || /^--(eval|print|interactive|input-type)(=|$)/.test(a) || a.includes('data:'));
   if (inline) return `${inline} runs code from the command line or stdin`;
   return args.includes('--test') || args.some(a => !a.startsWith('-')) ? null : 'without a script file reads code from stdin';
 }
@@ -600,14 +624,27 @@ function sqliteRule(c, ctx) {
 
 const LOCAL_URL = /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])(:\d+)?([/?#]|$)/i;
 const CURL_FLAGS = /^-[sSiIvfLkGg46N]+$|^--(silent|show-error|include|head|verbose|fail|fail-with-body|location|insecure|get|compressed|no-buffer|http1\.1|http2|globoff|no-progress-meter)$/;
-const CURL_VALUED = /^(-[XHdmwubeA]|--(request|header|data|data-raw|data-binary|data-urlencode|json|max-time|write-out|user|cookie|connect-timeout|retry|user-agent|referer))$/;
+const CURL_VALUED = /^(-[XHdmubeA]|--(request|header|data|data-raw|data-binary|data-urlencode|json|max-time|user|cookie|connect-timeout|retry|user-agent|referer))$/;
 const localOnly = (ctx, url) => (LOCAL_URL.test(url) ? null : refuse(ctx.agent, `a request to ${url}; only localhost is on the list`, 'Exercise the app on localhost, never a production URL.'));
+
+function writeOutFormat(args, i) {
+  const a = args[i];
+  if (a.startsWith('--write-out=')) return a.slice('--write-out='.length);
+  if (/^-w./.test(a)) return a.slice(2);
+  return /^(-w|--write-out)$/.test(a) ? args[i + 1] ?? '' : null;
+}
 
 function curlRule(c, ctx) {
   for (let i = 0; i < c.args.length; i++) {
     const a = c.args[i];
+    const format = writeOutFormat(c.args, i);
+    if (format !== null) {
+      if (/%output|^@/i.test(format)) return refuse(ctx.agent, `curl ${a} with %output or a format file, which can write a file`, 'Write the format inline and print it to stdout.');
+      if (/^(-w|--write-out)$/.test(a)) i++;
+      continue;
+    }
     const [opt, ...glued] = a.split('=');
-    if (CURL_FLAGS.test(a) || /^-[XHdmwubeA]./.test(a) || (glued.length && CURL_VALUED.test(opt))) continue;
+    if (CURL_FLAGS.test(a) || /^-[XHdmubeA]./.test(a) || (glued.length && CURL_VALUED.test(opt))) continue;
     if (CURL_VALUED.test(a)) { i++; continue; }
     const output = /^(-o|--output)$/.test(opt) ? (glued.length ? glued.join('=') : c.args[++i]) : null;
     if (output !== null) { const reason = insideRule(c, ctx, output ?? '', false); if (reason) return reason; continue; }
@@ -650,7 +687,28 @@ function foreachRule(c, ctx) {
 }
 
 const GIT_READS = nameSet(`status log show diff rev-parse merge-base ls-files ls-tree cat-file blame grep shortlog describe rev-list show-ref
-  for-each-ref name-rev ls-remote range-diff whatchanged count-objects check-ignore check-attr var version`);
+  for-each-ref name-rev range-diff whatchanged count-objects check-ignore check-attr var version`);
+const LS_REMOTE_FLAGS = /^(--heads|-h|--tags|-t|--branches|-b|--refs|--quiet|-q|--exit-code|--get-url|--symref|--sort=.+)$/;
+const FETCH_FLAGS = /^(--all|--prune|-p|--prune-tags|-P|--tags|-t|--no-tags|-n|--quiet|-q|--verbose|-v|--dry-run|--unshallow|--no-recurse-submodules|--(depth|deepen|shallow-since|shallow-exclude|jobs|filter)(=.+)?)$/;
+const CONFIG_ACTIONS = { '--get': 2, '--get-all': 2, '--get-regexp': 2, '--get-urlmatch': 2, '--list': 0, '-l': 0 };
+const CONFIG_SUBCOMMANDS = { get: 1, list: 0 };
+const CONFIG_READ_FLAGS = /^(--show-origin|--show-scope|--name-only|-z|--null|--global|--system|--local|--worktree|--includes|--no-includes|--bool|--int|--bool-or-int|--path|--expiry-date|--all|--regexp|--fixed-value|--(type|default|file|blob|value|url)=.*)$/;
+const CONFIG_READ_VALUED = /^(--type|--default|--file|-f|--blob|--value|--url)$/;
+const onlyFlags = (rest, flags) => rest.every(a => flags.test(a) || !a.startsWith('-'));
+
+function configRead(rest) {
+  const subcommand = Object.hasOwn(CONFIG_SUBCOMMANDS, rest[0] ?? '');
+  const args = subcommand ? rest.slice(1) : rest;
+  const actions = args.filter(a => Object.hasOwn(CONFIG_ACTIONS, a));
+  if (actions.length !== (subcommand ? 0 : 1)) return false;
+  let operands = 0;
+  for (let i = 0; i < args.length; i++) {
+    if (CONFIG_READ_VALUED.test(args[i])) i++;
+    else if (!args[i].startsWith('-')) operands++;
+    else if (!Object.hasOwn(CONFIG_ACTIONS, args[i]) && !CONFIG_READ_FLAGS.test(args[i])) return false;
+  }
+  return operands <= (subcommand ? CONFIG_SUBCOMMANDS[rest[0]] : CONFIG_ACTIONS[actions[0]]);
+}
 const BRANCH_LISTING = /^(--show-current|--list|-l|-[arv]+|--all|--remotes|--verbose|--contains|--no-contains|--merged|--no-merged|--points-at|--sort(=.*)?|--format(=.*)?|--color(=.*)?|--no-color|--column(=.*)?|--no-column|--abbrev(=.*)?|--no-abbrev|-i|--ignore-case|--omit-empty)$/;
 const BRANCH_VALUED = /^(--contains|--no-contains|--merged|--no-merged|--points-at|--sort|--format)$/;
 const GIT_READ_FORMS = {
@@ -658,10 +716,11 @@ const GIT_READ_FORMS = {
   branch: rest => rest.every((a, i) => BRANCH_LISTING.test(a) || BRANCH_VALUED.test(rest[i - 1] ?? '') || (rest.some(f => f === '--list' || f === '-l') && !a.startsWith('-'))),
   worktree: rest => rest[0] === 'list',
   stash: rest => /^(list|show)$/.test(rest[0] ?? ''),
-  remote: rest => !rest[0] || /^(-v|--verbose|show|get-url)$/.test(rest[0]),
-  config: rest => /^(get|list)$/.test(rest[0] ?? '') || rest.some(a => /^(--get(-all|-regexp|-urlmatch)?|--list|-l)$/.test(a)),
+  remote: rest => !rest.length || (rest.length === 1 && /^(-v|--verbose)$/.test(rest[0])) || (/^(get-url|show)$/.test(rest[0]) && onlyFlags(rest.slice(1), /^(--push|--all|-n)$/)),
+  config: configRead,
   reflog: rest => !rest[0] || rest[0] === 'show' || rest[0].startsWith('-'),
-  fetch: rest => !rest.some(a => a.includes(':') || /^(--upload-pack|-u$|--update-head-ok)/.test(a)),
+  'ls-remote': rest => onlyFlags(rest, LS_REMOTE_FLAGS),
+  fetch: rest => onlyFlags(rest, FETCH_FLAGS) && !rest.some(a => a.includes(':')),
 };
 const GIT_IN_WORKTREE = {
   checkout: rest => (rest.includes('--') || rest.includes('--detach')) && !rest.some(a => /^(-[bB]|--orphan)/.test(a)),
@@ -717,7 +776,7 @@ function agentFileRule(input, agent, root, host) {
 }
 
 const PATH_NAMES = ['path', 'literalpath', 'lp', 'pspath'];
-const POWERSHELL_SWITCHES = ['force', 'nonewline', 'passthru', 'append', 'noclobber', 'whatif', 'confirm', 'asbytestream', 'recurse'];
+const POWERSHELL_SWITCHES = ['force', 'nonewline', 'passthru', 'append', 'noclobber', 'whatif', 'confirm', 'asbytestream', 'recurse', 'verbose', 'debug'];
 
 function namesParameter(flag, names, dialect) {
   const name = /^-([a-z]+)$/i.exec(flag)?.[1].toLowerCase();
