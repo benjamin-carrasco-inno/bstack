@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { decide } from '../plugins/bstack/scripts/guard.mjs';
-import { handle } from '../plugins/bstack/scripts/verdict.mjs';
+import { deliver, handle } from '../plugins/bstack/scripts/verdict.mjs';
 import { mergeInChain, sameChange } from '../plugins/bstack/scripts/lib/carry.mjs';
 import { commentBody } from '../plugins/bstack/scripts/lib/verdicts.mjs';
 import { tierZeroDocs } from '../plugins/bstack/scripts/risk-tier.mjs';
@@ -294,4 +294,27 @@ test('the guard carries a verdict the hook posted after a merge-in to the new he
   const github = fakeGitHub({ diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [{ body: out.post.body, createdAt: '2026-11-25T10:00:00Z' }] });
   assert.equal(merge(github), null);
   assert.ok(github.posted[0].body.includes(`- reviewer verdict PASS, judged on ${JUDGED}`), github.posted[0].body);
+});
+
+test('a verdict saved during an outage after a merge-in is posted and carried at the next merge', () => {
+  const saved = [];
+  const github = fakeGitHub({ diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [] });
+  const out = deliver(reviewedAt(), { gh: github.deps.gh, read: () => [], save: e => saved.push(e), now: () => '2026-11-25T10:00:00Z' });
+  assert.match(out.systemMessage, /saved locally/);
+  const removed = [];
+  github.deps.pending = { list: () => saved.map((entry, i) => ({ file: `f${i}`, entry })), remove: file => removed.push(file) };
+  assert.equal(merge(github), null);
+  assert.equal(github.posted[0].body, saved[0].body);
+  assert.ok(github.posted[1].body.includes(`- reviewer verdict PASS, judged on ${JUDGED}`), github.posted[1]?.body);
+  assert.deepEqual(removed, ['f0']);
+});
+
+test('a verdict saved after a merge-in is dropped once the head moves again', () => {
+  const saved = [];
+  const before = fakeGitHub({ diffs: {}, comments: [] });
+  deliver(reviewedAt(), { gh: before.deps.gh, read: () => [], save: e => saved.push(e) });
+  const github = fakeGitHub({ head: EXTRA, commits: [...MERGED_ONCE, commit(EXTRA, MERGE)], diffs: { [EXTRA]: MERGED_CODE }, comments: [] });
+  github.deps.pending = { list: () => saved.map((entry, i) => ({ file: `f${i}`, entry })), remove: () => {} };
+  assert.match(merge(github), /no reviewer verdict/);
+  assert.equal(github.posted.length, 0);
 });
