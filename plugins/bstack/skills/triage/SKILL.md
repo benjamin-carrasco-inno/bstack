@@ -26,7 +26,7 @@ Issues labelled `plan:*` belong to a map or spec (`bstack:plan`) and are not tri
 3. **Check the claim.** A bug is reproduced on the surface the reporter used (`bstack:verify`, test data only). Record what happened: confirmed with the code path, not reproduced, or too little detail. A confirmed reproduction makes the best ticket.
 4. **Grill if needed.** When the request is unclear and the user owns the decision, grill them (`bstack:plan`). Bigger than one PR: it becomes a spec or a map. Remove this issue's state label, comment the link, and list it under the spec's Sources; it closes with the spec.
 5. **Write the outcome** as one comment and set the labels:
-   - `ready-for-agent`: the ticket shape from `bstack:plan` ([tickets](../plan/tickets.md)): current and wanted behaviour, acceptance criteria a reviewer can check, out of scope. Describe behaviour and contracts, not files or lines.
+   - `ready-for-agent`: the ticket shape from `bstack:plan` ([tickets](../plan/tickets.md)): current and wanted behaviour, acceptance criteria a reviewer can check, `Expected tier`, out of scope. Describe behaviour and contracts, not files or lines.
    - `ready-for-human`: the same, plus why an agent cannot do it.
    - `needs-info`: what is established, and specific questions for the reporter.
    - `wontfix`: the reason, then close.
