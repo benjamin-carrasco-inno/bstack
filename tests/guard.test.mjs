@@ -1106,16 +1106,23 @@ test('glued, = and --notes-file forms of a body file are read', () => {
   blocked({ ...shell('gh api repos/o/r/issues/5/comments -fbody=hi'), agent_type: 'bstack:reviewer' });
 });
 
-test('a wrapper that changes directory moves where the body file is read', () => {
-  const at = file => onHost(LINUX_HOST, { ...deps(), readFile: f => (f === file ? `bstack-verdict: PASS sha=${SHA}` : 'just a note') });
-  blocked(shell('env -C /evil gh pr comment 5 --body-file v.md'), at('/evil/v.md'));
-  blocked(shell('sudo -D /evil gh pr comment 5 --body-file v.md'), at('/evil/v.md'));
-  allowed(shell('env -C /evil gh pr comment 5 --body-file v.md'), at('/repo/v.md'));
-  blocked(shell('env -C "$D" gh pr comment 5 --body-file v.md'), at('/repo/v.md'));
-  blocked(shell('env -C /tmp -C evil gh pr comment 5 --body-file v.md'), at('/repo/evil/v.md'));
-  blocked(shell('sudo -D /tmp -D evil gh pr comment 5 --body-file v.md'), at('/repo/evil/v.md'));
-  allowed(shell('env -C /tmp -C evil gh pr comment 5 --body-file v.md'), at('/tmp/evil/v.md'));
-  blocked(shell('env -C /tmp sudo -D evil gh pr comment 5 --body-file v.md'), at('/tmp/evil/v.md'));
+test('a body source behind a wrapper that changes directory is refused, wherever the verdict file sits', () => {
+  const verdictIn = dir => onHost(LINUX_HOST, { ...deps(), readFile: f => (f === `${dir}/v.md` ? `bstack-verdict: PASS sha=${SHA}` : 'just a note') });
+  const movedBody = /does not follow the directory change.*Run gh from the target directory with a literal path/s;
+  for (const command of ['env -C /evil gh pr comment 5 --body-file v.md', 'sudo -D /evil gh pr comment 5 --body-file v.md', 'env -C "$D" gh pr comment 5 --body-file v.md',
+    'env --chdir=/evil gh pr comment 5 -F v.md', 'sudo --chdir /evil gh release create v1 --notes-file v.md', 'env -C /evil gh api repos/o/r/issues/5/comments -F body=@v.md',
+    'env -C /tmp -C evil gh pr comment 5 --body-file v.md', 'sudo -D /tmp -D evil gh pr comment 5 --body-file v.md', 'env -C /tmp sudo -D evil gh pr comment 5 --body-file v.md',
+    'env -C /evil gh pr comment 5 -F - < v.md', '< v.md env -C /evil gh pr comment 5 -F -', 'sudo -D /evil gh pr comment 5 --body-file - < v.md',
+    'env -C /evil cat < v.md | gh pr comment 5 -F -', 'env -C /evil cat v.md | gh pr comment 5 -F -',
+    "env -C /evil bash -c 'gh pr comment 5 --body-file v.md'", "env -C /evil sh -c 'gh pr comment 5 --body-file v.md'", "sudo -D /evil bash -c 'cat v.md | gh pr comment 5 -F -'"]) {
+    for (const dir of ['/repo', '/evil', '/tmp/evil', '/repo/evil']) assert.match(decide(shell(command), verdictIn(dir)) ?? '', movedBody, `${command} with the verdict in ${dir}`);
+  }
+  const files = deps({ files: { 'ok.md': 'just a note' } });
+  allowed(shell('gh pr comment 5 -F - < ok.md'), files);
+  allowed(shell('cat ok.md | gh pr comment 5 -F -'), files);
+  allowed(shell('env FOO=1 gh pr comment 5 --body-file ok.md'), files);
+  allowed(shell('sudo -u x gh pr comment 5 --body-file ok.md'), files);
+  allowed(shell('env -C /evil gh pr comment 5 --body "just a note"'), files);
 });
 
 test('a body file the guard cannot read is refused', () => {
