@@ -48,13 +48,14 @@ const isProse = p => PROSE_EXTENSION.test(p) && !BUILD_TXT.test(p) && !COMMANDS.
 const CLAUDE_CODE_FRONTMATTER = /^﻿?---\s*\n([\s\S]*?)---\s*\n?/d;
 const CLAUDE_CODE_EXECUTED_FENCE = /```!\s*\n?([\s\S]*?)\n?```/dg;
 const LINE_WITH_INLINE_COMMAND = /^(.*!`.*)$/dgm;
+const INLINE_COMMAND_UP_TO_NEXT_BACKTICK = /!`(?=([^`]*))/dg;
 
 function executedRegions(text) {
   const frontmatter = text.match(CLAUDE_CODE_FRONTMATTER);
   const bodyStart = frontmatter ? frontmatter[0].length : 0;
   const fences = [...text.slice(bodyStart).matchAll(CLAUDE_CODE_EXECUTED_FENCE)].map(m => m.indices[1].map(i => i + bodyStart));
-  const inlineLines = [...text.matchAll(LINE_WITH_INLINE_COMMAND)].map(m => m.indices[1]);
-  return [...(frontmatter ? [frontmatter.indices[1]] : []), ...fences, ...inlineLines];
+  const inline = [LINE_WITH_INLINE_COMMAND, INLINE_COMMAND_UP_TO_NEXT_BACKTICK].flatMap(re => [...text.matchAll(re)].map(m => m.indices[1]));
+  return [...(frontmatter ? [frontmatter.indices[1]] : []), ...fences, ...inline];
 }
 
 function executedMatch(head, line, re) {
