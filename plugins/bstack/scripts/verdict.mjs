@@ -146,7 +146,7 @@ export function handle(input, gh, read = readTranscript) {
   }
   const body = commentBody(kind, report.result, report.sha, text);
   if ((pr.comments ?? []).some(c => String(c.body ?? '').trim() === body.trim())) return {};
-  return { post: { pr: pr.url, repo, body, kind, number: String(pr.number), sha: report.sha, result: report.result, report: text } };
+  return { post: { pr: pr.url, repo, body, kind, number: String(pr.number), sha: report.sha, head: pr.headRefOid, result: report.result, report: text } };
 }
 
 export const commentArgs = (post, file) => ['pr', 'comment', post.pr, ...repoArgs(post.repo), '--body-file', file];
@@ -200,8 +200,8 @@ export function deliver(input, { gh, read = readSettled, save = pendingStore().s
       postComment(input.cwd, out.post, gh);
       return { systemMessage: `bstack: verdict posted on ${out.post.pr}` };
     } catch {
-      const { kind, repo, number, sha, result, report } = out.post;
-      unposted = { kind, repo: repo ?? repoOfUrl(out.post.pr), pr: number, sha, result, report };
+      const { kind, repo, number, sha, head, result, report } = out.post;
+      unposted = { kind, repo: repo ?? repoOfUrl(out.post.pr), pr: number, sha, head, result, report };
     }
   }
   if (!unposted) return null;

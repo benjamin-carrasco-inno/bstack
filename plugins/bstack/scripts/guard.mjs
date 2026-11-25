@@ -1167,15 +1167,15 @@ function postCarried(pr, risk, results, cwd, deps) {
   return null;
 }
 
-// Verdicts the hook saved while GitHub did not answer: post the ones for this head, drop older heads,
-// empty entries and entries a verdict of the same kind posted since then has replaced.
+// Verdicts the hook saved while GitHub did not answer: post the ones it accepted for this head, drop
+// other heads, empty entries and entries a verdict of the same kind posted since then has replaced.
 function postSaved(pr, cwd, deps) {
   const repo = repoOfUrl(pr.url);
   if (!repo) return null;
   pr.comments ??= [];
   for (const { file, entry } of deps.pending.list(repo, String(pr.number))) {
     const body = String(entry.body ?? '');
-    if (entry.sha !== pr.headRefOid || !(entry.kind in KINDS) || !body.trim() || replaced(entry, pr.comments)) { deps.pending.remove(file); continue; }
+    if ((entry.head ?? entry.sha) !== pr.headRefOid || !(entry.kind in KINDS) || !body.trim() || replaced(entry, pr.comments)) { deps.pending.remove(file); continue; }
     if (!pr.comments.some(c => String(c.body ?? '').trim() === body.trim())) {
       try { deps.postComment(cwd, pr.url, body); }
       catch (e) { return `bstack could not post the ${entry.kind} it saved for ${pr.headRefOid.slice(0, 7)} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
