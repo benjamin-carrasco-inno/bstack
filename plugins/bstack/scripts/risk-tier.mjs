@@ -30,7 +30,7 @@ const PATH_RULES = [
   [/(import|sync|upsert|ingest|backfill)[^/]*\.(py|rs|js|mjs|ts)$/i, 'importer or sync code'],
 ];
 
-const SAME_ORIGIN_WRITE = /<form\b(?![^>]*\baction\s*=\s*['"]?(?:[a-z][\w+.-]*:|\/\/|\\))[^>]*>|\bfetch\s*\(\s*(['"`])\.?\/(?![/\\])[^'"`]*\1\s*,\s*\{[^{}]*\}\s*\)/gi;
+const SAME_ORIGIN_WRITE = /<form\b(?![^>]*(?:\baction\s*=\s*['"]?(?:[a-z][\w+.-]*:|\/\/|\\)|\bfetch\s*\())[^>]*>|\bfetch\s*\(\s*(['"`])\.?\/(?![/\\])[^'"`]*\1\s*,\s*\{[^{}]*\}\s*\)/gi;
 const SCHEMA_STATEMENT = /\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i;
 
 const ADDED_OR_REMOVED = [
