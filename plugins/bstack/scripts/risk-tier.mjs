@@ -23,14 +23,15 @@ const FIXTURE = /(^|\/)(fixtures|__fixtures__|testdata)\//i;
 const SCHEMA_FILE = /(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i;
 const STYLESHEET = /\.(css|scss|sass|less)$/i;
 
+const LITERAL_ITEM = /^\s*(["'`][^"'`]*["'`]|-?\d[\d_.]*)?\s*,?\s*$/;
 const PATH_RULES = [
   [SCHEMA_FILE, 'schema or migration file'],
   [/(^|\/)n8n\//i, 'n8n flow code (external consumer)'],
-  [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code', { test: q => STYLESHEET.test(q) || runnableTest(q) }],
+  [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code', (q, f) => STYLESHEET.test(q) || (runnableTest(q) && f.removed.every(l => LITERAL_ITEM.test(l)))],
   [/(import|sync|upsert|ingest|backfill)[^/]*\.(py|rs|js|mjs|ts)$/i, 'importer or sync code'],
 ];
 
-const SAME_ORIGIN_WRITE = /<form\b(?![^>]*(?:\baction\s*=\s*['"]?(?:[a-z][\w+.-]*:|\/\/|\\)|\bfetch\s*\())[^>]*>|\bfetch\s*\(\s*(['"`])\.?\/(?![/\\])[^'"`]*\1\s*,\s*\{[^{}]*\}\s*\)/gi;
+const SAME_ORIGIN_WRITE = /<form\b(?![^>]{0,1000}?(?:\baction\s*=\s*['"]?\s*(?:[a-z][\w+.-]*:|\/\/|\\)|\bfetch\s*\())[^>]{0,1000}>|\bfetch\s*\(\s*(['"`])\.?\/(?![/\\]|\$\{)[^'"`]{0,1000}\1\s*,\s*\{[^{}]{0,1000}\}\s*\)/gi;
 const SCHEMA_STATEMENT = /\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i;
 
 const ADDED_OR_REMOVED = [
@@ -194,7 +195,7 @@ export function riskTier(diff, { extraPaths = [], readFile } = {}) {
     const sqlLines = [...f.added, ...f.removed];
     const testFixtureSql = testOnly && fixture && paths.every(q => /\.sql$/i.test(q)) && sqlLines.length > 0;
     if (testFixtureSql && sqlLines.some(l => SCHEMA_STATEMENT.test(l))) raise(2, `SQL schema statement: ${p}`);
-    for (const q of paths) for (const [re, why, exempt] of PATH_RULES) if (re.test(q) && !exempt?.test(q) && !(testFixtureSql && re === SCHEMA_FILE)) raise(2, `${why}: ${q}`);
+    for (const q of paths) for (const [re, why, exempt] of PATH_RULES) if (re.test(q) && !exempt?.(q, f) && !(testFixtureSql && re === SCHEMA_FILE)) raise(2, `${why}: ${q}`);
 
     if (isTest && f.deleted) raise(2, `test file deleted: ${p}`);
     if (f.oldPath && runnableTest(paths[1]) && !runnableTest(p)) raise(2, `test file renamed out of the suite: ${paths[1]} -> ${p}`);
@@ -213,7 +214,7 @@ export function riskTier(diff, { extraPaths = [], readFile } = {}) {
     if (CODE.test(p) && !isTest) {
       for (const l of [...f.added, ...f.removed]) {
         if (/^\s*(#|\/\/|\*)/.test(l) || /^\s*@/.test(l)) continue; // comments and decorators
-        for (const [re, why, sameOrigin] of ADDED_OR_REMOVED) if (re.test(sameOrigin ? l.replace(sameOrigin, '') : l)) raise(2, `${why}: ${p}`);
+        for (const [re, why, sameOrigin] of ADDED_OR_REMOVED) if (re.test(l) && (!sameOrigin || re.test(l.replace(sameOrigin, '')))) raise(2, `${why}: ${p}`);
       }
     }
   }
