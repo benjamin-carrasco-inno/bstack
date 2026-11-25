@@ -48,6 +48,8 @@ export const timeOf = c => Date.parse(JUDGED_AT.exec(String(c.body ?? '').split(
 
 export const shaOf = (kind, body) => (String(body ?? '').startsWith(KINDS[kind].tag) ? KINDS[kind].line.exec(String(body))?.groups.sha ?? null : null);
 
+export const ownComments = comments => (comments ?? []).filter(c => c.viewerDidAuthor === true);
+
 export const blockingRounds = comments => new Set((comments ?? [])
   .filter(c => shaOf('interrogate', c.body) && findings(KINDS.interrogate.line.exec(String(c.body))).blocking > 0)
   .map(c => shaOf('interrogate', c.body))).size;

@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ASSIGNMENT, UNRESOLVED, closingBacktick, closingParen, commandsIn, endsInRedirect, loopBodies, parseGit, redirectTargets, tokenize, withoutHeredocBodies, words } from './lib/shell.mjs';
-import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, timeOf, userOkFor } from './lib/verdicts.mjs';
+import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, ownComments, shaOf, timeOf, userOkFor } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
@@ -1050,6 +1050,7 @@ function mergeGate(args, cwd, deps, c, line) {
     return `bstack could not read the PR to check the merge gate (${String(e.message ?? e).split('\n')[0]}). Fix that and retry; the gate fails closed.`;
   }
   if (pr.state && pr.state !== 'OPEN') return null;
+  pr.comments = ownComments(pr.comments);
   const sha = pr.headRefOid;
   const short = sha.slice(0, 7);
   const unposted = postSaved(pr, cwd, deps);
@@ -1179,7 +1180,7 @@ function postSaved(pr, cwd, deps) {
     if (!pr.comments.some(c => String(c.body ?? '').trim() === body.trim())) {
       try { deps.postComment(cwd, pr.url, body); }
       catch (e) { return `bstack could not post the ${entry.kind} it saved for ${pr.headRefOid.slice(0, 7)} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
-      pr.comments.push({ body, createdAt: new Date().toISOString() });
+      pr.comments.push({ body, createdAt: new Date().toISOString(), viewerDidAuthor: true });
     }
     deps.pending.remove(file);
   }
