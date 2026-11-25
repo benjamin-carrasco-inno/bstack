@@ -113,27 +113,48 @@ const unquote = s => {
 };
 const QUOTED = '"(?:[^"\\\\]|\\\\.)*"';
 const HEAD = new RegExp(`^diff --git (${QUOTED}|a/.+?) (${QUOTED}|b/.+)$`);
+const SAME_HALVES = /^diff --git a\/(.+) b\/\1$/;
+const RENAME = /^rename (from|to) (.+)$/;
+const PATCH_SIDE = /^(---|\+\+\+) (.+?)\t?$/;
+
+const headerPaths = line => {
+  const same = SAME_HALVES.exec(line)?.[1];
+  if (same) return [same, same];
+  const head = HEAD.exec(line);
+  return head && [unquote(head[1]).slice(2), unquote(head[2]).slice(2)];
+};
+const patchSidePath = s => s === '/dev/null' ? null : unquote(s).slice(2);
+
+function realPaths({ header, rename, patch }) {
+  const [from, to] = rename.some(p => p !== undefined) ? rename : patch.some(p => p !== undefined) ? patch : header;
+  const path = to ?? from;
+  const old = from ?? to;
+  return { path, oldPath: old === path ? null : old };
+}
 
 export function parseDiff(diff) {
   const files = [];
   let f = null;
   for (const line of String(diff ?? '').split(/\r?\n/)) {
-    const head = HEAD.exec(line);
-    if (head) {
-      const [a, b] = [unquote(head[1]).slice(2), unquote(head[2]).slice(2)];
-      f = { path: b, oldPath: a === b ? null : a, added: [], removed: [], created: false, deleted: false };
+    const header = headerPaths(line);
+    if (header) {
+      f = { header, rename: [undefined, undefined], patch: [undefined, undefined], inHunk: false, added: [], removed: [], created: false, deleted: false };
       files.push(f); continue;
     }
     if (!f) continue;
-    const from = /^rename from (.+)$/.exec(line)?.[1];
-    if (from) f.oldPath = unquote(from) === f.path ? null : unquote(from);
+    const rename = RENAME.exec(line);
+    const side = !f.inHunk && PATCH_SIDE.exec(line);
+    const at = side && (side[1] === '---' ? 0 : 1);
+    if (rename) f.rename[rename[1] === 'from' ? 0 : 1] = unquote(rename[2]);
+    else if (side && f.patch[at] === undefined) f.patch[at] = patchSidePath(side[2]);
+    else if (line.startsWith('@@')) f.inHunk = true;
     else if (line.startsWith('new file mode')) f.created = true;
     else if (line.startsWith('deleted file mode')) f.deleted = true;
     else if (line.startsWith('+++') || line.startsWith('---')) continue;
     else if (line.startsWith('+')) f.added.push(line.slice(1));
     else if (line.startsWith('-')) f.removed.push(line.slice(1));
   }
-  return files;
+  return files.map(({ header, rename, patch, inHunk, ...rest }) => ({ ...realPaths({ header, rename, patch }), ...rest }));
 }
 
 function globToRegex(glob) {

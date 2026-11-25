@@ -365,6 +365,32 @@ test('an octal-escaped non-ASCII path is decoded', () => {
   assert.deepEqual([r?.path, r?.oldPath], ['næw.py', 'old.py']);
 });
 
+const spaced = {
+  modified: ['diff --git a/a b/auth.py b/a b/auth.py', 'index bafc5d9..7a56633 100644', '--- a/a b/auth.py\t', '+++ b/a b/auth.py\t', '@@ -1 +1 @@', '-x=1', '+x=2'],
+  deleted: ['diff --git a/a b/gone.py b/a b/gone.py', 'deleted file mode 100644', 'index 4bcfe98..0000000', '--- a/a b/gone.py\t', '+++ /dev/null', '@@ -1 +0,0 @@', '-d'],
+  created: ['diff --git a/a b/new.py b/a b/new.py', 'new file mode 100644', 'index 0000000..8ba3a16', '--- /dev/null', '+++ b/a b/new.py\t', '@@ -0,0 +1 @@', '+n'],
+  renamed: ['diff --git a/a b/tests/x.test.mjs b/a b/scripts/x.mjs', 'similarity index 100%', 'rename from a b/tests/x.test.mjs', 'rename to a b/scripts/x.mjs'],
+};
+
+test('a rename under a directory ending in a space takes its paths from rename from and rename to', () => {
+  const r = riskTier(spaced.renamed.join('\n'));
+  assert.equal(r.tier, 2);
+  assert.ok(r.reasons.includes('test file renamed out of the suite: a b/tests/x.test.mjs -> a b/scripts/x.mjs'), r.reasons.join('; '));
+});
+
+test('a modification under a directory ending in a space keeps its real path and no old path', () => {
+  const [f] = parseDiff(spaced.modified.join('\n'));
+  assert.deepEqual([f?.path, f?.oldPath], ['a b/auth.py', null]);
+  const r = riskTier(spaced.modified.join('\n'));
+  assert.equal(r.tier, 2);
+  assert.ok(r.reasons.includes('auth or secrets code: a b/auth.py'), r.reasons.join('; '));
+});
+
+test('a new and a deleted file under a directory ending in a space each parse to one real path', () => {
+  const files = parseDiff([...spaced.created, ...spaced.deleted].join('\n'));
+  assert.deepEqual(files.map(f => [f.path, f.oldPath, f.created, f.deleted]), [['a b/new.py', null, true, false], ['a b/gone.py', null, false, true]]);
+});
+
 test('risky code under a quoted path raises the tier', () => {
   assert.equal(tier(quoted('"a/app/my db.py"', '"b/app/my db.py"', ['+conn.execute("DELETE FROM orders WHERE id = ?")'])), 2);
 });
