@@ -35,7 +35,7 @@ const SCHEMA_STATEMENT = /\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLU
 const ADDED_OR_REMOVED = [
   [SCHEMA_STATEMENT, 'SQL schema statement'],
   [/\bDELETE\s+FROM\b|\bTRUNCATE\b|\bUPDATE\s+[\w."]+\s+SET\b|\bINSERT\s+(OR\s+\w+\s+)?INTO\b|\bON\s+CONFLICT\b/i, 'SQL that writes data'],
-  [/\b(os\.remove|os\.unlink|shutil\.rmtree|\.unlink\(|\.rmdir\(|fs\.(rm|rmSync|unlink|unlinkSync|rmdir)\(|remove_file|remove_dir_all)\b/, 'deletes files'],
+  [/\b(os\.remove|os\.unlink|shutil\.rmtree|\.unlink\(|\.rmdir\(|fs\.(rm|rmSync|unlink|unlinkSync|rmdir)\(|remove_file|remove_dir_all)\b/, 'code that removes files'],
   [/\b(requests|httpx|session|client|reqwest|axios)\s*\.\s*(post|put|patch|delete)\s*\(|method\s*[:=]\s*['"](POST|PUT|PATCH|DELETE)['"]|Method::(POST|PUT|PATCH|DELETE)/i, 'outbound call with side effects'],
   [/\b(smtplib|sendmail|send_mail|lettre|nodemailer|webhook)\b/i, 'mail or webhook'],
   [/\b(threading|multiprocessing|asyncio\.(Lock|gather|create_task)|tokio::spawn|Mutex|RwLock|BEGIN\s+(IMMEDIATE|EXCLUSIVE))\b/, 'concurrency'],
