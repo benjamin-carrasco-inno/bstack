@@ -692,6 +692,28 @@ test('no-authoring agents do not switch, add, move or remove worktrees outside t
   allowed(shell('git worktree remove /checkout'));
 });
 
+test('#34: no-authoring agents restore and check out only paths inside their cwd', () => {
+  for (const agent of ['bstack:comment-critic', 'bstack:reviewer', 'bstack:adversary']) {
+    const as = command => ({ ...shell(command), agent_type: agent });
+    const inSub = command => ({ ...shell(command), cwd: '/repo/sub', agent_type: agent });
+    blocked(as('git restore ../checkout/a.mjs'));
+    blocked(as('git restore -- ../checkout/a.mjs'));
+    blocked(as('git restore --source=HEAD /checkout/a.mjs'));
+    blocked(as('git checkout HEAD -- ../checkout/a.mjs'));
+    blocked(as('git restore "$TARGET"'));
+    blocked(as('git restore --pathspec-from-file=/checkout/list.txt'));
+    blocked(inSub('git restore ../a.mjs'));
+    blocked(inSub('git -C .. restore a.mjs'));
+
+    allowed(as('git restore src/a.mjs'));
+    allowed(as('git checkout HEAD~1 -- .'));
+    allowed(as('git restore --source=origin/main src/a.mjs'));
+    allowed(as('git -C sub restore ../a.mjs'));
+    allowed(inSub('git restore a.mjs'));
+  }
+  allowed(shell('git restore ../checkout/a.mjs'));
+});
+
 const NO_AUTHORING = ['bstack:comment-critic', 'bstack:reviewer', 'bstack:adversary'];
 const asAgent = agent => command => ({ ...shell(command), agent_type: agent });
 const psAsAgent = agent => command => ({ ...ps(command), agent_type: agent });
