@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { INTERROGATE_ROUNDS, commentBody } from '../plugins/bstack/scripts/lib/verdicts.mjs';
-import { prRounds, report, summarize } from '../plugins/bstack/scripts/interrogate-rounds.mjs';
+import { hoursOpen, options, prRounds, prRow, report, reviewerRuns, summarize } from '../plugins/bstack/scripts/interrogate-rounds.mjs';
 
 const sha = c => c.repeat(40);
 const comment = (head, confirmed, blocking, createdAt = '2026-11-22T10:00:00Z') => ({
@@ -75,4 +75,43 @@ test('report lists each PR, then the summary line', () => {
 
 test('report with no interrogate PRs says so', () => {
   assert.equal(report([]), '0 PRs with interrogate in the range');
+});
+
+const verdict = (head, result = 'PASS') => ({ body: commentBody('verdict', result, head, 'details'), createdAt: '2026-11-22T12:00:00Z' });
+const pr = (number, comments, createdAt = '2026-11-22T08:00:00Z', mergedAt = '2026-11-22T11:30:00Z') => ({ number, title: `PR ${number}`, comments, createdAt, mergedAt });
+
+test('reviewer runs count every verdict comment, one per run, not interrogate or chatter', () => {
+  assert.equal(reviewerRuns([verdict(sha('a')), verdict(sha('a'), 'FAIL'), verdict(sha('b')), comment(sha('b'), 1, 0), chatter]), 3);
+  assert.equal(reviewerRuns(undefined), 0);
+});
+
+test('hours from open to merge, to one decimal', () => {
+  assert.equal(hoursOpen(pr(1, [])), 3.5);
+  assert.equal(hoursOpen(pr(1, [], '2026-11-22T08:00:00Z', '2026-11-24T08:06:00Z')), 48.1);
+});
+
+test('every merged PR gets a row, with interrogate fields only when it was interrogated', () => {
+  assert.deepEqual(prRow(pr(5, [verdict(sha('a')), chatter])), { number: 5, title: 'PR 5', reviews: 1, hours: 3.5 });
+  assert.deepEqual(prRow(pr(6, [comment(sha('a'), 2, 1), verdict(sha('b')), verdict(sha('c'))])),
+    { number: 6, title: 'PR 6', reviews: 2, hours: 3.5, rounds: 1, confirmed: 2, blocking: 1 });
+});
+
+test('report: reviewer runs and hours per PR, a review summary, and interrogate summed over interrogated PRs only', () => {
+  const rows = [
+    prRow(pr(5, [verdict(sha('a'))])),
+    prRow(pr(6, [comment(sha('a'), 2, 1), verdict(sha('b')), verdict(sha('c'))], '2026-11-22T08:00:00Z', '2026-11-22T09:00:00Z')),
+  ];
+  const lines = report(rows).split('\n');
+  assert.match(lines[0], /^#5 no interrogate reviews=1 hours=3\.5 /);
+  assert.match(lines[1], /^#6 rounds=1 confirmed=2 blocking=1 non-blocking=1 reviews=2 hours=1 /);
+  assert.equal(lines[2], '2 merged PRs, mean 1.5 reviewer runs, median 2.3 hours from open to merge');
+  assert.equal(lines[3], '1 PRs with interrogate, mean 1 rounds, 0 % hit the 3-round cap, 1 blocking findings per round');
+  assert.equal(report([prRow(pr(5, []))]).split('\n').at(-1), '0 PRs with interrogate in the range');
+});
+
+test('--repo can be given several times; none means the current repo; a malformed one stops', () => {
+  assert.deepEqual(options(['--repo', 'o/a', '--since', '2026-11-01', '--repo', 'o/b']).repos, ['o/a', 'o/b']);
+  assert.deepEqual(options([]).repos, [null]);
+  assert.throws(() => options(['--repo']), /--repo needs owner\/name/);
+  assert.throws(() => options(['--repo', '--since', '2026-11-01']), /--repo needs owner\/name/);
 });
