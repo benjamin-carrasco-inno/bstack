@@ -166,6 +166,14 @@ test('an inline command right after an argument placeholder is executed', () => 
   }
 });
 
+test('an inline command that continues on the next line is executed there too', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  const head = ['Run !`npm test', '|| true` now.', '', 'Never write `|| true` yourself.'].join('\n');
+  assert.equal(riskTier(edit('|| true` now.'), { readFile: () => head }).tier, 2);
+  assert.equal(riskTier(edit('Never write `|| true` yourself.'), { readFile: () => head }).tier, 1);
+});
+
 test('a prose file whose head cannot be read keeps the weakening rules', () => {
   const diff = file('docs/ci.md', { add: ['Never add `|| true`.'] });
   assert.equal(riskTier(diff).tier, 2);
