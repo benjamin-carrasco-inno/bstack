@@ -76,8 +76,6 @@ function connect(url) {
   let next = 0;
   ws.addEventListener('message', event => {
     const msg = JSON.parse(event.data);
-    if (process.env.TRACE_CDP && !/targetCreated|targetInfoChanged/.test(event.data)) process.stderr.write(`TRACE ${String(event.data).slice(0, 200)}
-`);
     if (msg.method) {
       for (const waiter of eventWaiters) waiter(msg);
       return;
@@ -120,25 +118,11 @@ function failureOf({ exception, text }) {
   return deliberate ? description.split('\n')[0].replace(/^Error: /, '') : description;
 }
 
-const CRASH_SIGNALS = {
-  'Target.targetCrashed': (msg, page) => msg.params.targetId === page.targetId,
-  'Inspector.targetCrashed': (msg, page) => msg.sessionId === page.sessionId,
-  'Target.detachedFromTarget': (msg, page) => msg.params.sessionId === page.sessionId,
-  'Inspector.detached': (msg, page) => msg.sessionId === page.sessionId && msg.params.reason === 'Render process gone.',
-};
-
-async function stopOnCrash(cdp, page, paths, stop) {
-  for (const [method, isPage] of Object.entries(CRASH_SIGNALS)) {
-    cdp.on(method, msg => isPage(msg, page) && stop(new Error(`the page crashed while checking ${paths.join(', ')}`)));
-  }
-  await cdp.send('Target.setDiscoverTargets', { discover: true });
-  await cdp.send('Inspector.enable', {}, page.sessionId);
-}
-
 async function openStartPage(cdp, start, paths, stop) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
-  await stopOnCrash(cdp, { targetId, sessionId }, paths, stop);
+  cdp.on('Inspector.targetCrashed', msg => msg.sessionId === sessionId && stop(new Error(`the page crashed while checking ${paths.join(', ')}`)));
+  await cdp.send('Inspector.enable', {}, sessionId);
   await cdp.send('Page.enable', {}, sessionId);
   cdp.on('Page.javascriptDialogOpening', msg => cdp.send('Page.handleJavaScriptDialog', { accept: true }, msg.sessionId).catch(() => {}));
   const loaded = cdp.nextEvent('Page.loadEventFired', sessionId);
