@@ -443,3 +443,58 @@ test('a deleted source file without removal calls gets no removal-code reason', 
   const r = riskTier(file('app/util.py', { deleted: true, del: ['def f():', '    return 1'] }));
   assert.ok(!r.reasons.some(x => /removes files|deletes files/.test(x)), r.reasons.join('; '));
 });
+
+const outcome = (p, opts) => { const diff = file(p, opts); return riskTier(diff, { readFile: addedAsHead(diff) }); };
+
+test('a form that posts to the app itself is not an outbound call', () => {
+  for (const line of ['<form method="post" action="{{ base }}/dealer/channels">', '<div><form class="x" method=post action="/logout"><button>Log ud</button></form></div>', '<form method="POST">']) {
+    const r = outcome('templates/channels.html', { add: [line] });
+    assert.equal(r.tier, 1, `${line}: ${r.reasons.join('; ')}`);
+  }
+});
+
+test('a same-origin fetch with a write method is not an outbound call', () => {
+  for (const line of ["fetch('/x', {method:'POST'})", 'await fetch(`/items/${id}/vote`, { method: "DELETE" });', 'fetch("./save", {method: \'PUT\', body})']) {
+    const r = outcome('static/app.js', { add: [line] });
+    assert.equal(r.tier, 1, `${line}: ${r.reasons.join('; ')}`);
+  }
+});
+
+test('a server-side or absolute write call is still an outbound call', () => {
+  for (const [p, line] of [
+    ['app/notify.py', 'requests.post("https://api.example.com/x", json=body)'],
+    ['app/notify.py', 'httpx.put(url)'],
+    ['server/hook.mjs', "await fetch('https://api.example.com/x', {method:'POST'})"],
+    ['server/hook.mjs', "await fetch('//api.example.com/x', {method:'POST'})"],
+    ['server/hook.mjs', "await fetch(url, {method:'POST'})"],
+    ['server/hook.mjs', "  method: 'POST',"],
+    ['templates/pay.html', '<form method="post" action="https://pay.example.com/charge">'],
+    ['templates/pay.html', '<form method="post" action="/x"></form><script>fetch(u, {method:"POST"})</script>'],
+    ['static/app.js', "fetch('/x', {method:'POST'}); requests.post(u)"],
+    ['static/app.js', "fetch('/x', {method:'POST'}); fetch(u, {method:'PUT'})"],
+  ]) {
+    const r = outcome(p, { add: [line] });
+    assert.ok(r.reasons.includes(`outbound call with side effects: ${p}`), `${line}: ${r.reasons.join('; ')}`);
+  }
+});
+
+test('a test file named after auth is not auth code', () => {
+  for (const p of ['crates/app/tests/shared_setup_and_login.rs', 'tests/test_login.py', 'web/session.test.ts']) {
+    const r = outcome(p, { add: ['assert_eq!(a, b);'] });
+    assert.equal(r.tier, 1, `${p}: ${r.reasons.join('; ')}`);
+  }
+});
+
+test('a test removed or weakened in a test file named after auth is still tier 2', () => {
+  assert.equal(tier(file('tests/test_login.py', { del: ['def test_login_rejects_bad_password():', '    assert not ok'] })), 2);
+  assert.equal(tier(file('crates/app/tests/login.rs', { del: ['    assert_eq!(status, 403);'] })), 2);
+  assert.equal(tier(file('tests/test_auth.py', { deleted: true, del: ['x = 1'] })), 2);
+  assert.equal(tier(file('tests/test_auth.py', { add: ['@pytest.mark.skip'] })), 2);
+});
+
+test('a file named like a test but not counted as a test keeps the auth rule', () => {
+  for (const p of ['app/login.test.py', 'app/auth_test_helpers.py', 'tests/auth_fixture.json']) {
+    const r = outcome(p, { add: ['x = 1'], del: ['def test_login(): pass'] });
+    assert.ok(r.reasons.includes(`auth or secrets code: ${p}`), `${p}: ${r.reasons.join('; ')}`);
+  }
+});
