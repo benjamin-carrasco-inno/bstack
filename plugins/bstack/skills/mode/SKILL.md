@@ -49,7 +49,8 @@ Weekly quota is real. Spend where risk is.
 
 ## Subagents
 
-- Implementation rounds go to `bstack:worker`, fresh each round, with the goal, the files, and the check that proves it.
+- A scoped change goes to a `bstack:worker`, with the goal, the files, and the check that proves it.
+- Fix rounds stay with the builder, who knows why the code is as it is: fix your own change yourself, and continue the worker that built one (SendMessage). Only when the builder is gone does a fresh worker get the PR and the findings.
 - Big read-only searches go to Explore. Parallel work in one repo uses one worktree per agent.
 
 ## Gates
