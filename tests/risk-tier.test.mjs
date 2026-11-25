@@ -145,6 +145,18 @@ test('frontmatter whose opening or closing dashes have trailing whitespace is ex
   assert.equal(riskTier(edit(named), { readFile: () => rule }).tier, 1);
 });
 
+test('an inline command after a code span that ends in ! is executed', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  const edit = line => [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+  const sameLine = 'Type `cd !` then !`npm test || true`.';
+  const nextLine = 'then run !`npm test || true` now.';
+  const twoLines = ['---', 'name: x', 'description: y', '---', 'Type `cd !` first,', nextLine].join('\n');
+  assert.equal(riskTier(edit(sameLine), { readFile: () => sameLine }).tier, 2);
+  assert.equal(riskTier(edit(nextLine), { readFile: () => twoLines }).tier, 2);
+  const named = 'Type `cd !` then never write `|| true` yourself.';
+  assert.equal(riskTier(edit(named), { readFile: () => named }).tier, 1);
+});
+
 test('a prose file whose head cannot be read keeps the weakening rules', () => {
   const diff = file('docs/ci.md', { add: ['Never add `|| true`.'] });
   assert.equal(riskTier(diff).tier, 2);
