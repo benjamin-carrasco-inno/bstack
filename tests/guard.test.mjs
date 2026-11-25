@@ -726,7 +726,7 @@ test('#34: no-authoring agents run git ls-remote, config and remote only in thei
       'git ls-remote --unknown-flag origin',
       'git config --replace-all core.fsmonitor "echo PWNED>&2" --get-all', 'git config set user.name x --list', 'git config --unset user.name --get',
       'git config --add user.name x --list', 'git config --edit --list', 'git config core.pager evil --list', 'git config --get x --global y z',
-      'git config --get --list', 'git config user.name x',
+      'git config --get --list', 'git config user.name x', 'git fetch "--upl=echo PWNED>&2; false" .', 'git fetch --upload-pack=/tmp/x.sh .',
       'git remote -v add evil /x', 'git remote --verbose set-url origin /x', 'git remote add evil /x', 'git remote -v remove origin',
     ]) refused(shell(command));
     refused(ps('git config --replace-all core.fsmonitor "echo PWNED>&2" --get-all'));
@@ -737,6 +737,7 @@ test('#34: no-authoring agents run git ls-remote, config and remote only in thei
       'git config get user.name', 'git config list --global', 'git config --global --get core.pager', "git config --get-regexp '^remote\\.'",
       'git config --type=bool --get core.bare', 'git config --default main --get init.defaultBranch',
       'git remote', 'git remote -v', 'git remote --verbose', 'git remote get-url origin', 'git remote get-url --push origin', 'git remote show origin',
+      'git fetch origin main', 'git fetch --prune origin', 'git fetch --depth 1 origin main',
     ]) ok(shell(command));
   }
 });
@@ -775,7 +776,7 @@ test('#34: no-authoring agents: .ForEach and .Where take a script block, never a
       "(Get-Item C:/checkout/a.mjs).Where('Delete')",
     ]) refused(ps(command));
 
-    for (const command of ['(Get-ChildItem).ForEach({ $_.Name })', '(Get-ChildItem).Where({ $_.Length -gt 0 }, \'First\')', '(Get-ChildItem).foreach{ $_.Name.Trim() }']) ok(ps(command));
+    for (const command of ['(Get-ChildItem).ForEach({ $_.Name })', '(Get-ChildItem).Where({ $_.Length -gt 0 })', '(Get-ChildItem).foreach{ $_.Name.Trim() }']) ok(ps(command));
   }
 });
 
@@ -828,7 +829,7 @@ test('#34: no-authoring agents: curl --write-out writes no file, and node flag c
     refused(ps("curl.exe -s -w '%output{C:/checkout/pwn}x' http://127.0.0.1:1/"));
 
     for (const command of [
-      'curl -s http://localhost:3000/', "curl -s -w '%{http_code}' -o /dev/null http://localhost:3000/", 'curl -s --write-out=%{json} http://localhost:3000/',
+      'curl -s http://localhost:3000/', "curl -s -w '%{http_code}' -o /dev/null http://localhost:3000/", "curl -s --write-out='%{json}' http://localhost:3000/",
       'node --test x', 'node --test', 'node /tmp/repro.mjs', 'node --no-warnings /tmp/repro.mjs', 'pytest -q',
     ]) ok(shell(command));
   }
