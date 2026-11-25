@@ -17,6 +17,7 @@ const NOT_DOCS = /(^|\/)(AGENTS|CLAUDE)\.md$|(^|\/)\.github\/[^/]+\.txt$|(^|\/)(
 const CONFIG = /(^|\/)(\.github\/workflows\/|\.claude\/)|(^|\/)(pyproject\.toml|setup\.cfg|ruff\.toml|\.ruff\.toml|pyrightconfig\.json|eslint\.config\.[cm]?js|\.eslintrc[^/]*|Cargo\.toml|clippy\.toml|rustfmt\.toml|package\.json|tsconfig[^/]*\.json|Dockerfile|docker-compose[^/]*\.ya?ml|\.pre-commit-config\.yaml)$/i;
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)test_[^/]+\.py$|_test\.(py|go|rs)$|\.(test|spec)\.[cm]?[jt]sx?$/i;
 const CODE = /\.(py|pyi|js|mjs|cjs|ts|tsx|jsx|rs|go|sql|sh|ps1|html|css|vue|svelte)$/i;
+export const isDocs = p => DOCS.test(p) && !NOT_DOCS.test(p) && !BUILD_TXT.test(p) && !COMMANDS.test(p);
 const runnableTest = p => TEST_PATH.test(p) && CODE.test(p);
 const FIXTURE = /(^|\/)(fixtures|__fixtures__|testdata)\//i;
 const SCHEMA_FILE = /(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i;
@@ -139,20 +140,29 @@ function globToRegex(glob) {
   return new RegExp(`^${esc}$`);
 }
 
-const readOrNull = (readFile, p) => { try { return readFile?.(p) ?? null; } catch { return null; } };
+const riskPathsMatcher = globs => {
+  const res = globs.map(globToRegex);
+  return p => res.some(re => re.test(p));
+};
+
+export const tierZeroDocs = extraPaths => {
+  const listed = riskPathsMatcher(extraPaths);
+  return p => isDocs(p) && !listed(p);
+};
+
+const readOrNull =(readFile, p) => { try { return readFile?.(p) ?? null; } catch { return null; } };
 
 export function riskTier(diff, { extraPaths = [], readFile } = {}) {
   const files = parseDiff(diff);
   const reasons = new Set();
   let tier = 0;
   const raise = (t, why) => { if (t > tier) tier = t; if (t >= 1 && why) reasons.add(why); };
-  const extra = extraPaths.map(globToRegex);
+  const extra = riskPathsMatcher(extraPaths);
 
   for (const f of files) {
     const p = f.path.replace(/\\/g, '/');
-    const docs = DOCS.test(p) && !NOT_DOCS.test(p) && !BUILD_TXT.test(p) && !COMMANDS.test(p);
-    if (!docs) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
-    if (extra.some(re => re.test(p))) raise(2, `listed in .github/risk-paths.txt: ${p}`);
+    if (!isDocs(p)) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
+    if (extra(p)) raise(2, `listed in .github/risk-paths.txt: ${p}`);
     const paths = f.oldPath ? [p, f.oldPath.replace(/\\/g, '/')] : [p];
     const fixture = paths.every(q => FIXTURE.test(q));
     const isTest = TEST_PATH.test(p);

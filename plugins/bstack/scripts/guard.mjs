@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // PreToolUse guard for Bash, PowerShell, file writes and MCP tools. It blocks what a rule in prose
 // cannot hold: pushes to the default branch, skipped hooks, force-pushes, rebasing pushed branches,
-// merges without green CI and a reviewer verdict for the head SHA, merges through side doors
+// merges without green CI and a reviewer verdict for the head SHA (or one carried across merge-ins
+// of the base branch that left the PR diff unchanged), merges through side doors
 // (gh api, MCP), forged verdicts, and commits that add comment lines over a repo's comment baseline.
 // Exit 2 with a message that names the right alternative.
 import { execFileSync } from 'node:child_process';
@@ -14,7 +15,8 @@ import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, ti
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
-import { ghFileReader, riskTier, readRiskPaths } from './risk-tier.mjs';
+import { GITHUB_COMMIT_LIST_LIMIT, mergeInChain, sameChange } from './lib/carry.mjs';
+import { ghFileReader, riskTier, readRiskPaths, tierZeroDocs } from './risk-tier.mjs';
 
 const DEFAULT_BRANCH = /^(main|master)$/;
 const READ_ONLY = new Set(['grep', 'rg', 'findstr', 'select-string', 'sls', 'cat', 'type', 'get-content', 'gc', 'jq', 'less', 'head', 'tail', 'wc']);
@@ -920,7 +922,7 @@ function rebaseRule(repo, deps) {
     upstream = deps.git(repo, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']).trim();
   } catch { return null; }
   if (upstream && upstream.split('/').slice(1).join('/') === branch) {
-    return `${branch} is already pushed, so rebasing rewrites shared history. Merge the default branch into it instead, and only when GitHub reports a conflict (each merge-in needs a new verdict).`;
+    return `${branch} is already pushed, so rebasing rewrites shared history. Merge the default branch into it instead, and only when GitHub reports a conflict (a verdict carries across a merge-in that leaves the PR diff unchanged).`;
   }
   return null;
 }
@@ -1030,7 +1032,7 @@ function mergeGate(args, cwd, deps, c, line) {
   const target = [...(selector ? [selector] : []), ...(repo ? ['-R', repo] : [])];
   let pr;
   try {
-    pr = JSON.parse(deps.gh(cwd, ['pr', 'view', ...target, '--json', 'number,url,headRefOid,state,statusCheckRollup,comments']));
+    pr = JSON.parse(deps.gh(cwd, ['pr', 'view', ...target, '--json', 'number,url,headRefOid,baseRefName,state,statusCheckRollup,comments']));
   } catch (e) {
     return `bstack could not read the PR to check the merge gate (${String(e.message ?? e).split('\n')[0]}). Fix that and retry; the gate fails closed.`;
   }
@@ -1046,24 +1048,112 @@ function mergeGate(args, cwd, deps, c, line) {
   let diff;
   try { diff = deps.gh(cwd, ['pr', 'diff', pr.url, ...(repo ? ['-R', repo] : [])]); }
   catch (e) { return `bstack could not read the PR diff to compute the risk tier (${String(e.message ?? e).split('\n')[0]}). The gate fails closed.`; }
-  const readFile = ghFileReader(args => deps.gh(cwd, args), repoOfUrl(pr.url) ?? repo, sha);
-  const risk = riskTier(diff, { extraPaths: readRiskPaths(cwd), readFile });
+  const prRepo = repoOfUrl(pr.url) ?? repo;
+  const extraPaths = readRiskPaths(cwd);
+  const risk = riskTier(diff, { extraPaths, readFile: ghFileReader(args => deps.gh(cwd, args), prRepo, sha) });
   if (risk.tier === 0) return null;
 
   const why = risk.reasons.length ? ` (${risk.reasons.slice(0, 3).join('; ')})` : '';
-  const verdict = latestFor('verdict', pr.comments, sha);
-  if (!verdict) return `Tier ${risk.tier}${why}: no reviewer verdict for head ${short}. Run the bstack:reviewer agent on ${pr.url}; its hook posts the verdict.`;
-  if (verdict.result === 'FAIL') return `The latest verdict for ${short} is FAIL. Fix it, push, and run bstack:reviewer again.`;
+  const judged = carrier(pr, risk, { cwd, deps, repo: prRepo, extraPaths });
+  const verdict = judged('verdict');
+  if (!verdict.result) return `Tier ${risk.tier}${why}: no reviewer verdict for head ${short}.${verdict.note ?? ''} Run the bstack:reviewer agent on ${pr.url}; its hook posts the verdict.`;
+  if (verdict.result.result === 'FAIL') return `The latest verdict for ${verdict.from.slice(0, 7)} is FAIL. Fix it, push, and run bstack:reviewer again.`;
   if (risk.tier === 2) {
     const rounds = blockingRounds(pr.comments);
     if (rounds >= INTERROGATE_ROUNDS) {
-      if (userOkFor(pr.comments, sha)) return null;
+      if (userOkFor(pr.comments, sha)) return postCarried(pr, risk, [verdict], cwd, deps);
       return `${rounds} interrogate rounds found blocking findings: stop and report to the user what is fixed, what is open and your recommendation. The guard merges ${short} only after the user comments this line on the PR: bstack-user-ok sha=${sha}`;
     }
-    const inter = latestFor('interrogate', pr.comments, sha);
-    if (!inter) return `Tier 2${why}: run bstack:interrogate on head ${short} before merging, and get the user's OK if a revert cannot undo it.`;
-    if (inter.blocking > 0) return `Interrogate found ${inter.blocking} blocking finding(s) on ${short}. Fix them through the bug-fix playbook, then review again.`;
+    const inter = judged('interrogate');
+    if (!inter.result) return `Tier 2${why}: run bstack:interrogate on head ${short} before merging, and get the user's OK if a revert cannot undo it.${inter.note ?? ''}`;
+    if (inter.result.blocking > 0) return `Interrogate found ${inter.result.blocking} blocking finding(s) on ${inter.from.slice(0, 7)}. Fix them through the bug-fix playbook, then review again.`;
+    return postCarried(pr, risk, [verdict, inter], cwd, deps);
   }
+  return postCarried(pr, risk, [verdict], cwd, deps);
+}
+
+// --- results judged on an older head, carried across merge-ins of the base branch -------------------
+const LABELS = {
+  verdict: r => `reviewer verdict ${r.result}`,
+  interrogate: r => `interrogate result confirmed=${r.confirmed} blocking=${r.blocking}`,
+};
+const PLAIN_BRANCH = /^[\w.-]+(\/[\w.-]+)*$/;
+const shortList = paths => paths.slice(0, 3).join(', ') + (paths.length > 3 ? ` and ${paths.length - 3} more` : '');
+
+function carrier(pr, risk, { cwd, deps, repo, extraPaths }) {
+  const head = pr.headRefOid;
+  const base = pr.baseRefName;
+  const api = args => deps.gh(cwd, ['api', ...args]);
+  const diffs = new Map();
+  const diffAt = sha => {
+    if (!diffs.has(sha)) diffs.set(sha, api(['-H', 'Accept: application/vnd.github.diff', `repos/${repo}/compare/${base}...${sha}`]));
+    return diffs.get(sha);
+  };
+  const checks = new Map();
+  let chain;
+
+  const loadChain = () => {
+    if (!PLAIN_BRANCH.test(base ?? '')) throw new Error(`the base branch name ${JSON.stringify(base)} cannot go into a GitHub API path as it is`);
+    const rows = api(['--paginate', `repos/${repo}/pulls/${pr.number}/commits?per_page=100`, '--jq', '.[] | [.sha] + [.parents[].sha] | join(" ")'])
+      .split(/\r?\n/).filter(Boolean).map(line => line.trim().split(/\s+/));
+    if (rows.length >= GITHUB_COMMIT_LIST_LIMIT) throw new Error(`the PR has ${rows.length} commits, and GitHub lists at most ${GITHUB_COMMIT_LIST_LIMIT}`);
+    return mergeInChain(rows.map(([sha, ...parents]) => ({ sha, parents })), head);
+  };
+
+  const check = (from, merges) => {
+    const change = sameChange(diffAt(from), diffAt(head), tierZeroDocs(extraPaths));
+    if (change.binary.length) return { refused: `the PR diff has binary files (${shortList(change.binary)})` };
+    if (!change.same) return { refused: `the PR diff changed${change.changed.length ? ` in ${shortList(change.changed)}` : ''}` };
+    const tierBefore = riskTier(diffAt(from), { extraPaths, readFile: ghFileReader(args => deps.gh(cwd, args), repo, from) }).tier;
+    if (risk.tier > tierBefore) return { refused: `the risk tier rose from ${tierBefore} to ${risk.tier}` };
+    if (risk.tier === 2 && change.overlap.length) return { refused: `${base} changed ${shortList(change.overlap)}, which this tier 2 PR also changes` };
+    return { merges, fingerprint: change.fingerprint, tierBefore };
+  };
+
+  return kind => {
+    const own = latestFor(kind, pr.comments, head);
+    if (own) return { result: own, from: head };
+    const judgedShas = new Set((pr.comments ?? []).map(c => shaOf(kind, c.body)).filter(s => s && s !== head));
+    if (!judgedShas.size) return { result: null };
+    const named = `The ${kind} on ${[...judgedShas].map(s => s.slice(0, 7)).join(', ')} does not carry to ${head.slice(0, 7)}`;
+    try {
+      chain ??= loadChain();
+      const at = chain.findIndex(s => judgedShas.has(s));
+      if (at < 0) return { result: null, note: ` ${named}: the commits after it are not only merges of ${base}.` };
+      const from = chain[at];
+      if (!checks.has(from)) checks.set(from, check(from, chain.slice(0, at)));
+      const proof = checks.get(from);
+      if (proof.refused) return { result: null, note: ` The ${kind} on ${from.slice(0, 7)} does not carry to ${head.slice(0, 7)}: ${proof.refused}.` };
+      return { result: latestFor(kind, pr.comments, from), from, kind, ...proof };
+    } catch (e) {
+      return { result: null, note: ` ${named}: bstack could not check it (${String(e.message ?? e).split('\n')[0]}).` };
+    }
+  };
+}
+
+function carriedComment(pr, risk, carried) {
+  const head = pr.headRefOid;
+  const short = s => s.slice(0, 7);
+  const lines = ['<!-- bstack-carried v1 -->', `The merge guard used results judged on an older head for head ${head}:`];
+  for (const r of carried) lines.push(`- ${LABELS[r.kind](r.result)}, judged on ${r.from}`);
+  for (const r of new Map(carried.map(c => [c.from, c])).values()) {
+    lines.push('', `Why the result on ${short(r.from)} holds for ${short(head)}:`,
+      `- Every commit after it is a merge of ${pr.baseRefName}: ${r.merges.map(short).join(', ')}.`,
+      `- The PR diff is the same on both heads: ${r.fingerprint} (index lines and hunk headers left out; docs files by their added and removed lines).`,
+      `- Risk tier ${r.tierBefore} on ${short(r.from)}, ${risk.tier} on ${short(head)}.`,
+      ...(risk.tier === 2 ? [`- ${pr.baseRefName} changed none of the files this PR changes, other than docs.`] : []));
+  }
+  lines.push(`- CI is green on ${short(head)}.`);
+  return `${lines.join('\n')}\n`;
+}
+
+function postCarried(pr, risk, results, cwd, deps) {
+  const carried = results.filter(r => r.from !== pr.headRefOid);
+  if (!carried.length) return null;
+  const body = carriedComment(pr, risk, carried);
+  if ((pr.comments ?? []).some(c => String(c.body ?? '').trim() === body.trim())) return null;
+  try { deps.postComment(cwd, pr.url, body); }
+  catch (e) { return `bstack could not post why the result on ${carried[0].from.slice(0, 7)} holds for ${pr.headRefOid.slice(0, 7)} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
   return null;
 }
 

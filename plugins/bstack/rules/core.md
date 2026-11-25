@@ -16,8 +16,8 @@ Change
 - Never weaken a check to get green: no deleted or skipped tests, no new suppressions, no loosened CI, unless that is the task and the PR says why.
 
 Independence
-- Whoever wrote a change never judges it. Merging needs green CI plus a bstack:reviewer verdict for the exact head SHA; the guard enforces it.
-- Findings go back to whoever built the change, all of a head's findings in one round. Each new head gets a fresh judge.
+- Whoever wrote a change never judges it. Merging needs green CI plus a bstack:reviewer verdict for the head SHA, or carried over merges of main that kept the PR diff; the guard enforces it.
+- Findings go back to whoever built the change, all of a head's findings in one round. Each changed head gets a fresh judge.
 
 Autonomy
 - Make reversible choices yourself and state each in one line with the reason.
