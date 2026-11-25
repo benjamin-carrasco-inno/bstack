@@ -17,7 +17,7 @@ Change
 
 Independence
 - Whoever wrote a change never judges it. Merging needs green CI plus a bstack:reviewer verdict for the exact head SHA; the guard enforces it.
-- A new round of fixes gets a fresh subagent, not a chain of interruptions.
+- Findings go back to whoever built the change, all of a head's findings in one round. Each new head gets a fresh judge.
 
 Autonomy
 - Make reversible choices yourself and state each in one line with the reason.

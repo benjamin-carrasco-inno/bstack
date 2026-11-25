@@ -762,7 +762,7 @@ function mergeGate(args, cwd, deps, c, line) {
   const why = risk.reasons.length ? ` (${risk.reasons.slice(0, 3).join('; ')})` : '';
   const verdict = latestFor('verdict', pr.comments, sha);
   if (!verdict) return `Tier ${risk.tier}${why}: no reviewer verdict for head ${short}. Run the bstack:reviewer agent on ${pr.url}; its hook posts the verdict.`;
-  if (verdict.result === 'FAIL') return `The latest verdict for ${short} is FAIL. Fix it in a fresh round, push, and run bstack:reviewer again.`;
+  if (verdict.result === 'FAIL') return `The latest verdict for ${short} is FAIL. Fix it, push, and run bstack:reviewer again.`;
   if (risk.tier === 2) {
     const rounds = blockingRounds(pr.comments);
     if (rounds >= INTERROGATE_ROUNDS) {

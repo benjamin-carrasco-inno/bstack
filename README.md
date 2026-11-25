@@ -36,7 +36,7 @@ Requirements: Node 18+ on `PATH` (the hooks are Node scripts), git, and the GitH
 | `bstack:reviewer` agent | Fresh Sonnet agent in its own worktree. Runs the change, reads the diff, returns PASS, PASS+NOTES or FAIL for the head SHA. |
 | `bstack:adversary` agent | Opus agent (Fable for large architecture changes) that tries to break tier 2 changes and reproduces what it finds. |
 | `bstack:comment-critic` agent | Classifies each comment and suppression with proof; has only Read, Grep and Glob. |
-| `bstack:worker` agent | Fresh context for one scoped implementation round. |
+| `bstack:worker` agent | Its own context for one scoped change, and for the fix rounds on it. |
 
 ## From idea to merge
 
