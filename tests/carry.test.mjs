@@ -35,8 +35,8 @@ const MERGED_DATA = diffOf(codeFile(DATA, { added: DELETE }), changelog('- feat:
 const commit = (s, ...parents) => ({ sha: s, parents });
 const MERGED_ONCE = [commit(PR_COMMIT, BASE_OLD), commit(JUDGED, PR_COMMIT), commit(MERGE, JUDGED, MAIN_TIP)];
 
-const verdict = (result, at = JUDGED) => ({ body: commentBody('verdict', result, at, 'report'), createdAt: '2026-11-25T10:00:00Z' });
-const interrogate = (blocking, at = JUDGED) => ({ body: commentBody('interrogate', { confirmed: blocking, blocking }, at, 'report'), createdAt: '2026-11-25T11:00:00Z' });
+const verdict = (result, at = JUDGED) => ({ body: commentBody('verdict', result, at, 'report'), createdAt: '2026-11-25T10:00:00Z', viewerDidAuthor: true });
+const interrogate = (blocking, at = JUDGED) => ({ body: commentBody('interrogate', { confirmed: blocking, blocking }, at, 'report'), createdAt: '2026-11-25T11:00:00Z', viewerDidAuthor: true });
 
 function fakeGitHub({ head = MERGE, commits = MERGED_ONCE, diffs, comments, checks = GREEN, files = {}, failApi = false, postFails = false, base = 'main' }) {
   const posted = [];
@@ -85,7 +85,7 @@ test('a tier 1 verdict carries across a merge of main that leaves the PR diff un
 test('the carried comment is posted once', () => {
   const first = fakeGitHub({ diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [verdict('PASS+NOTES')] });
   assert.equal(merge(first), null);
-  const again = fakeGitHub({ diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [verdict('PASS+NOTES'), { body: first.posted[0].body, createdAt: '2026-11-25T12:00:00Z' }] });
+  const again = fakeGitHub({ diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [verdict('PASS+NOTES'), { body: first.posted[0].body, createdAt: '2026-11-25T12:00:00Z', viewerDidAuthor: true }] });
   assert.equal(merge(again), null);
   assert.equal(again.posted.length, 0);
 });
@@ -291,7 +291,7 @@ test('the verdict hook refuses a moved head whose commits it cannot read or GitH
 
 test('the guard carries a verdict the hook posted after a merge-in to the new head', () => {
   const out = handle(reviewedAt(), fakeGitHub({ diffs: {}, comments: [] }).deps.gh);
-  const github = fakeGitHub({ diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [{ body: out.post.body, createdAt: '2026-11-25T10:00:00Z' }] });
+  const github = fakeGitHub({ diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [{ body: out.post.body, createdAt: '2026-11-25T10:00:00Z', viewerDidAuthor: true }] });
   assert.equal(merge(github), null);
   assert.ok(github.posted[0].body.includes(`- reviewer verdict PASS, judged on ${JUDGED}`), github.posted[0].body);
 });

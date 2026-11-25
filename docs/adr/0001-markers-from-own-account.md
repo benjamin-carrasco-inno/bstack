@@ -1,0 +1,5 @@
+# 1. The merge gate reads markers only from its own account
+
+Status: accepted, 2026-11-25, owner decision on #109.
+
+The guard's merge gate reads verdict, interrogate and user-ok markers from PR comments. It counts a marker only when the comment was written by the account `gh` is signed in as, which is the account the verdict hook posts with (`viewerDidAuthor` in `gh pr view --json comments`); markers from any other author are ignored, and so is a comment without that field. The verdict hook applies the same rule when it checks whether a report is already on the PR. The trade-off: the check cannot tell the hook from an agent running as the same user (the guard's command rules cover that), so it only shuts out other commenters such as collaborators, outside contributors and bots. It costs no extra API call, but a gate run under a different `gh` account than the one that posted the markers sees none of them and stays closed until the reviewer runs again under that account, and the user must write a user-ok line from that same account.

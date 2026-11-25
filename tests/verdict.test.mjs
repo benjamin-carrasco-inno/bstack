@@ -82,8 +82,16 @@ test('a report already on the PR is not posted twice', () => {
   const file = transcript([prompt('PR 7 in o/r.'), said(`Works.\nbstack-verdict: PASS pr=7 sha=${SHA}`), handback(`Works.\nbstack-verdict: PASS pr=7 sha=${SHA}`)]);
   const input = { agent_type: 'bstack:reviewer', agent_transcript_path: file };
   const first = handle(input, gh(SHA));
-  const withComment = () => JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, comments: [{ body: first.post.body }] });
+  const withComment = () => JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, comments: [{ body: first.post.body, viewerDidAuthor: true }] });
   assert.deepEqual(handle(input, withComment), {});
+});
+
+test('the same report posted by another account does not stop the hook from posting it', () => {
+  const file = transcript([prompt('PR 7 in o/r.'), said(`Works.\nbstack-verdict: PASS pr=7 sha=${SHA}`), handback(`Works.\nbstack-verdict: PASS pr=7 sha=${SHA}`)]);
+  const input = { agent_type: 'bstack:reviewer', agent_transcript_path: file };
+  const first = handle(input, gh(SHA));
+  const byOther = () => JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7', headRefOid: SHA, comments: [{ body: first.post.body, viewerDidAuthor: false }] });
+  assert.equal(handle(input, byOther).post.body, first.post.body);
 });
 
 function recording(head) {

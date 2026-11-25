@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseReport, commentBody } from './lib/verdicts.mjs';
+import { parseReport, commentBody, ownComments } from './lib/verdicts.mjs';
 import { pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { prMergeInChain } from './lib/carry.mjs';
 
@@ -145,7 +145,7 @@ export function handle(input, gh, read = readTranscript) {
     text = `Judged on ${report.sha}. The PR head has since moved to ${pr.headRefOid} by a merge-in of ${pr.baseRefName ?? 'the base branch'}.\n\n${report.body}`;
   }
   const body = commentBody(kind, report.result, report.sha, text);
-  if ((pr.comments ?? []).some(c => String(c.body ?? '').trim() === body.trim())) return {};
+  if (ownComments(pr.comments).some(c => String(c.body ?? '').trim() === body.trim())) return {};
   return { post: { pr: pr.url, repo, body, kind, number: String(pr.number), sha: report.sha, head: pr.headRefOid, result: report.result, report: text } };
 }
 
