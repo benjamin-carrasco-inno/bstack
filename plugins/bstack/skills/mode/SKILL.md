@@ -44,14 +44,15 @@ A repo can raise paths to tier 2 with globs in `.github/risk-paths.txt`. Add one
 ## Models and effort
 
 Weekly quota is real. Spend where risk is.
-- Main session: the user's choice (default Opus, medium). Raise to high for tier 2 work, not by default. Never xhigh or max by default.
-- Mechanical work (polling CI, bulk renames, reformatting): a Haiku subagent.
-- Fable for implementation only when the user names it, or after Opus failed twice on the same task.
+- Main session: the user's choice (default Opus, medium). High for tier 2 work; never xhigh or max by default.
+- Builder: the ticket's `Expected tier` sets the worker's `model`. Sonnet for tier 0-1 in an `internal` repo (`.github/bstack-exposure.txt`, missing is `external`), else the session's model, also for `risk-paths.txt` paths. A higher computed tier mid-build changes nothing; the gate decides.
+- Mechanical work (polling CI, bulk renames): a Haiku subagent.
+- Fable for implementation only when the user names it, or after Opus failed twice on a task.
 
 ## Subagents
 
 - A scoped change goes to a `bstack:worker`, with the goal, the files, and the check that proves it.
-- Fix rounds stay with the builder, who knows why the code is as it is: fix your own change yourself, and continue the worker that built one (SendMessage). Only when the builder is gone does a fresh worker get the PR and the findings.
+- Fix rounds stay with the builder, who knows why the code is as it is: fix your own change, continue the worker that built one (SendMessage). A fresh worker gets the PR and findings only when the builder is gone.
 - Big read-only searches go to Explore. Parallel work in one repo uses one worktree per agent.
 
 ## Gates

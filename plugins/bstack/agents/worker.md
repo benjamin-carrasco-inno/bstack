@@ -2,6 +2,7 @@
 name: worker
 description: Implements one scoped change in its own context, for example one PR from an audit, and fixes the findings on it when they come back. Give it the goal, the files, and the check that proves it is done.
 model: inherit
+effort: medium
 isolation: worktree
 ---
 

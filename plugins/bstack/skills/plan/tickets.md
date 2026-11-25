@@ -46,6 +46,8 @@ The behaviour this ticket makes work, from the user's side. Current behaviour fi
 ## Acceptance criteria
 - [ ] Each criterion checkable on its own, on the real surface
 
+Expected tier: 0|1|2 (2: schema, stored data, auth, external calls, gate files)
+
 ## Out of scope
 - What a builder might be tempted to add
 ```
