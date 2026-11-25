@@ -379,15 +379,21 @@ export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shell
     const expressions = new Set(parsed.slice(1).flatMap((w, i) => (w.expression ? [i] : [])));
     const expands = new Set(parsed.slice(1).flatMap((w, i) => (w.expands ? [i] : [])));
     if (hidden) { out.push({ cmd, args, expressions, expands, text: segment, dialect, env, scope, hidden }); continue; }
+    const command = { cmd, program: parsed[0].text, args, expressions, expands, text: segment, dialect, env, scope, movesDir, pipedFrom: commandOf.get(part.pipedFrom) };
+    const unreadableFrom = at => args.some((a, i) => i >= at && (expressions.has(i) || UNRESOLVED.test(a)));
     if (depth < 3 && SHELLS.has(cmd)) {
       const at = args.findIndex(a => /^(-c|-command|\/c|-encodedcommand)$/i.test(a));
-      if (at >= 0) { out.push(...commandsIn(args.slice(at + 1).join(' '), depth + 1, DIALECT_OF_SHELL[cmd] ?? 'posix', `${scope}/${++shellCount.n}`, shellCount, movesDir)); continue; }
+      if (at >= 0) {
+        if (unreadableFrom(at + 1)) out.push(command);
+        out.push(...commandsIn(args.slice(at + 1).join(' '), depth + 1, DIALECT_OF_SHELL[cmd] ?? 'posix', `${scope}/${++shellCount.n}`, shellCount, movesDir));
+        continue;
+      }
     }
     if (depth < 3 && /^(invoke-expression|iex)$/.test(cmd) && args.length) {
+      if (unreadableFrom(0)) out.push(command);
       out.push(...commandsIn(args.join(' '), depth + 1, dialect, scope, shellCount, movesDir));
       continue;
     }
-    const command = { cmd, program: parsed[0].text, args, expressions, expands, text: segment, dialect, env, scope, movesDir, pipedFrom: commandOf.get(part.pipedFrom) };
     commandOf.set(part, command);
     out.push(command);
   }
