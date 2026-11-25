@@ -119,7 +119,7 @@ async function openStartPage(cdp, start) {
   await loaded;
   const landed = new URL(await evaluate(cdp, sessionId, 'location.href'));
   if (!/^https?:$/.test(landed.protocol)) throw new Error(`could not open ${start.href}; is the app running?`);
-  if (landed.href !== start.href) throw redirectError([[start.href, landed.href]], start.origin);
+  if (landed.origin + landed.pathname !== start.origin + start.pathname) throw redirectError([[start.href, landed.href]], start.origin);
   return sessionId;
 }
 
@@ -130,15 +130,18 @@ function redirectError(redirects, origin) {
 }
 
 async function runCheck(cdp, args, check) {
-  const start = new URL(args.paths[0], args.origin);
+  const pages = args.paths.map(p => new URL(p, args.origin));
+  const [start] = pages;
+  const sameOriginPath = url => (url.origin === start.origin ? url.pathname + url.search + url.hash : url.href);
+  const paths = pages.map(sameOriginPath);
   const sessionId = await openStartPage(cdp, start);
-  const statuses = await evaluate(cdp, sessionId, `Promise.all(${JSON.stringify(args.paths)}.map(p => fetch(p, { credentials: 'include' }).then(r => [p, r.status, r.url])))`);
+  const statuses = await evaluate(cdp, sessionId, `Promise.all(${JSON.stringify(paths)}.map(p => fetch(p, { credentials: 'include' }).then(r => [p, r.status, r.url])))`);
   const withoutHash = url => url.href.split('#')[0];
   const redirects = statuses.map(([p, , landed]) => [withoutHash(new URL(p, start)), landed]).filter(([requested, landed]) => landed !== requested);
   if (redirects.length) throw redirectError(redirects, start.origin);
   const missing = statuses.filter(([, status]) => status >= 400);
   if (missing.length) throw new Error(`pages did not load: ${missing.map(([p, status]) => `${p} (${status})`).join(', ')}`);
-  const options = JSON.stringify({ paths: args.paths, ...(args.widths && { widths: args.widths }) });
+  const options = JSON.stringify({ paths, ...(args.widths && { widths: args.widths }) });
   return evaluate(cdp, sessionId, `(${check})(${options})`);
 }
 
