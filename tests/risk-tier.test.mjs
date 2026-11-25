@@ -157,6 +157,15 @@ test('an inline command after a code span that ends in ! is executed', () => {
   assert.equal(riskTier(edit(named), { readFile: () => named }).tier, 1);
 });
 
+test('an inline command right after an argument placeholder is executed', () => {
+  const p = 'plugins/bstack/skills/x/SKILL.md';
+  for (const line of ['$ARGUMENTS!`npm test || true`', '$name!`npm test || true`']) {
+    const head = ['---', 'name: x', 'description: y', '---', 'Run the suite:', line, ''].join('\n');
+    const edit = [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, `+${line}`].join('\n');
+    assert.equal(riskTier(edit, { readFile: () => head }).tier, 2, line);
+  }
+});
+
 test('a prose file whose head cannot be read keeps the weakening rules', () => {
   const diff = file('docs/ci.md', { add: ['Never add `|| true`.'] });
   assert.equal(riskTier(diff).tier, 2);
