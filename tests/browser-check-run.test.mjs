@@ -251,8 +251,7 @@ test('browser check runner ends at once when the page renderer crashes, exits 2 
   const [profile] = fs.readdirSync(tmp).filter(name => name.startsWith('browser-check-'));
   await killRenderers(path.join(tmp, profile));
   const run = await running;
-  t.diagnostic(`TRACEOUT ${run.seconds} ${run.stderr.split('
-').filter(l => /Inspector|Target\.(detached|targetCrashed|targetDestroyed)|crashed/.test(l)).join(' | ')}`);
+  t.diagnostic(`TRACEOUT ${run.seconds} ${run.stderr.split('\n').filter(l => /Inspector|Target\.(detached|targetCrashed|targetDestroyed)|crashed/.test(l)).join(' | ')}`);
   const left = fs.readdirSync(tmp).filter(name => name.startsWith('browser-check-'));
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   assert.equal(run.status, 2, run.stderr);
