@@ -47,16 +47,35 @@ const PROSE_EXTENSION = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
 const isProse = p => PROSE_EXTENSION.test(p) && !BUILD_TXT.test(p) && !COMMANDS.test(p);
 const CLAUDE_CODE_FRONTMATTER = /^﻿?---\s*\n([\s\S]*?)---\s*\n?/d;
 const CLAUDE_CODE_EXECUTED_FENCE = /```!\s*\n?([\s\S]*?)\n?```/dg;
-const INLINE_MARKER_THROUGH_EMPTY_ARGUMENTS = String.raw`!(?:\$(?:\{[^}\n]*\}|[^\s$` + '`' + String.raw`]*))*` + '`';
-const LINE_WITH_INLINE_COMMAND = new RegExp(`^(.*${INLINE_MARKER_THROUGH_EMPTY_ARGUMENTS}.*)$`, 'dgm');
-const INLINE_COMMAND_UP_TO_NEXT_BACKTICK = new RegExp(`${INLINE_MARKER_THROUGH_EMPTY_ARGUMENTS}(?=([^\`]*))`, 'dg');
+const INLINE_MARKER_THROUGH_ANY_PLACEHOLDER = '!(?:\\$[^\\n`]*)?`';
+const LINE_WITH_INLINE_COMMAND = new RegExp(`^(.*${INLINE_MARKER_THROUGH_ANY_PLACEHOLDER}.*)$`, 'dgm');
+const INLINE_COMMAND_UP_TO_NEXT_BACKTICK = new RegExp(`${INLINE_MARKER_THROUGH_ANY_PLACEHOLDER}(?=([^\`]*))`, 'dg');
+const ARGUMENT_PLACEHOLDER_SPELLINGS = [/\$(?:\{[^}\n]*\}|\w*)/g, /\$(?:\{[^}\n]*\}|[^\s`$]*)/g];
 
-function executedRegions(text) {
+function withoutPlaceholders(text, placeholder) {
+  const kept = [];
+  let next = 0;
+  for (const m of text.matchAll(placeholder)) {
+    for (let i = next; i < m.index; i++) kept.push(i);
+    next = m.index + m[0].length;
+  }
+  for (let i = next; i < text.length; i++) kept.push(i);
+  const rawStart = i => kept[i] ?? text.length;
+  const rawEnd = (start, end) => (end > start ? kept[end - 1] + 1 : rawStart(start));
+  return { text: kept.map(i => text[i]).join(''), toRaw: ([start, end]) => [rawStart(start), rawEnd(start, end)] };
+}
+
+function regionsIn(text) {
   const frontmatter = text.match(CLAUDE_CODE_FRONTMATTER);
   const bodyStart = frontmatter ? frontmatter[0].length : 0;
   const fences = [...text.slice(bodyStart).matchAll(CLAUDE_CODE_EXECUTED_FENCE)].map(m => m.indices[1].map(i => i + bodyStart));
   const inline = [LINE_WITH_INLINE_COMMAND, INLINE_COMMAND_UP_TO_NEXT_BACKTICK].flatMap(re => [...text.matchAll(re)].map(m => m.indices[1]));
   return [...(frontmatter ? [frontmatter.indices[1]] : []), ...fences, ...inline];
+}
+
+function executedRegions(text) {
+  const substituted = ARGUMENT_PLACEHOLDER_SPELLINGS.map(placeholder => withoutPlaceholders(text, placeholder));
+  return [...regionsIn(text), ...substituted.flatMap(s => regionsIn(s.text).map(s.toRaw))];
 }
 
 function executedMatch(head, line, re) {
