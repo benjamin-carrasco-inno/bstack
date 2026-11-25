@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -97,8 +99,9 @@ function connect(url) {
     };
     eventWaiters.add(waiter);
   });
+  const on = (method, handler) => eventWaiters.add(msg => msg.method === method && handler(msg));
   return new Promise((resolve, reject) => {
-    ws.addEventListener('open', () => resolve({ send, nextEvent, close: () => ws.close() }));
+    ws.addEventListener('open', () => resolve({ send, nextEvent, on, close: () => ws.close() }));
     ws.addEventListener('error', () => reject(new Error(`cannot connect to ${url}`)));
   });
 }
@@ -113,7 +116,7 @@ async function openStartPage(cdp, start) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   await cdp.send('Page.enable', {}, sessionId);
-  await cdp.send('Page.setBypassCSP', { enabled: true }, sessionId);
+  cdp.on('Page.javascriptDialogOpening', msg => cdp.send('Page.handleJavaScriptDialog', { accept: true }, msg.sessionId).catch(() => {}));
   const loaded = cdp.nextEvent('Page.loadEventFired', sessionId);
   const { errorText } = await cdp.send('Page.navigate', { url: start.href }, sessionId);
   if (errorText) throw new Error(`could not open ${start.href} (${errorText}); is the app running?`);
@@ -130,18 +133,35 @@ function redirectError(redirects, origin) {
   return new Error(`${list}; pass the path it lands on, or for a page behind login inject browser-check.js in a signed-in browser (the runner has no session)`);
 }
 
+function responseOf(url, cookie) {
+  return new Promise((resolve, reject) => {
+    const request = (url.protocol === 'https:' ? https : http).get(url, { headers: { cookie }, rejectUnauthorized: false }, res => {
+      res.resume();
+      resolve({ status: res.statusCode, location: res.headers.location });
+    });
+    request.on('error', reject);
+  });
+}
+
+async function pageStatuses(cdp, sessionId, pages, paths) {
+  return Promise.all(pages.map(async (url, i) => {
+    const { cookies } = await cdp.send('Network.getCookies', { urls: [url.href] }, sessionId);
+    const { status, location } = await responseOf(url, cookies.map(c => `${c.name}=${c.value}`).join('; '));
+    return { path: paths[i], requested: url.href, status, landed: location && new URL(location, url).href };
+  }));
+}
+
 async function runCheck(cdp, args, check) {
   const pages = args.paths.map(p => new URL(p, args.origin));
   const [start] = pages;
   const sameOriginPath = url => (url.origin === start.origin ? url.pathname + url.search + url.hash : url.href);
   const paths = pages.map(sameOriginPath);
   const sessionId = await openStartPage(cdp, start);
-  const statuses = await evaluate(cdp, sessionId, `Promise.all(${JSON.stringify(paths)}.map(p => fetch(p, { credentials: 'include' }).then(r => [p, r.status, r.url])))`);
-  const withoutHash = url => url.href.split('#')[0];
-  const redirects = statuses.map(([p, , landed]) => [withoutHash(new URL(p, start)), landed]).filter(([requested, landed]) => landed !== requested);
-  if (redirects.length) throw redirectError(redirects, start.origin);
-  const missing = statuses.filter(([, status]) => status >= 400);
-  if (missing.length) throw new Error(`pages did not load: ${missing.map(([p, status]) => `${p} (${status})`).join(', ')}`);
+  const statuses = await pageStatuses(cdp, sessionId, pages, paths);
+  const redirects = statuses.filter(s => s.status >= 300 && s.status < 400 && s.landed);
+  if (redirects.length) throw redirectError(redirects.map(s => [s.requested, s.landed]), start.origin);
+  const missing = statuses.filter(s => s.status >= 400);
+  if (missing.length) throw new Error(`pages did not load: ${missing.map(s => `${s.path} (${s.status})`).join(', ')}`);
   const options = JSON.stringify({ paths, ...(args.widths && { widths: args.widths }) });
   return evaluate(cdp, sessionId, `(${check})(${options})`);
 }
