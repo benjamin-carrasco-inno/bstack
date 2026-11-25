@@ -69,7 +69,7 @@ The guard runs before every `Bash` and `PowerShell` command (Windows routes shel
 A new commit changes the head SHA, so an old verdict no longer counts, with one exception. A verdict and an interrogate result judged on an older head carry to the current head when:
 
 - every commit after the judged head is a merge of the base branch,
-- the PR's own diff is the same on both heads (code files line for line, ignoring only index lines and hunk line numbers; docs files such as `CHANGELOG.md` by their added and removed lines),
+- the PR's own diff is the same on both heads (code files line for line, ignoring only index lines and hunk headers; docs files such as `CHANGELOG.md`, unless `.github/risk-paths.txt` lists them, by their added and removed lines),
 - CI is green and the risk tier is not higher on the current head, and
 - at tier 2, the base branch changed none of the code files the PR changes.
 
