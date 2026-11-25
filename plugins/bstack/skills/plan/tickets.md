@@ -35,7 +35,7 @@ Before writing tickets, check with the user that the proving boundary is the one
 
 Sub-issues of the spec, each one PR that leaves main working:
 - **A vertical slice**: a thin path through every layer it needs (data, logic, route, page, test), demoable on its own. Not "all the models", then "all the routes".
-- **Sized to one session** and to a PR a reviewer reads in about 15 minutes.
+- **About 300 changed lines** outside tests, a guideline: measured PRs up to 300 lines took 1.5 reviewer runs on average, larger ones 3.9. A migration is its own ticket.
 - **Prefactor first**: when a change is hard to make, the first ticket makes it easy, without changing behaviour.
 - **A wide mechanical change** (a rename across many callers) is expand, migrate in batches, contract: add the new form beside the old, move callers over one ticket per batch, then delete the old form in a ticket blocked by every batch.
 
@@ -50,7 +50,7 @@ The behaviour this ticket makes work, from the user's side. Current behaviour fi
 - What a builder might be tempted to add
 ```
 
-Name types, fields and contracts the builder should look for, not paths. The reviewer judges the PR against the acceptance criteria, so write them as the test of done.
+Name the types, areas and contracts it touches, not paths. Write the acceptance criteria as the test of done: the reviewer judges against them.
 
 ## Publish
 
