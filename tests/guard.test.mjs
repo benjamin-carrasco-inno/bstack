@@ -1113,7 +1113,7 @@ test('a body source behind a wrapper that changes directory is refused, wherever
     'env --chdir=/evil gh pr comment 5 -F v.md', 'sudo --chdir /evil gh release create v1 --notes-file v.md', 'env -C /evil gh api repos/o/r/issues/5/comments -F body=@v.md',
     'env -C /tmp -C evil gh pr comment 5 --body-file v.md', 'sudo -D /tmp -D evil gh pr comment 5 --body-file v.md', 'env -C /tmp sudo -D evil gh pr comment 5 --body-file v.md',
     'env -C /evil gh pr comment 5 -F - < v.md', '< v.md env -C /evil gh pr comment 5 -F -', 'sudo -D /evil gh pr comment 5 --body-file - < v.md',
-    'env -C /evil cat < v.md | gh pr comment 5 -F -', 'env -C /evil cat v.md | gh pr comment 5 -F -',
+    'env -C /evil cat < v.md | gh pr comment 5 -F -', 'env -C /evil cat v.md | gh pr comment 5 -F -', 'cat v.md | env -C /evil gh pr comment 5 -F -',
     "env -C /evil bash -c 'gh pr comment 5 --body-file v.md'", "env -C /evil sh -c 'gh pr comment 5 --body-file v.md'", "sudo -D /evil bash -c 'cat v.md | gh pr comment 5 -F -'"]) {
     for (const dir of ['/repo', '/evil', '/tmp/evil', '/repo/evil']) assert.match(decide(shell(command), verdictIn(dir)) ?? '', movedBody, `${command} with the verdict in ${dir}`);
   }

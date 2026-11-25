@@ -20,7 +20,7 @@ const BARE_REDIRECT = /^(\d*(<<?<?|>>?|>&|<&|>\|)|&>>?)$/;
 
 function wrapperFlags(wrapper, parsed) {
   const spec = WRAPPER_FLAGS[wrapper];
-  const chdir = [];
+  let movesDir = false;
   let i = 0;
   while (spec && i < parsed.length && parsed[i].text.startsWith('-')) {
     const w = parsed[i].text;
@@ -29,7 +29,7 @@ function wrapperFlags(wrapper, parsed) {
       const name = w.split('=')[0];
       const glued = w.includes('=');
       if (!spec.valued.has(name) && !spec.bare.has(name)) return { hidden: w };
-      if (spec.chdir.has(name)) chdir.push(glued ? { text: w.slice(name.length + 1), expression: parsed[i].expression } : parsed[i + 1]);
+      movesDir ||= spec.chdir.has(name);
       i += spec.valued.has(name) && !glued ? 2 : 1;
       continue;
     }
@@ -42,8 +42,7 @@ function wrapperFlags(wrapper, parsed) {
     for (let k = 1; k < w.length; k++) {
       const flag = `-${w[k]}`;
       if (spec.valued.has(flag)) {
-        const value = k + 1 < w.length ? { text: w.slice(k + 1), expression: parsed[i].expression } : parsed[i + 1];
-        if (spec.chdir.has(flag)) chdir.push(value);
+        movesDir ||= spec.chdir.has(flag);
         step = k + 1 < w.length ? 1 : 2;
         break;
       }
@@ -51,7 +50,7 @@ function wrapperFlags(wrapper, parsed) {
     }
     i += step;
   }
-  return { rest: parsed.slice(i), chdir: chdir.slice(-1).filter(Boolean) };
+  return { rest: parsed.slice(i), movesDir };
 }
 
 const HERE_STRING_OPEN = /^@(['"])\r?\n/;
@@ -349,14 +348,14 @@ export const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
 export const UNRESOLVED = /[$%`]/;
 
 // Every simple command in a line, including commands nested in bash -c, pwsh -Command and cmd /c.
-export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shellCount = { n: 0 }) {
+export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shellCount = { n: 0 }, underDirWrapper = false) {
   const out = [];
   const commandOf = new Map();
   for (const part of segmentsOf(line, dialect)) {
     const segment = part.text;
     let parsed = words(segment, dialect);
     const env = {};
-    const chdir = [];
+    let movesDir = underDirWrapper;
     let redirected = false;
     let hidden = null;
     while (parsed.length && !hidden) {
@@ -368,7 +367,7 @@ export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shell
       if (!PREFIXES.has(wrapper)) break;
       const flags = wrapperFlags(wrapper, parsed.slice(1));
       if (flags.hidden) { hidden = flags.hidden; break; }
-      chdir.push(...flags.chdir);
+      movesDir ||= flags.movesDir;
       parsed = flags.rest;
     }
     if (!parsed.length) {
@@ -382,13 +381,13 @@ export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shell
     if (hidden) { out.push({ cmd, args, expressions, expands, text: segment, dialect, env, scope, hidden }); continue; }
     if (depth < 3 && SHELLS.has(cmd)) {
       const at = args.findIndex(a => /^(-c|-command|\/c|-encodedcommand)$/i.test(a));
-      if (at >= 0) { out.push(...commandsIn(args.slice(at + 1).join(' '), depth + 1, DIALECT_OF_SHELL[cmd] ?? 'posix', `${scope}/${++shellCount.n}`, shellCount)); continue; }
+      if (at >= 0) { out.push(...commandsIn(args.slice(at + 1).join(' '), depth + 1, DIALECT_OF_SHELL[cmd] ?? 'posix', `${scope}/${++shellCount.n}`, shellCount, movesDir)); continue; }
     }
     if (depth < 3 && /^(invoke-expression|iex)$/.test(cmd) && args.length) {
-      out.push(...commandsIn(args.join(' '), depth + 1, dialect, scope, shellCount));
+      out.push(...commandsIn(args.join(' '), depth + 1, dialect, scope, shellCount, movesDir));
       continue;
     }
-    const command = { cmd, program: parsed[0].text, args, expressions, expands, text: segment, dialect, env, scope, chdir, pipedFrom: commandOf.get(part.pipedFrom) };
+    const command = { cmd, program: parsed[0].text, args, expressions, expands, text: segment, dialect, env, scope, movesDir, pipedFrom: commandOf.get(part.pipedFrom) };
     commandOf.set(part, command);
     out.push(command);
   }

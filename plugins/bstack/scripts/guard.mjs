@@ -115,8 +115,7 @@ function located(commands, start, host) {
   const placed = new Map();
   return commands.map(c => {
     const shell = shellState(scopes, c.scope ?? '', start);
-    const here = (c.chdir ?? []).reduce((from, to) => movedTo(to.text, to.expression, from, c.dialect, host), shell.here);
-    const at = { ...c, cwd: here.dir, cwdKnown: here.known, env: { ...shell.env, ...c.env }, pipedFrom: placed.get(c.pipedFrom) };
+    const at = { ...c, cwd: shell.here.dir, cwdKnown: shell.here.known, env: { ...shell.env, ...c.env }, pipedFrom: placed.get(c.pipedFrom) };
     placed.set(c, at);
     changeDir(shell, c, host);
     setVariables(shell.env, c);
@@ -135,22 +134,18 @@ function shellState(scopes, scope, start) {
 function changeDir(shell, c, host) {
   const move = DIR_MOVES[c.cmd];
   const at = c.args.findIndex(a => a === '-' || (!a.startsWith('-') && !/^\/d$/i.test(a)));
+  const { word: target, dialect } = inTempDir(c.args[at], c.dialect, host);
   if (move === 'pop') {
     if (shell.stack.length) [shell.previous, shell.here] = [shell.here, shell.stack.pop()];
-  } else if (move && c.args[at] === '-') {
+  } else if (move && target === '-') {
     if (shell.previous !== undefined) [shell.previous, shell.here] = [shell.here, shell.previous];
   } else if (move) {
     if (move === 'push') shell.stack.push(shell.here);
     shell.previous = shell.here;
-    shell.here = movedTo(c.args[at], c.expressions?.has(at), shell.here, c.dialect, host);
+    const dir = resolvedDir(target, shell.here.dir, dialect, host.paths);
+    const opaque = target === undefined || c.expressions?.has(at) || OPAQUE.test(target) || HOME.test(target);
+    shell.here = { dir, known: dir !== UNKNOWN_DIR && !opaque && (shell.here.known || host.paths.isAbsolute(target, dialect)) };
   }
-}
-
-function movedTo(word, expression, here, shellDialect, host) {
-  const { word: target, dialect } = inTempDir(word, shellDialect, host);
-  const dir = resolvedDir(target, here.dir, dialect, host.paths);
-  const opaque = target === undefined || expression || OPAQUE.test(target) || HOME.test(target);
-  return { dir, known: dir !== UNKNOWN_DIR && !opaque && (here.known || host.paths.isAbsolute(target, dialect)) };
 }
 
 function setVariables(env, c) {
@@ -179,6 +174,7 @@ function hiddenRule(c) {
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
+const MOVED_BODY = 'The guard does not follow the directory change of env -C, env --chdir, sudo -D or sudo --chdir, so it cannot see which file the gh body is read from. Run gh from the target directory with a literal path instead.';
 const SAVED_VERDICTS = 'Saved verdicts are written only by the bstack hook when GitHub does not answer; the guard posts them at the next merge. Run the bstack:reviewer or bstack:adversary agent instead.';
 
 function markerRule(c, deps) {
@@ -193,6 +189,7 @@ function markerRule(c, deps) {
   if (built) return `The ${built} text comes from a substitution or variable the guard cannot see, so it cannot check it for a bstack verdict line. Write the text to a file and pass the file (--body-file, --notes-file or -F body=@<path>).`;
   for (const file of bodyFiles(c.args)) {
     const sources = file === '-' ? stdinFiles(c) : [{ file, at: c }];
+    if (c.movesDir || sources?.some(source => source.at.movesDir)) return MOVED_BODY;
     if (!sources) return 'The guard cannot see what reaches the body on stdin, so it cannot check it for a bstack verdict line. Redirect a file with < <path>, pipe one with cat <path> |, or give the body file as a path.';
     for (const source of sources) {
       const reason = bodyFileReason(source, deps);
