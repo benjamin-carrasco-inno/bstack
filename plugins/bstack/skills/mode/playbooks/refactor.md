@@ -2,7 +2,7 @@
 
 Same behaviour, better shape. If behaviour changes, it is a feature or a bug fix.
 
-**UI harmonisation** (moving existing UI to tokens, components and container queries per `bstack:frontend`) keeps function unchanged: routes, data, actions. The look may change, so identical pixels are not the lock. The lock is before and after screenshots at 375 and 1280 px in the PR, plus a clean browser check (`bstack:verify`) on each changed page.
+**UI harmonisation** (to tokens, components and container queries per `bstack:frontend`) keeps routes, data and actions; the look may change. The lock is before and after screenshots at 375 and 1280 px in the PR plus a clean browser check (`bstack:verify`) on each changed page, not identical pixels.
 
 1. **Lock the behaviour first.** A characterisation test or snapshot of the outputs that matter (HTTP responses, rows written, files produced), run green on the current code. A typecheck is not a lock.
 2. **Delete before you add.** Dead code, unused parameters, duplicate helpers and unreachable branches go first, each proven unused (search, import graph, coverage).
