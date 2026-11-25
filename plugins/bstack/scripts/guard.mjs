@@ -15,7 +15,7 @@ import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, ti
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
-import { mergeInChain, prCommits, prMergeInChain, sameChange } from './lib/carry.mjs';
+import { firstParentLine, mergeInChain, prCommits, prMergeInChain, sameChange } from './lib/carry.mjs';
 import { policyLines, readBasePolicy } from './lib/base-policy.mjs';
 import { EXPOSURE, RISK_PATHS, exposureOf, gatePlan, ghFileReader, riskTier, tierZeroDocs } from './risk-tier.mjs';
 
@@ -1097,18 +1097,20 @@ function mergeGate(args, cwd, deps, c, line) {
   return postCarried(pr, risk, [verdict], cwd, deps);
 }
 
-// Internal exposure: the newest interrogate result on a commit of this PR counts. Blocking findings
-// need a later PR commit that is not a merge-in of the base, and a verdict judged after them.
+// Internal exposure: the result on the latest judged commit of head's first-parent line counts, newest
+// first on that commit. Blocking findings need a later commit that is not a merge-in of the base, and
+// a verdict judged after them.
 function internalInterrogate(pr, verdict, why, { cwd, deps, repo }) {
   const head = pr.headRefOid;
-  const results = (pr.comments ?? []).filter(c => shaOf('interrogate', c.body)).sort((a, b) => timeOf(a) - timeOf(b));
+  const results = (pr.comments ?? []).filter(c => shaOf('interrogate', c.body));
   let commits = [];
   if (results.some(c => shaOf('interrogate', c.body) !== head)) {
     try { commits = prCommits(args => deps.gh(cwd, ['api', ...args]), repo, pr.number); }
     catch (e) { return `bstack could not read the commits of ${pr.url} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
   }
-  const ofPr = new Set([head, ...commits.map(c => c.sha)]);
-  const newest = results.filter(c => ofPr.has(shaOf('interrogate', c.body))).at(-1);
+  const line = firstParentLine(commits, head);
+  const place = c => line.indexOf(shaOf('interrogate', c.body));
+  const newest = results.filter(c => place(c) >= 0).sort((a, b) => place(a) - place(b) || timeOf(b) - timeOf(a))[0];
   if (!newest) return `Tier 2${why}: run bstack:interrogate on head ${head.slice(0, 7)} before merging, and get the user's OK if a revert cannot undo it.`;
   const judgedOn = shaOf('interrogate', newest.body);
   const { blocking } = latestFor('interrogate', [newest], judgedOn);

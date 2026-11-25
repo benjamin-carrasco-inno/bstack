@@ -89,7 +89,7 @@ A repo can raise paths to tier 2 with globs in `.github/risk-paths.txt`. The gua
 
 ### Exposure
 
-`.github/bstack-exposure.txt` on the base branch decides how deep tier 2 goes; the levels are described in [interrogate](plugins/bstack/skills/interrogate/SKILL.md#exposure). The guard reads it like `risk-paths.txt`, and only at tier 2: a missing file is `external`, any other read failure blocks the merge. At `internal` the guard takes the newest interrogate result for the head or a commit in the PR's commit list; with blocking findings, a commit that is not a merge-in of the base branch must follow it, and the head's verdict must be newer. A PR that changes either policy file also needs the user's OK line for the head.
+`.github/bstack-exposure.txt` on the base branch decides how deep tier 2 goes; the levels are described in [interrogate](plugins/bstack/skills/interrogate/SKILL.md#exposure). The guard reads it like `risk-paths.txt`, and only at tier 2: a missing file is `external`, any other read failure blocks the merge. At `internal` the guard walks the head's first parents through the PR's commits and takes the interrogate result on the latest commit that has one (the newest, when that commit has several); a later result on an older commit never overrides it. With blocking findings, a commit that is not a merge-in of the base branch must follow it, and the head's verdict must be newer. A PR that changes either policy file also needs the user's OK line for the head.
 
 ## Comments
 
