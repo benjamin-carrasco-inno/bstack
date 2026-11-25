@@ -25,6 +25,10 @@
     document.body.append(frame);
     await loaded;
     const doc = frame.contentDocument;
+    if (!doc) {
+      frame.remove();
+      throw new Error(`${path} refuses framing (X-Frame-Options or CSP frame-ancestors) or is on another origin; the check loads each page in an iframe`);
+    }
     const freeze = doc.createElement('style');
     freeze.textContent = FREEZE;
     doc.head.append(freeze);

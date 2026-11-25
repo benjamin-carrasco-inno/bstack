@@ -61,6 +61,8 @@ const routes = {
   '/alert': html(String(fixture('clean.html')).replace('</body>', '<script>alert("Welcome")</script></body>')),
   '/csp-blocked-style': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'content-security-policy': "style-src 'none'" }).end(String(fixture('clean.html')).replace('</body>', '<style>body::after { content: ""; display: block; inline-size: 3000px; block-size: 1px; }</style></body>')),
   '/csp-connect-none': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'content-security-policy': "connect-src 'none'" }).end(fixture('clean.html')),
+  '/xfo-deny': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'x-frame-options': 'DENY' }).end(fixture('clean.html')),
+  '/csp-frame-ancestors-none': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'content-security-policy': "frame-ancestors 'none'" }).end(fixture('clean.html')),
   '/query': (req, res) => html(fixture(req.url.endsWith('?v=bad') ? 'defects.html' : 'clean.html'))(req, res),
 };
 const route = (req, res) => (routes[new URL(req.url, 'http://x').pathname] ?? ((_, r) => r.writeHead(404).end('not found')))(req, res);
@@ -189,6 +191,19 @@ test('browser check runner exits 2 and names where it landed when the start page
     const run = await runAsync([origin, ...args]);
     assert.equal(run.status, 2, `${args.join(' ')}: ${run.stdout}`);
     assert.match(run.stderr, /\/settings redirected to \/login; .*no session/, args.join(' '));
+  }
+});
+
+test('browser check runner exits 2 without a stack trace when a page refuses framing, and removes its profile', { skip: noBrowser }, async () => {
+  for (const refusing of ['/xfo-deny', '/csp-frame-ancestors-none']) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
+    const run = await runAsync([origin, '/clean', refusing], { TMPDIR: tmp, TEMP: tmp, TMP: tmp });
+    const left = fs.readdirSync(tmp).filter(name => name.startsWith('browser-check-'));
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    assert.equal(run.status, 2, `${refusing}: ${run.stdout}${run.stderr}`);
+    assert.ok(run.stderr.includes(`${refusing} refuses framing (X-Frame-Options or CSP frame-ancestors)`), run.stderr);
+    assert.doesNotMatch(run.stderr, /TypeError|\n\s+at /, refusing);
+    assert.deepEqual(left, [], refusing);
   }
 });
 

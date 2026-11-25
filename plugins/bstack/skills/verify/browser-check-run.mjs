@@ -108,8 +108,14 @@ function connect(url) {
 
 async function evaluate(cdp, sessionId, expression) {
   const { result, exceptionDetails } = await cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId);
-  if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
+  if (exceptionDetails) throw new Error(failureOf(exceptionDetails));
   return result.value;
+}
+
+function failureOf({ exception, text }) {
+  const description = exception?.description ?? text;
+  const deliberate = exception?.className === 'Error';
+  return deliberate ? description.split('\n')[0].replace(/^Error: /, '') : description;
 }
 
 async function openStartPage(cdp, start) {
