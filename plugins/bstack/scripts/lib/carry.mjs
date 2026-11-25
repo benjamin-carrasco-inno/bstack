@@ -1,7 +1,7 @@
 // When a result judged on an older head of a PR also holds for its current head: every commit in
 // between is a merge of the base branch, and the PR's own diff is the same on both heads.
 import { createHash } from 'node:crypto';
-import { isDocs, parseDiff } from '../risk-tier.mjs';
+import { parseDiff } from '../risk-tier.mjs';
 
 export const GITHUB_COMMIT_LIST_LIMIT = 250;
 
@@ -15,20 +15,20 @@ export function mergeInChain(commits, head) {
   return chain;
 }
 
-const HUNK_NUMBERS = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/;
+const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@.*$/s;
 const MOVES_WITH_BASE = /^(index |similarity index |dissimilarity index )/;
 const BINARY = /^(Binary files |GIT binary patch)/;
 
 function fileBlocks(diff) {
   const blocks = [];
-  for (const line of String(diff ?? '').split(/\r?\n/)) {
+  for (const line of String(diff ?? '').split('\n')) {
     if (line.startsWith('diff --git ')) blocks.push([]);
     if (line) blocks.at(-1)?.push(line);
   }
   return blocks;
 }
 
-function fileShape(lines) {
+function fileShape(lines, isDocs) {
   const [file] = parseDiff(lines.join('\n'));
   const firstHunk = lines.findIndex(l => l.startsWith('@@'));
   const header = firstHunk < 0 ? lines : lines.slice(0, firstHunk);
@@ -36,7 +36,7 @@ function fileShape(lines) {
   const docs = isDocs(file.path);
   const compared = docs
     ? hunks.filter(l => l.startsWith('+') || l.startsWith('-'))
-    : [...header.filter(l => !MOVES_WITH_BASE.test(l)), ...hunks.map(l => l.replace(HUNK_NUMBERS, '@@'))];
+    : [...header.filter(l => !MOVES_WITH_BASE.test(l)), ...hunks.map(l => l.replace(HUNK_HEADER, '@@'))];
   return {
     path: file.path,
     docs,
@@ -48,11 +48,12 @@ function fileShape(lines) {
 
 const fingerprintOf = files => `sha256:${createHash('sha256').update(files.map(f => f.key).join('\n\0\n')).digest('hex')}`;
 
-// Docs files compare by their added and removed lines, code files by every line except index lines
-// and hunk line numbers. overlap: code files whose pre-image differs, so the base branch changed them.
-export function sameChange(judgedDiff, headDiff) {
-  const judged = fileBlocks(judgedDiff).map(fileShape);
-  const head = fileBlocks(headDiff).map(fileShape);
+// Docs files (isDocs: tier 0 paths) compare by their added and removed lines, other files by every
+// line except index lines and hunk headers. overlap: non-docs files whose pre-image differs, so the
+// base branch changed them.
+export function sameChange(judgedDiff, headDiff, isDocs) {
+  const judged = fileBlocks(judgedDiff).map(lines => fileShape(lines, isDocs));
+  const head = fileBlocks(headDiff).map(lines => fileShape(lines, isDocs));
   const judgedKeys = new Map(judged.map(f => [f.path, f.key]));
   const headKeys = new Map(head.map(f => [f.path, f.key]));
   const binary = [...new Set([...judged, ...head].filter(f => f.binary).map(f => f.path))];

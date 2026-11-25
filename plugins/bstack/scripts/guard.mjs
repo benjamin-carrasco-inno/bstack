@@ -16,7 +16,7 @@ import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
 import { GITHUB_COMMIT_LIST_LIMIT, mergeInChain, sameChange } from './lib/carry.mjs';
-import { ghFileReader, riskTier, readRiskPaths } from './risk-tier.mjs';
+import { ghFileReader, riskTier, readRiskPaths, tierZeroDocs } from './risk-tier.mjs';
 
 const DEFAULT_BRANCH = /^(main|master)$/;
 const READ_ONLY = new Set(['grep', 'rg', 'findstr', 'select-string', 'sls', 'cat', 'type', 'get-content', 'gc', 'jq', 'less', 'head', 'tail', 'wc']);
@@ -1101,7 +1101,7 @@ function carrier(pr, risk, { cwd, deps, repo, extraPaths }) {
   };
 
   const check = (from, merges) => {
-    const change = sameChange(diffAt(from), diffAt(head));
+    const change = sameChange(diffAt(from), diffAt(head), tierZeroDocs(extraPaths));
     if (change.binary.length) return { refused: `the PR diff has binary files (${shortList(change.binary)})` };
     if (!change.same) return { refused: `the PR diff changed${change.changed.length ? ` in ${shortList(change.changed)}` : ''}` };
     const tierBefore = riskTier(diffAt(from), { extraPaths, readFile: ghFileReader(args => deps.gh(cwd, args), repo, from) }).tier;
@@ -1139,9 +1139,9 @@ function carriedComment(pr, risk, carried) {
   for (const r of new Map(carried.map(c => [c.from, c])).values()) {
     lines.push('', `Why the result on ${short(r.from)} holds for ${short(head)}:`,
       `- Every commit after it is a merge of ${pr.baseRefName}: ${r.merges.map(short).join(', ')}.`,
-      `- The PR diff is the same on both heads: ${r.fingerprint} (index lines and hunk line numbers left out; docs files by their added and removed lines).`,
+      `- The PR diff is the same on both heads: ${r.fingerprint} (index lines and hunk headers left out; docs files by their added and removed lines).`,
       `- Risk tier ${r.tierBefore} on ${short(r.from)}, ${risk.tier} on ${short(head)}.`,
-      ...(risk.tier === 2 ? [`- ${pr.baseRefName} changed none of the code files this PR changes.`] : []));
+      ...(risk.tier === 2 ? [`- ${pr.baseRefName} changed none of the files this PR changes, other than docs.`] : []));
   }
   lines.push(`- CI is green on ${short(head)}.`);
   return `${lines.join('\n')}\n`;

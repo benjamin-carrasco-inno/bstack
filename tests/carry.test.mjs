@@ -1,17 +1,21 @@
 import { test } from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import assert from 'node:assert/strict';
 import { decide } from '../plugins/bstack/scripts/guard.mjs';
 import { mergeInChain, sameChange } from '../plugins/bstack/scripts/lib/carry.mjs';
 import { commentBody } from '../plugins/bstack/scripts/lib/verdicts.mjs';
+import { tierZeroDocs } from '../plugins/bstack/scripts/risk-tier.mjs';
 
 const sha = c => c.repeat(40);
 const [BASE_OLD, PR_COMMIT, JUDGED, EXTRA, MAIN_TIP, MERGE, MERGE2, MAIN_TIP2] = ['0', '1', '2', '3', '4', '5', '6', '7'].map(sha);
 const GREEN = [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }];
 const RED = [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'FAILURE' }];
 
-const codeFile = (file, { pre = '1111111', post = '2222222', at = 10, context = ['a', 'b'], added = 'x = 1' } = {}) => [
+const codeFile = (file, { pre = '1111111', post = '2222222', at = 10, context = ['a', 'b'], added = 'x = 1', enclosing = 'def run():' } = {}) => [
   `diff --git a/${file} b/${file}`, `index ${pre}..${post} 100644`, `--- a/${file}`, `+++ b/${file}`,
-  `@@ -${at},3 +${at},4 @@ def run():`, ...context.map(l => ` ${l}`), `+${added}`, ' c',
+  `@@ -${at},3 +${at},4 @@ ${enclosing}`, ...context.map(l => ` ${l}`), `+${added}`, ' c',
 ].join('\n');
 const changelog = (neighbour, { pre = '3333333' } = {}) => [
   'diff --git a/CHANGELOG.md b/CHANGELOG.md', `index ${pre}..4444444 100644`, '--- a/CHANGELOG.md', '+++ b/CHANGELOG.md',
@@ -60,7 +64,8 @@ function fakeGitHub({ head = MERGE, commits = MERGED_ONCE, diffs, comments, chec
   return { deps, posted, calls };
 }
 
-const merge = github => decide({ tool_name: 'Bash', tool_input: { command: 'gh pr merge 5 --squash --delete-branch' }, cwd: '/repo' }, github.deps);
+const merge = (github, cwd = '/repo') => decide({ tool_name: 'Bash', tool_input: { command: 'gh pr merge 5 --squash --delete-branch' }, cwd }, github.deps);
+const docs = tierZeroDocs([]);
 
 test('a tier 1 verdict carries across a merge of main that leaves the PR diff unchanged, and the guard posts why', () => {
   const github = fakeGitHub({ diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [verdict('PASS')] });
@@ -97,7 +102,7 @@ test('a tier 2 verdict and interrogate result carry when main changed only docs 
   const { body } = github.posted[0];
   assert.ok(body.includes(`- interrogate result confirmed=0 blocking=0, judged on ${JUDGED}`), body);
   assert.match(body, /Risk tier 2 on 2222222, 2 on 5555555\./);
-  assert.match(body, /main changed none of the code files this PR changes/);
+  assert.match(body, /main changed none of the files this PR changes, other than docs\./);
 });
 
 test('a non-merge commit after the judged head means a new verdict', () => {
@@ -205,15 +210,43 @@ test('mergeInChain follows only first parents of merges whose second parent is o
 });
 
 test('sameChange compares code strictly and docs by their changed lines', () => {
-  const same = sameChange(JUDGED_CODE, MERGED_CODE);
+  const same = sameChange(JUDGED_CODE, MERGED_CODE, docs);
   assert.equal(same.same, true);
   assert.deepEqual(same.overlap, [CODE]);
-  assert.equal(sameChange(JUDGED_CODE, JUDGED_CODE).fingerprint, same.fingerprint);
+  assert.equal(sameChange(JUDGED_CODE, JUDGED_CODE, docs).fingerprint, same.fingerprint);
   const reworded = diffOf(codeFile(CODE), changelog('- fix: older').replace('+- feat: carry verdicts', '+- feat: carry results'));
-  assert.deepEqual(sameChange(JUDGED_CODE, reworded).changed, ['CHANGELOG.md']);
+  assert.deepEqual(sameChange(JUDGED_CODE, reworded, docs).changed, ['CHANGELOG.md']);
   const whitespace = diffOf(codeFile(CODE, { added: '  x = 1' }), changelog('- fix: older'));
-  assert.deepEqual(sameChange(JUDGED_CODE, whitespace).changed, [CODE]);
+  assert.deepEqual(sameChange(JUDGED_CODE, whitespace, docs).changed, [CODE]);
   const dropped = diffOf(codeFile(CODE));
-  assert.deepEqual(sameChange(JUDGED_CODE, dropped).changed, ['CHANGELOG.md']);
-  assert.equal(sameChange(JUDGED_CODE, '').same, false);
+  assert.deepEqual(sameChange(JUDGED_CODE, dropped, docs).changed, ['CHANGELOG.md']);
+  assert.equal(sameChange(JUDGED_CODE, '', docs).same, false);
+});
+
+test('sameChange ignores the enclosing function git names in a hunk header', () => {
+  const moved = diffOf(codeFile(CODE, { pre: '5555555', at: 40, enclosing: 'def added_by_main():' }), changelog('- fix: older'));
+  assert.equal(sameChange(JUDGED_CODE, moved, docs).same, true);
+});
+
+test('sameChange counts a line ending changed to CRLF as a change', () => {
+  const crlf = diffOf(codeFile(CODE, { added: 'x = 1\r' }), changelog('- fix: older'));
+  assert.deepEqual(sameChange(JUDGED_CODE, crlf, docs).changed, [CODE]);
+});
+
+test('a docs-named file listed in .github/risk-paths.txt compares strictly and counts as overlap at tier 2', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-carry-'));
+  try {
+    fs.mkdirSync(path.join(repo, '.github'));
+    fs.writeFileSync(path.join(repo, '.github', 'risk-paths.txt'), 'security/*.txt\n');
+    const allowlist = (pre, neighbour) => ['diff --git a/security/admin-allowlist.txt b/security/admin-allowlist.txt', `index ${pre}..4444444 100644`,
+      '--- a/security/admin-allowlist.txt', '+++ b/security/admin-allowlist.txt', '@@ -1,1 +1,2 @@', '+alice@example.com', ` ${neighbour}`].join('\n');
+    const judged = diffOf(codeFile(CODE), allowlist('3333333', 'deny-all'));
+    const moved = diffOf(codeFile(CODE), allowlist('7777777', 'allow-all'));
+    assert.deepEqual(sameChange(judged, moved, tierZeroDocs(['security/*.txt'])).changed, ['security/admin-allowlist.txt']);
+    const sameLines = diffOf(codeFile(CODE), allowlist('7777777', 'deny-all'));
+    const github = fakeGitHub({ diffs: { [JUDGED]: judged, [MERGE]: sameLines }, comments: [verdict('PASS'), interrogate(0)] });
+    assert.match(merge(github, repo) ?? '', /does not carry to 5555555: main changed security\/admin-allowlist\.txt, which this tier 2 PR also changes\./);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
 });

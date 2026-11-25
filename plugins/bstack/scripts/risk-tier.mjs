@@ -140,19 +140,29 @@ function globToRegex(glob) {
   return new RegExp(`^${esc}$`);
 }
 
-const readOrNull = (readFile, p) => { try { return readFile?.(p) ?? null; } catch { return null; } };
+const riskPathsMatcher = globs => {
+  const res = globs.map(globToRegex);
+  return p => res.some(re => re.test(p));
+};
+
+export const tierZeroDocs = extraPaths => {
+  const listed = riskPathsMatcher(extraPaths);
+  return p => isDocs(p) && !listed(p);
+};
+
+const readOrNull =(readFile, p) => { try { return readFile?.(p) ?? null; } catch { return null; } };
 
 export function riskTier(diff, { extraPaths = [], readFile } = {}) {
   const files = parseDiff(diff);
   const reasons = new Set();
   let tier = 0;
   const raise = (t, why) => { if (t > tier) tier = t; if (t >= 1 && why) reasons.add(why); };
-  const extra = extraPaths.map(globToRegex);
+  const extra = riskPathsMatcher(extraPaths);
 
   for (const f of files) {
     const p = f.path.replace(/\\/g, '/');
     if (!isDocs(p)) raise(1, CONFIG.test(p) ? `config or CI: ${p}` : null);
-    if (extra.some(re => re.test(p))) raise(2, `listed in .github/risk-paths.txt: ${p}`);
+    if (extra(p)) raise(2, `listed in .github/risk-paths.txt: ${p}`);
     const paths = f.oldPath ? [p, f.oldPath.replace(/\\/g, '/')] : [p];
     const fixture = paths.every(q => FIXTURE.test(q));
     const isTest = TEST_PATH.test(p);
