@@ -47,7 +47,7 @@ const PROSE_EXTENSION = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
 const isProse = p => PROSE_EXTENSION.test(p) && !BUILD_TXT.test(p) && !COMMANDS.test(p);
 const CLAUDE_CODE_FRONTMATTER = /^﻿?---\s*\n([\s\S]*?)---\s*\n?/d;
 const CLAUDE_CODE_EXECUTED_FENCE = /```!\s*\n?([\s\S]*?)\n?```/dg;
-const INLINE_MARKER_THROUGH_EMPTY_ARGUMENTS = String.raw`!(?:\$(?:\w+(?:\[\d+\])?|\{[^}\n]*\}))*` + '`';
+const INLINE_MARKER_THROUGH_EMPTY_ARGUMENTS = String.raw`!(?:\$(?:\{[^}\n]*\}|[^\s$` + '`' + String.raw`]*))*` + '`';
 const LINE_WITH_INLINE_COMMAND = new RegExp(`^(.*${INLINE_MARKER_THROUGH_EMPTY_ARGUMENTS}.*)$`, 'dgm');
 const INLINE_COMMAND_UP_TO_NEXT_BACKTICK = new RegExp(`${INLINE_MARKER_THROUGH_EMPTY_ARGUMENTS}(?=([^\`]*))`, 'dg');
 
