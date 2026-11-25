@@ -21,11 +21,12 @@ export const isDocs = p => DOCS.test(p) && !NOT_DOCS.test(p) && !BUILD_TXT.test(
 const runnableTest = p => TEST_PATH.test(p) && CODE.test(p);
 const FIXTURE = /(^|\/)(fixtures|__fixtures__|testdata)\//i;
 const SCHEMA_FILE = /(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i;
+const STYLESHEET = /\.(css|scss|sass|less)$/i;
 
 const PATH_RULES = [
   [SCHEMA_FILE, 'schema or migration file'],
   [/(^|\/)n8n\//i, 'n8n flow code (external consumer)'],
-  [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code'],
+  [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code', STYLESHEET],
   [/(import|sync|upsert|ingest|backfill)[^/]*\.(py|rs|js|mjs|ts)$/i, 'importer or sync code'],
 ];
 
@@ -170,7 +171,7 @@ export function riskTier(diff, { extraPaths = [], readFile } = {}) {
     const sqlLines = [...f.added, ...f.removed];
     const testFixtureSql = testOnly && fixture && paths.every(q => /\.sql$/i.test(q)) && sqlLines.length > 0;
     if (testFixtureSql && sqlLines.some(l => SCHEMA_STATEMENT.test(l))) raise(2, `SQL schema statement: ${p}`);
-    for (const q of paths) for (const [re, why] of PATH_RULES) if (re.test(q) && !(testFixtureSql && re === SCHEMA_FILE)) raise(2, `${why}: ${q}`);
+    for (const q of paths) for (const [re, why, exempt] of PATH_RULES) if (re.test(q) && !exempt?.test(q) && !(testFixtureSql && re === SCHEMA_FILE)) raise(2, `${why}: ${q}`);
 
     if (isTest && f.deleted) raise(2, `test file deleted: ${p}`);
     if (f.oldPath && runnableTest(paths[1]) && !runnableTest(p)) raise(2, `test file renamed out of the suite: ${paths[1]} -> ${p}`);
