@@ -26,17 +26,19 @@ const STYLESHEET = /\.(css|scss|sass|less)$/i;
 const PATH_RULES = [
   [SCHEMA_FILE, 'schema or migration file'],
   [/(^|\/)n8n\//i, 'n8n flow code (external consumer)'],
-  [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code', STYLESHEET],
+  [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code', { test: q => STYLESHEET.test(q) || runnableTest(q) }],
   [/(import|sync|upsert|ingest|backfill)[^/]*\.(py|rs|js|mjs|ts)$/i, 'importer or sync code'],
 ];
 
+const SAME_ORIGIN_WRITE = /<form\b(?![^>]*\baction\s*=\s*['"]?(?:[a-z][\w+.-]*:|\/\/|\\))[^>]*>|\bfetch\s*\(\s*(['"`])\.?\/(?![/\\])[^'"`]*\1\s*,\s*\{[^{}]*\}\s*\)/gi;
 const SCHEMA_STATEMENT = /\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i;
 
 const ADDED_OR_REMOVED = [
   [SCHEMA_STATEMENT, 'SQL schema statement'],
   [/\bDELETE\s+FROM\b|\bTRUNCATE\b|\bUPDATE\s+[\w."]+\s+SET\b|\bINSERT\s+(OR\s+\w+\s+)?INTO\b|\bON\s+CONFLICT\b/i, 'SQL that writes data'],
   [/\b(os\.remove|os\.unlink|shutil\.rmtree|\.unlink\(|\.rmdir\(|fs\.(rm|rmSync|unlink|unlinkSync|rmdir)\(|remove_file|remove_dir_all)\b/, 'code that removes files'],
-  [/\b(requests|httpx|session|client|reqwest|axios)\s*\.\s*(post|put|patch|delete)\s*\(|method\s*[:=]\s*['"](POST|PUT|PATCH|DELETE)['"]|Method::(POST|PUT|PATCH|DELETE)/i, 'outbound call with side effects'],
+  [/\b(requests|httpx|session|client|reqwest|axios)\s*\.\s*(post|put|patch|delete)\s*\(|Method::(POST|PUT|PATCH|DELETE)/i, 'outbound call with side effects'],
+  [/method\s*[:=]\s*['"](POST|PUT|PATCH|DELETE)['"]/i, 'outbound call with side effects', SAME_ORIGIN_WRITE],
   [/\b(smtplib|sendmail|send_mail|lettre|nodemailer|webhook)\b/i, 'mail or webhook'],
   [/\b(threading|multiprocessing|asyncio\.(Lock|gather|create_task)|tokio::spawn|Mutex|RwLock|BEGIN\s+(IMMEDIATE|EXCLUSIVE))\b/, 'concurrency'],
 ];
@@ -211,7 +213,7 @@ export function riskTier(diff, { extraPaths = [], readFile } = {}) {
     if (CODE.test(p) && !isTest) {
       for (const l of [...f.added, ...f.removed]) {
         if (/^\s*(#|\/\/|\*)/.test(l) || /^\s*@/.test(l)) continue; // comments and decorators
-        for (const [re, why] of ADDED_OR_REMOVED) if (re.test(l)) raise(2, `${why}: ${p}`);
+        for (const [re, why, sameOrigin] of ADDED_OR_REMOVED) if (re.test(sameOrigin ? l.replace(sameOrigin, '') : l)) raise(2, `${why}: ${p}`);
       }
     }
   }
