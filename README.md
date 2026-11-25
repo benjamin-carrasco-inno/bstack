@@ -73,7 +73,7 @@ A new commit changes the head SHA, so an old verdict no longer counts.
 - **1**: code, config, CI, agent instructions. CI and a reviewer verdict.
 - **2**: SQL that writes or changes schema, file deletion, outbound calls with side effects, mail and webhooks, concurrency, auth and importer code, `n8n/` code, and weakened checks (deleted or skipped tests, fewer assertions, new suppressions, removed CI steps). Adds interrogate, and the user's OK when a revert cannot undo it.
 
-In prose files (`.md`, `.rst`, `.txt`, `.adoc`, not `CMakeLists.txt`), a skipped test or `|| true` counts only where Claude Code executes it: inside a ```` ```! ```` block, an inline `` !`cmd` ``, a file's leading YAML frontmatter (where skill and agent `hooks:` live), or anywhere in a file under `commands/`. The guard reads such a file at the PR head to see that; when it cannot, the line keeps tier 2.
+In prose files (`.md`, `.rst`, `.txt`, `.adoc`, not `CMakeLists.txt`), a skipped test or `|| true` counts only where Claude Code may execute it: inside a ```` ```! ```` block, on a line that contains `` !` `` anywhere, in a file's leading YAML frontmatter (where skill and agent `hooks:` live), or anywhere in a file under `commands/`. The guard reads such a file at the PR head to see that; when it cannot, the line keeps tier 2.
 
 A repo can raise paths to tier 2 with globs in `.github/risk-paths.txt`.
 

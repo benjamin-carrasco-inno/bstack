@@ -82,7 +82,7 @@ test('an allowed failure in a command file that Claude Code executes is tier 2',
 test('an allowed failure in an executed line of a markdown file is tier 2', () => {
   assert.equal(tier(file('plugins/bstack/skills/x/SKILL.md', { add: ['!`npm test || true`'] })), 2);
   assert.equal(tier(file('docs/x.md', { add: ['Run it: !`node --test || true`'] })), 2);
-  assert.equal(tier(file('plugins/bstack/agents/x.md', { add: ['!`echo ok` then flag a new `|| true`.'] })), 1);
+  assert.equal(tier(file('plugins/bstack/agents/x.md', { add: ['!`echo ok` then flag a new `|| true`.'] })), 2);
 });
 
 test('an allowed failure in a fenced block that Claude Code executes is tier 2', () => {
@@ -154,7 +154,7 @@ test('an inline command after a code span that ends in ! is executed', () => {
   assert.equal(riskTier(edit(sameLine), { readFile: () => sameLine }).tier, 2);
   assert.equal(riskTier(edit(nextLine), { readFile: () => twoLines }).tier, 2);
   const named = 'Type `cd !` then never write `|| true` yourself.';
-  assert.equal(riskTier(edit(named), { readFile: () => named }).tier, 1);
+  assert.equal(riskTier(edit(named), { readFile: () => named }).tier, 2);
 });
 
 test('an inline command right after an argument placeholder is executed', () => {
