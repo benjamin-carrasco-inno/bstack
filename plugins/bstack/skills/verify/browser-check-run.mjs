@@ -113,6 +113,7 @@ async function openStartPage(cdp, start) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   await cdp.send('Page.enable', {}, sessionId);
+  await cdp.send('Page.setBypassCSP', { enabled: true }, sessionId);
   const loaded = cdp.nextEvent('Page.loadEventFired', sessionId);
   const { errorText } = await cdp.send('Page.navigate', { url: start.href }, sessionId);
   if (errorText) throw new Error(`could not open ${start.href} (${errorText}); is the app running?`);
