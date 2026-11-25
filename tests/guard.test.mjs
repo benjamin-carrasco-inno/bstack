@@ -738,6 +738,20 @@ test('#34: no-authoring agents restore and check out only paths inside their cwd
 const refusedFor = agent => (input, d = onHost(GIT_BASH_HOST)) => assert.match(decide({ ...input, agent_type: agent }, d) ?? '', /runs only allowlisted commands/, input.tool_input.command);
 const allowedFor = agent => (input, d = onHost(GIT_BASH_HOST)) => assert.equal(decide({ ...input, agent_type: agent }, d), null, input.tool_input.command);
 
+test('#112: a gh api method inside a short-flag cluster counts as the method', () => {
+  for (const command of ['gh api -iXPUT repos/o/r/pulls/5/merge', 'gh api -iX PUT repos/o/r/pulls/5/merge']) {
+    assert.match(decide(shell(command), deps()) ?? '', /Merging through gh api/, command);
+  }
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of ['gh api -iXDELETE repos/o/r/git/refs/heads/x', 'gh api -iX DELETE repos/o/r/git/refs/heads/x',
+      'gh api -sXDELETE repos/o/r/git/refs/heads/x', 'gh api -iXPOST repos/o/r/actions/runs/1/rerun']) refused(shell(command));
+    ok(shell('gh api -iXGET repos/o/r/pulls/5'));
+    ok(shell('gh api -i repos/o/r'));
+  }
+});
+
 test('#34: no-authoring agents run git ls-remote, config and remote only in their read forms', () => {
   for (const agent of NO_AUTHORING) {
     const refused = refusedFor(agent);

@@ -948,18 +948,31 @@ function ghRule(c, cwd, deps, line) {
 
 function hasWriteFields(args) {
   return args.some(a => /^-[a-zA-Z]*[fF]|^--(field|raw-field|input)(=|$)/.test(a)) ||
-    args.some((a, i) => (a === '-X' || a === '--method') && !/^GET$/i.test(args[i + 1] ?? '')) ||
-    args.some(a => /^(-X=?|--method=)(?!GET$)./i.test(a));
+    apiWords(args).methods.some(m => !/^GET$/i.test(m));
 }
 
-const API_VALUE_OPTS = new Set(['-X', '--method', '-H', '--header', '-f', '--raw-field', '-F', '--field', '--input', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']);
+const API_LONG_VALUES = new Set(['--method', '--header', '--raw-field', '--field', '--input', '--jq', '--template', '--hostname', '--cache', '--preview']);
+const API_SHORT_VALUES = new Set(['X', 'H', 'f', 'F', 'q', 't', 'p']);
 
-function apiRule(args) {
+function apiWords(args) {
+  const methods = [];
   let endpoint = '';
   for (let i = 0; i < args.length; i++) {
-    if (API_VALUE_OPTS.has(args[i])) { i++; continue; }
-    if (!args[i].startsWith('-')) { endpoint = args[i]; break; }
+    const a = args[i];
+    if (a.startsWith('--method=')) { methods.push(a.slice(9)); continue; }
+    if (API_LONG_VALUES.has(a)) { if (a === '--method') methods.push(args[i + 1] ?? ''); i++; continue; }
+    if (a.startsWith('--')) continue;
+    if (!a.startsWith('-')) { endpoint ||= a; continue; }
+    const at = [...a].findIndex((ch, j) => j > 0 && API_SHORT_VALUES.has(ch));
+    if (at < 0) continue;
+    const value = at + 1 < a.length ? a.slice(at + 1).replace(/^=/, '') : (args[++i] ?? '');
+    if (a[at] === 'X') methods.push(value);
   }
+  return { methods, endpoint };
+}
+
+function apiRule(args) {
+  const { endpoint } = apiWords(args);
   const writes = hasWriteFields(args);
   const text = args.join(' ');
   if (endpoint === 'graphql' && /mergePullRequest|enablePullRequestAutoMerge|updateRef|deleteRef|createCommitOnBranch/.test(text)) {
