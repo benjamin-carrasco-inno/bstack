@@ -474,6 +474,11 @@ test('a marker split by an empty $"" quote or a line continuation is still a mar
   allowed(shell('gh pr comment 5 \\\n  --body "a note"'));
 });
 
+test('a backslash before CRLF is not a line continuation, so the next line is its own command', () => {
+  blocked(shell('echo hi \\\r\ngit push --force origin feat/x'));
+  blocked(shell('echo hi \\\r\ngh pr merge 5 --admin'));
+});
+
 test('a gh body built by a substitution or variable is refused; literal bodies and other flags pass', () => {
   blocked(shell('gh pr comment 5 --body "$(cat v.md)"'));
   blocked(shell('gh pr comment 5 -b "`cat v.md`"'));
