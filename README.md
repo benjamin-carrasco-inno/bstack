@@ -28,6 +28,7 @@ Requirements: Node 18+ on `PATH` (the hooks are Node scripts), git, and the GitH
 | `bstack:plan` | Sizes the work, grills you where intent is unclear, and writes a spec with ticket sub-issues, or a map of decision tickets for foggy work. Keeps `GLOSSARY.md` and ADRs. |
 | `bstack:triage` | Sorts incoming issues: checks the claim, finds duplicates and work already done, writes acceptance criteria, labels the state. |
 | `bstack:audit` | Review and clean up a whole repo: map, find, prove, present once, fix through small gated PRs. |
+| `bstack:vibecoding` | Prototype an idea fast when you ask for it: no plan, tests, PR or review before it runs. Then discard it, or harden it into a ticket that ships through the full gate. |
 | `bstack:verify` | Run the app safely on test data and prove behaviour on the real surface. |
 | `bstack:frontend` | UI rules for web apps: container-query-first layout, tokens with Automatic.css 4 names, component boundaries, basic accessibility. Ships a starter token sheet. |
 | `bstack:interrogate` | Adversarial review for risky changes; findings count only when reproduced. |

@@ -27,7 +27,7 @@ Fog: questions you can see coming but cannot yet phrase sharply. In scope.
 
 Sub-issues of the map, each a question sized to one session, body `## Question`. One type label each:
 - `plan:research` (agent alone): a fact a decision waits on, from primary sources (docs, APIs, the code). Run in a fresh subagent; the answer comment cites its sources.
-- `plan:prototype` (with the user): a cheap, rough artifact to react to (a page, a stub, a sample output) when "how should it look or behave" is the question. Build it on a `prototype/<slug>` branch, never merged, deleted when the ticket closes; the decision is what survives.
+- `plan:prototype` (with the user): a cheap, rough artifact to react to (a page, a stub, a sample output) when "how should it look or behave" is the question. Build it with `bstack:vibecoding`, never merged, deleted when the ticket closes; the decision is what survives.
 - `plan:grill` (with the user): a conversation. The default type.
 - `plan:task` (agent alone where it can, otherwise a precise checklist for the user): work that must happen before a decision can be made, such as getting access or looking at real data. The answer records what was done and the facts later tickets need (where a credential lives, not the credential).
 
