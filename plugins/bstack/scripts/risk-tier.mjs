@@ -56,8 +56,8 @@ const APP_FORM = new RegExp(String.raw`<form(?:${FORM_ATTR})*\s*>`, 'gi');
 const anyCase = word => [...word].map(c => `[${c}${c.toUpperCase()}]`).join('');
 const fetchOptionToken = forbidden => {
   const allowed = `(?!${forbidden})`;
-  const quoted = q => String.raw`${q}(?:${allowed}(?:[^${q}\\\n]|\\.)){0,1000}${q}`;
-  return String.raw`(?:${allowed}[^{};'"\`]|${quoted("'")}|${quoted('"')}|${quoted('`')})`;
+  const quoted = (q, live = '') => String.raw`${q}(?:(?!${forbidden}${live})(?:[^${q}\\\n]|\\.)){0,1000}${q}`;
+  return String.raw`(?:${allowed}[^{};'"\`]|${quoted("'")}|${quoted('"')}|${quoted('`', String.raw`|\$\{`)})`;
 };
 const TOP_LEVEL_OPTION = fetchOptionToken(String.raw`base|:\/\/`);
 const NESTED_OPTION = fetchOptionToken(String.raw`base|:\/\/|${anyCase('method')}`);
