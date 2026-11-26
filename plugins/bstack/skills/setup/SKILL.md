@@ -22,6 +22,6 @@ Then check, one line each:
 2. `gh auth status` is logged in for your repos.
 3. `git config --get user.email` is set.
 4. List old copies of bstack's rules (a global CLAUDE.md, other skills) for the user to trim; never delete them.
-5. `node "${CLAUDE_PLUGIN_ROOT}/scripts/install-status.mjs" <each config dir>` compares the installed commit with main. Behind: run the command it prints.
+5. `node "${CLAUDE_PLUGIN_ROOT}/scripts/install-status.mjs" <each config dir>` compares each install with main. Behind: run the update it prints, with the owner's OK.
 
-Settings and updates take effect in the next session.
+Changes take effect in the next session.
