@@ -389,9 +389,10 @@ const LOADER_VARIABLES = new RegExp(`^(${[
 const APP_DATA_VARIABLE = /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*_(DIR|DB|FILE|PATH)$/;
 const PATH_VALUE = /[\\/]|^\.\.?$/;
 const PATH_LIST = /[;:]/;
+const TILDE_PREFIX = /^~(?![\\/]|$)/;
 
 function ownedPath(value, at, ctx) {
-  if (value === null || !PATH_VALUE.test(value) || PATH_LIST.test(value.replace(/^[a-z]:/i, ''))) return false;
+  if (value === null || !PATH_VALUE.test(value) || TILDE_PREFIX.test(value) || PATH_LIST.test(value.replace(/^[a-z]:/i, ''))) return false;
   const target = writeTarget(value, knownCwd(at), at.dialect, ctx.host, false);
   return Boolean(target) && owns(ctx.root, target, ctx.host);
 }
