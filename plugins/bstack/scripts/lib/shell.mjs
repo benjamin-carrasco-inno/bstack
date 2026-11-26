@@ -144,6 +144,7 @@ function segmentsOf(line, dialect, ids = { n: 0 }, path = '') {
   const closes = new Map();
   const forks = dialect === 'posix';
   let at = { path, stageStart: 0, listStart: 0, piped: false };
+  let redirectAt;
   const emit = () => {
     const text = cur.trim();
     cur = '';
@@ -180,10 +181,12 @@ function segmentsOf(line, dialect, ids = { n: 0 }, path = '') {
       else if (quote === '"' && escapesInDoubleQuotes(ch, dialect) && i + 1 < line.length) cur += line[++i];
       continue;
     }
+    if (ch === ESCAPE[dialect] && i + 1 < line.length) { cur += ch + line[++i]; continue; }
     const here = hereString(line, i);
     if (here) { cur += line.slice(i, here.end); i = here.end - 1; continue; }
     if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
     if (ch === '`' && (line[i + 1] === '`' || BRACKETS.has(line[i + 1]))) { cur += ch + line[++i]; continue; }
+    if (ch === '>' || ch === '<') { redirectAt = i; cur += ch; continue; }
     const close = ch === '(' && (!opensGroup(cur) || isArgument(cur)) ? closingParen(line, i, dialect, closes)
       : ch === '`' && dialect === 'posix' ? closingBacktick(line, i) : -1;
     if (close > 0) {
@@ -214,16 +217,15 @@ function segmentsOf(line, dialect, ids = { n: 0 }, path = '') {
     if (ch === '\n' || ch === '\r' || ch === ';') { emit(); endStage({ list: true }); continue; }
     if (ch === '|') {
       const pipe = line[i + 1] !== '|';
-      if (!pipe) i++;
+      const clobber = redirectAt === i - 1;
+      if (!pipe || (forks && line[i + 1] === '&')) i++;
       const source = emit();
-      endStage({ piped: pipe });
+      endStage({ piped: pipe && !clobber });
       pipedFrom = pipe ? source ?? UNSEEN_PIPE_SOURCE : undefined;
       continue;
     }
     if (ch === '&') {
-      const prev = line[i - 1];
-      if (prev === '>' || prev === '<' || line[i + 1] === '>') { cur += ch; continue; } // 2>&1, <&0, &>
-      if (prev === ESCAPE[dialect]) { cur += ch; continue; }
+      if (redirectAt === i - 1 || line[i + 1] === '>') { cur += ch; continue; } // 2>&1, <&0, &>
       if (line[i + 1] === '&') { i++; emit(); endStage(); continue; }
       if (cur.trim() === '') { cur += ' '; continue; } // PowerShell call operator
       emit();

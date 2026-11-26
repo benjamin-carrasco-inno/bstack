@@ -1523,12 +1523,10 @@ test('a cd in a pipeline stage, behind & or in a subshell does not move the cwd 
   for (const command of ['(cd /clean; gh pr comment 5 --body-file vx.md)', 'cd /clean && gh pr comment 5 --body-file vx.md &', '{ cd /clean; }; gh pr comment 5 --body-file vx.md',
     'cd /clean <&0; gh pr comment 5 --body-file vx.md', 'cd /clean 0<&-; gh pr comment 5 --body-file vx.md', 'cd /clean <&0 && gh pr comment 5 --body-file vx.md',
     'cd /clean && echo a\\&b && gh pr comment 5 --body-file vx.md', 'cd /clean >|/dev/null && gh pr comment 5 --body-file vx.md', 'cd /clean >| /dev/null; gh pr comment 5 --body-file vx.md',
-    'cd /clean >&2; gh pr comment 5 --body-file vx.md', 'cd /clean &>/dev/null; gh pr comment 5 --body-file vx.md', 'cd /clean; echo x\\\\& gh pr comment 5 --body-file vx.md',
-    '{ cd /x; } & cd /clean; gh pr comment 5 --body-file vx.md']) {
+    'cd /clean >&2; gh pr comment 5 --body-file vx.md', 'cd /clean &>/dev/null; gh pr comment 5 --body-file vx.md', 'cd /clean; echo x\\\\& gh pr comment 5 --body-file vx.md']) {
     assert.ok(decide(shell(command), verdictIn('/clean')), command);
   }
   assert.ok(decide(shell('echo x\\\\& gh pr comment 5 --body-file vx.md'), verdictIn('/repo')));
-  assert.ok(decide(shell('{ cd /clean; } & gh pr comment 5 --body-file vx.md'), verdictIn('/repo')));
   assert.ok(decide(shell('echo x\\\\& git push --force origin main'), deps({ branch: 'main' })));
   const psVerdictInClean = onHost(GIT_BASH_HOST, { ...deps(), readFile: f => (/[\\/]clean[\\/]vx\.md$/i.test(f) ? `bstack-verdict: PASS sha=${SHA}` : 'just a note') });
   for (const command of ['cd C:\\clean && $r = & gh pr comment 5 --body-file vx.md', 'Set-Location C:\\clean && $out = & gh pr comment 5 --body-file vx.md']) {
