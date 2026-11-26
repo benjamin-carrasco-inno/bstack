@@ -897,6 +897,65 @@ test('#34: no-authoring agents set only allowlisted environment variables', () =
   }
 });
 
+const WINDOWS_PLUGIN = onHost({ ...GIT_BASH_HOST, pluginRoot: 'C:\\plugins\\bstack' });
+const LINUX_PLUGIN = onHost({ ...linuxHost({}), pluginRoot: '/plugins/bstack' });
+const WINDOWS_CHECK = 'node "C:\\plugins\\bstack\\skills\\verify\\browser-check-run.mjs"';
+const LINUX_CHECK = 'node /plugins/bstack/skills/verify/browser-check-run.mjs';
+
+test('no-authoring agents run the browser check the plugin ships, against localhost only', () => {
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 / /settings`, `${WINDOWS_CHECK} http://localhost:8130 /settings --widths 375,1280 --timeout 60`,
+      `cd C:\\repo; ${WINDOWS_CHECK} http://127.0.0.1:8130/forhandler-priser/`,
+    ]) ok(ps(command), WINDOWS_PLUGIN);
+    ok(shell(`${LINUX_CHECK} http://localhost:8130 / /settings`), LINUX_PLUGIN);
+
+    for (const command of [
+      `${WINDOWS_CHECK} https://dashboard.inno.dk /`, `${WINDOWS_CHECK} http://127.0.0.1:8130 http://evil.example/`, `${WINDOWS_CHECK} http://127.0.0.1:8130 //evil.example/`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 / --browser C:\\Temp\\evil.exe`, 'node C:\\plugins\\bstack\\scripts\\verdict.mjs',
+      'node C:\\plugins\\bstack\\..\\other\\x.mjs', 'node C:\\plugins\\other\\skills\\verify\\browser-check-run.mjs http://127.0.0.1:8130 /',
+      'node --import C:\\checkout\\x.mjs C:\\plugins\\bstack\\skills\\verify\\browser-check-run.mjs http://127.0.0.1:8130 /',
+    ]) refused(ps(command), WINDOWS_PLUGIN);
+    refused(shell(`${LINUX_CHECK} https://example.com /`), LINUX_PLUGIN);
+    refused(shell('node /plugins/bstack/scripts/tracker.mjs'), LINUX_PLUGIN);
+  }
+});
+
+test('no-authoring agents find the shipped browser check next to the running guard', () => {
+  const script = fileURLToPath(new URL('../plugins/bstack/skills/verify/browser-check-run.mjs', import.meta.url));
+  const input = process.platform === 'win32' ? ps(`node "${script}" http://127.0.0.1:8130 /`) : shell(`node "${script}" http://127.0.0.1:8130 /`);
+  assert.equal(decide({ ...input, cwd: path.resolve('/repo'), agent_type: 'bstack:reviewer' }, deps()), null);
+});
+
+test('no-authoring agents point an app variable at a literal path in their worktree or the temp dir, never a loader variable', () => {
+  const linux = onHost(linuxHost({}));
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      'DATA_DIR=/tmp/fp-review uvicorn app.main:app --port 8130', 'DATA_DIR=/repo/.tmpdata uvicorn app.main:app --port 8130',
+      'DATA_DIR=./tmpdata python -m uvicorn app.main:app --port 8130', 'env DATA_DIR=/tmp/x NODE_ENV=test npm start',
+    ]) ok(shell(command), linux);
+    for (const command of [
+      "$env:DATA_DIR='C:\\Temp\\fp-review'; uvicorn app.main:app --port 8130", '$env:DATA_DIR = "C:/repo/tmpdata"; python -m uvicorn app.main:app --port 8130',
+    ]) ok(ps(command));
+
+    for (const command of [
+      'DATA_DIR=/checkout/data uvicorn app.main:app', 'DATA_DIR=prod uvicorn app.main:app', 'DATA_DIR=$HOME/x uvicorn app.main:app',
+      'DATA_DIR=/tmp/a:/checkout uvicorn app.main:app', 'DATA_DIR=/tmp/../checkout uvicorn app.main:app',
+      'PATH=/tmp/bin uvicorn app.main:app', 'NODE_OPTIONS=/tmp/x.js npm test', 'PYTHONPATH=/repo/x pytest', 'PYTHONSTARTUP=/tmp/x.py python /tmp/a.py',
+      'LD_PRELOAD=/tmp/x.so pytest', 'GIT_DIR=/repo/.git git diff', 'BASH_ENV=/tmp/x.sh npm test', 'HOME=/tmp/h git diff', 'NPM_CONFIG_PREFIX=/tmp/x npm i',
+    ]) refused(shell(command), linux);
+    for (const command of [
+      "$env:DATA_DIR='D:\\prod'; uvicorn app.main:app", '$env:DATA_DIR = $x; uvicorn app.main:app', '$env:DATA_DIR = (Get-Location); uvicorn app.main:app',
+      '$env:DATA_DIR = "$env:TEMP\\x"; uvicorn app.main:app', "$env:PATH = 'C:\\Temp\\bin'; uvicorn app.main:app", "$env:PYTHONPATH = 'C:\\repo\\x'; pytest",
+      "$env:NODE_OPTIONS = 'C:\\Temp\\x.js'; npm test", 'Start-Process uvicorn app.main:app',
+    ]) refused(ps(command));
+  }
+});
+
 test('#34: no-authoring agents: curl --write-out writes no file, and node flag clusters with e or p run inline code', () => {
   for (const agent of NO_AUTHORING) {
     const refused = refusedFor(agent);
