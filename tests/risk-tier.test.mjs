@@ -667,6 +667,35 @@ test('#147: a write method in a later, separate statement than its same-origin f
   assert.ok(split.reasons.includes(OUTBOUND(p)), `method in another added block: ${split.reasons.join('; ')}`);
 });
 
+test('#147: a write call nested in a same-origin fetch\'s options is still outbound', () => {
+  const p = 'static/app.js';
+  for (const add of [
+    ["fetch('/api/log', { body: String(await fetch(remoteUrl, { method: 'POST' })) })"],
+    ["fetch('/api/log', { body: JSON.stringify(await post(remote, { method: 'POST' })) })"],
+    ["fetch('/api/log', {", '  body: await send(remoteUrl, {', "    method: 'DELETE',", '  }),', '})'],
+  ]) {
+    const r = outcome(p, { add });
+    assert.ok(r.reasons.includes(OUTBOUND(p)), `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+    assert.equal(r.tier, 2);
+  }
+});
+
+test('#147: a semicolon inside a quoted option and an app-path formaction keep the exemption', () => {
+  for (const [p, add] of [
+    ['static/app.js', ["fetch('/api/x', {method:'POST', body: 'a;b'})"]],
+    ['static/app.js', ["fetch('/api/x', {", "  method: 'POST',", "  headers: {'Content-Type': 'application/json; charset=utf-8'},", '});']],
+    ['templates/save.html', ['<form method="post" action="/save"><button formaction="/save/draft">']],
+    ['templates/save.html', ['<form', '  method="post"', '  action="/save">', '  <button formaction="{{ base }}/save/draft">Draft</button>']],
+  ]) {
+    const r = outcome(p, { add });
+    assert.equal(r.tier, 1, `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+  }
+  for (const add of [['<form', '  method="post"', '  action="/save">', '  <button formaction="{{ payment_url }}/x">'], ['<form method="post" action="/save"><button formaction=/x>']]) {
+    const r = outcome('templates/save.html', { add });
+    assert.equal(r.tier, 2, `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+  }
+});
+
 test('#147: a huge added block of unclosed fetch calls costs about as much as a same-size block without them', () => {
   const blockOf = call => [`${call}('/x', {`, "  method: 'POST',", ...Array.from({ length: 20000 }, () => `${call}('/x', {` + '{a:1},'.repeat(10))];
   const fastest = add => Math.min(...[1, 2, 3].map(() => {
