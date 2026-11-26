@@ -973,6 +973,11 @@ test('#186: no-authoring agents sign the browser check in with literal values an
       `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user a --password $env:SECRET`,
       `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user a --password (Get-Content pw.txt)`,
       `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --cookie $c`, `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login $p --user a --password b`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user a --password 'x\\" --browser C:\\Temp\\evil.exe'`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user 'a\\" --browser C:\\Temp\\evil.exe' --password b`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --cookie 's=x\\" --browser C:\\Temp\\evil.exe'`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user 'a b\\' --password 'c --browser C:\\Temp\\evil.exe'`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --widths '1280\\" --browser C:\\Temp\\evil.exe'`,
     ]) refused(ps(command), WINDOWS_PLUGIN);
     for (const command of [
       `${LINUX_CHECK} http://localhost:8130 /admin --login /login --user "$U" --password b`,
