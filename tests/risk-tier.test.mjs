@@ -673,6 +673,8 @@ test('#147: a write call nested in a same-origin fetch\'s options is still outbo
     ["fetch('/api/log', { body: String(await fetch(remoteUrl, { method: 'POST' })) })"],
     ["fetch('/api/log', { body: JSON.stringify(await post(remote, { method: 'POST' })) })"],
     ["fetch('/api/log', {", '  body: await send(remoteUrl, {', "    method: 'DELETE',", '  }),', '})'],
+    ["fetch('/api/log', { body: `${await fetch(remoteUrl, { method: 'POST' })}` })"],
+    ["fetch('/api/log', {", "  method: 'POST',", "  body: `${await fetch(remoteUrl, { method: 'DELETE' })}`,", '})'],
   ]) {
     const r = outcome(p, { add });
     assert.ok(r.reasons.includes(OUTBOUND(p)), `${add.join(' / ')}: ${r.reasons.join('; ')}`);
