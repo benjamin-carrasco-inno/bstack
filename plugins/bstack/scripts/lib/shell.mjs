@@ -128,50 +128,34 @@ export function closingBacktick(line, open) {
 }
 
 const UNSEEN_PIPE_SOURCE = Object.freeze({ cmd: '', args: [], text: '' });
-const BACKGROUND_AMPERSAND = { posix: /^/, powershell: /^[ \t]*(?:$|[;\r\n)}]|&&|\|\|)/ };
 
 export function splitSegments(line, dialect = 'posix') {
   return segmentsOf(line, dialect).map(s => s.text);
 }
 
 // Cut a line into segments at ; && || | & newlines and ( ) { } groups, outside quotes; a substitution's commands come first.
-function segmentsOf(line, dialect, ids = { n: 0 }, path = '') {
+function segmentsOf(line, dialect) {
   const segments = [];
   let cur = '';
   let pipedFrom;
   let quote = null;
   const groups = [];
   const closes = new Map();
-  const forks = dialect === 'posix';
-  let at = { path, stageStart: 0, listStart: 0, piped: false };
-  let redirectAt;
   const emit = () => {
     const text = cur.trim();
     cur = '';
     if (!text) return undefined;
-    const segment = { text, pipedFrom, subshell: at.path };
+    const segment = { text, pipedFrom };
     pipedFrom = undefined;
     segments.push(segment);
     return segment;
   };
-  const fork = from => {
-    const child = `${at.path}/${++ids.n}`;
-    for (const s of segments.slice(from)) s.subshell = child + s.subshell.slice(at.path.length);
-  };
-  const endStage = ({ piped = false, list = false } = {}) => {
-    if (piped || at.piped) for (const s of segments.slice(at.stageStart)) s.inPipeline = true;
-    if (piped && forks) fork(at.stageStart);
-    at.stageStart = segments.length;
-    at.piped = piped;
-    if (list) at.listStart = segments.length;
-  };
-  const nested = inner => segmentsOf(inner, dialect, ids, forks ? `${at.path}/${++ids.n}` : at.path);
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (quote) {
       const sub = quote === '"' ? quotedSubstitution(line, i, dialect, closes) : null;
       if (sub) {
-        segments.push(...nested(line.slice(sub.inner, sub.close)));
+        segments.push(...segmentsOf(line.slice(sub.inner, sub.close), dialect));
         cur += line.slice(i, sub.close + 1);
         i = sub.close;
         continue;
@@ -181,63 +165,49 @@ function segmentsOf(line, dialect, ids = { n: 0 }, path = '') {
       else if (quote === '"' && escapesInDoubleQuotes(ch, dialect) && i + 1 < line.length) cur += line[++i];
       continue;
     }
-    if (ch === ESCAPE[dialect] && i + 1 < line.length) { cur += ch + line[++i]; continue; }
     const here = hereString(line, i);
     if (here) { cur += line.slice(i, here.end); i = here.end - 1; continue; }
     if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
     if (ch === '`' && (line[i + 1] === '`' || BRACKETS.has(line[i + 1]))) { cur += ch + line[++i]; continue; }
-    if (ch === '>' || ch === '<') { redirectAt = i; cur += ch; continue; }
     const close = ch === '(' && (!opensGroup(cur) || isArgument(cur)) ? closingParen(line, i, dialect, closes)
       : ch === '`' && dialect === 'posix' ? closingBacktick(line, i) : -1;
     if (close > 0) {
-      segments.push(...nested(line.slice(i + 1, close)));
+      segments.push(...segmentsOf(line.slice(i + 1, close), dialect));
       cur += line.slice(i, close + 1);
       i = close;
       continue;
     }
     if (ch in CLOSER) {
       const splits = opensGroup(cur);
-      if (!splits) { groups.push({ closer: CLOSER[ch], splits }); cur += ch; continue; }
+      groups.push({ closer: CLOSER[ch], splits });
+      if (!splits) { cur += ch; continue; }
       const intoGroup = !cur.trim() && pipedFrom;
       emit();
-      groups.push({ closer: CLOSER[ch], splits, outer: at });
-      const start = segments.length;
-      at = { path: ch === '(' && forks ? `${at.path}/${++ids.n}` : at.path, stageStart: start, listStart: start, piped: false };
       pipedFrom = intoGroup ? UNSEEN_PIPE_SOURCE : undefined;
       continue;
     }
     if (ch === groups.at(-1)?.closer) {
-      const group = groups.pop();
-      if (!group.splits) { cur += ch; continue; }
-      emit();
-      endStage();
-      at = group.outer;
+      if (groups.pop().splits) emit(); else cur += ch;
       continue;
     }
-    if (ch === '\n' || ch === '\r' || ch === ';') { emit(); endStage({ list: true }); continue; }
+    if (ch === '\n' || ch === '\r' || ch === ';') { emit(); continue; }
     if (ch === '|') {
       const pipe = line[i + 1] !== '|';
-      const clobber = redirectAt === i - 1;
-      if (!pipe || (forks && line[i + 1] === '&')) i++;
+      if (!pipe) i++;
       const source = emit();
-      endStage({ piped: pipe && !clobber });
       pipedFrom = pipe ? source ?? UNSEEN_PIPE_SOURCE : undefined;
       continue;
     }
     if (ch === '&') {
-      if (redirectAt === i - 1 || line[i + 1] === '>') { cur += ch; continue; } // 2>&1, <&0, &>
-      if (line[i + 1] === '&') { i++; emit(); endStage(); continue; }
+      const prev = line[i - 1];
+      if (prev === '>' || line[i + 1] === '>') { cur += ch; continue; } // 2>&1, &>
+      if (line[i + 1] === '&') { i++; emit(); continue; }
       if (cur.trim() === '') { cur += ' '; continue; } // PowerShell call operator
-      emit();
-      const background = BACKGROUND_AMPERSAND[dialect]?.test(line.slice(i + 1));
-      endStage({ list: !background });
-      if (background) { fork(at.listStart); at.listStart = segments.length; }
-      continue;
+      emit(); continue;
     }
     cur += ch;
   }
   emit();
-  endStage();
   return segments;
 }
 
@@ -407,12 +377,11 @@ export const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
 export const UNRESOLVED = /[$%`]/;
 
 // Every simple command in a line, including commands nested in bash -c, pwsh -Command and cmd /c.
-export function commandsIn(line, depth = 0, dialect = 'posix', outerScope = '', shellCount = { n: 0 }, underDirWrapper = false) {
+export function commandsIn(line, depth = 0, dialect = 'posix', scope = '', shellCount = { n: 0 }, underDirWrapper = false) {
   const out = [];
   const commandOf = new Map();
-  for (const part of segmentsOf(line, dialect, shellCount)) {
+  for (const part of segmentsOf(line, dialect)) {
     const segment = part.text;
-    const scope = outerScope + part.subshell;
     let parsed = words(segment, dialect);
     const env = {};
     let movesDir = underDirWrapper;
@@ -439,7 +408,7 @@ export function commandsIn(line, depth = 0, dialect = 'posix', outerScope = '', 
     const expressions = new Set(parsed.slice(1).flatMap((w, i) => (w.expression ? [i] : [])));
     const expands = new Set(parsed.slice(1).flatMap((w, i) => (w.expands ? [i] : [])));
     if (hidden) { out.push({ cmd, args, expressions, expands, text: segment, dialect, env, scope, hidden }); continue; }
-    const command = { cmd, program: parsed[0].text, args, expressions, expands, text: segment, dialect, env, scope, movesDir, inPipeline: Boolean(part.inPipeline), pipedFrom: part.pipedFrom && (commandOf.get(part.pipedFrom) ?? UNSEEN_PIPE_SOURCE) };
+    const command = { cmd, program: parsed[0].text, args, expressions, expands, text: segment, dialect, env, scope, movesDir, pipedFrom: part.pipedFrom && (commandOf.get(part.pipedFrom) ?? UNSEEN_PIPE_SOURCE) };
     const unreadableFrom = at => args.some((a, i) => i >= at && (expressions.has(i) || UNRESOLVED.test(a)));
     if (depth < 3 && SHELLS.has(cmd)) {
       const at = args.findIndex(a => /^(-c|-command|\/c|-encodedcommand)$/i.test(a));

@@ -1213,6 +1213,7 @@ test('no-authoring agents: cd ~-, PowerShell cd - and cd +, and pushd or popd wi
     blocked(as('pushd /other; popd +1; git restore a.mjs'));
     blocked(as('pushd /other; popd -0; git restore a.mjs'));
     blocked(as('cd -; git restore a.mjs'));
+    blocked(psAs('cd ../other; Set-Location -Path -; git restore README.md'));
 
     allowed(as('cd ../other; cd -; git restore a.mjs'));
     allowed(as('pushd /other; popd; git restore a.mjs'));
@@ -1620,12 +1621,8 @@ test('a body source behind a wrapper that changes directory is refused, wherever
   allowed(shell('env -C /evil gh pr comment 5 --body "just a note"'), files);
 });
 
-test('a cd in a pipeline stage, behind & or in a subshell does not move the cwd for the body file', () => {
+test('a cd before a redirect, an escaped & or the call operator still moves the cwd for the body file', () => {
   const verdictIn = dir => onHost(LINUX_HOST, { ...deps(), readFile: f => (f === `${dir}/vx.md` ? `bstack-verdict: PASS sha=${SHA}` : 'just a note') });
-  for (const command of ['cd /clean | gh pr comment 5 --body-file vx.md', 'cd /clean & gh pr comment 5 --body-file vx.md', '(cd /clean); gh pr comment 5 --body-file vx.md',
-    'cd /clean && true & gh pr comment 5 --body-file vx.md', 'echo $(cd /clean); gh pr comment 5 --body-file vx.md', 'true | cd /clean; gh pr comment 5 --body-file vx.md']) {
-    assert.ok(decide(shell(command), verdictIn('/repo')), command);
-  }
   for (const command of ['(cd /clean; gh pr comment 5 --body-file vx.md)', 'cd /clean && gh pr comment 5 --body-file vx.md &', '{ cd /clean; }; gh pr comment 5 --body-file vx.md',
     'cd /clean <&0; gh pr comment 5 --body-file vx.md', 'cd /clean 0<&-; gh pr comment 5 --body-file vx.md', 'cd /clean <&0 && gh pr comment 5 --body-file vx.md',
     'cd /clean && echo a\\&b && gh pr comment 5 --body-file vx.md', 'cd /clean >|/dev/null && gh pr comment 5 --body-file vx.md', 'cd /clean >| /dev/null; gh pr comment 5 --body-file vx.md',
@@ -1638,8 +1635,13 @@ test('a cd in a pipeline stage, behind & or in a subshell does not move the cwd 
   for (const command of ['cd C:\\clean && $r = & gh pr comment 5 --body-file vx.md', 'Set-Location C:\\clean && $out = & gh pr comment 5 --body-file vx.md']) {
     assert.ok(decide(ps(command), psVerdictInClean), command);
   }
-  assert.equal(decide(shell('(cd /clean); gh pr comment 5 --body-file vx.md'), verdictIn('/clean')), null);
-  assert.ok(decide(ps('cd /clean | gh pr comment 5 --body-file vx.md'), onHost(GIT_BASH_HOST, { ...deps(), readFile: () => 'just a note' })));
+});
+
+test('a command after an escaped line break is still checked', () => {
+  blocked(shell('git status && \\\n  git push --force origin main'), deps({ branch: 'main' }));
+  blocked(shell('true && \\\n  gh pr merge 5 --squash'));
+  blocked(ps('git status; `\ngit push --force origin main'), deps({ branch: 'main' }));
+  blocked(asAgent('bstack:reviewer')('cd \\\n/other; git restore a.mjs'));
 });
 
 test('a body file the guard cannot read is refused', () => {

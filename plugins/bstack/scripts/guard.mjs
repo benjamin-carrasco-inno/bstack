@@ -146,7 +146,7 @@ function shellState(scopes, scope, start) {
 function changeDir(shell, c, host) {
   const move = DIR_MOVES[c.cmd];
   if (!move) return;
-  if (c.inPipeline || c.args.some(a => STACK_INDEX.test(a) || (c.dialect === 'powershell' && LOCATION_HISTORY.test(a)))) return lostTrack(shell);
+  if (c.args.some(a => STACK_INDEX.test(a) || (c.dialect === 'powershell' && LOCATION_HISTORY.test(a)))) return lostTrack(shell);
   if (move !== 'go' && c.dialect === 'posix' && c.args.includes('-n')) return stackOnly(shell, move);
   const at = c.args.findIndex(a => a === '-' || (!a.startsWith('-') && !/^\/d$/i.test(a)));
   const { word: target, dialect } = inTempDir(c.args[at], c.dialect, host);
