@@ -53,12 +53,19 @@ const FORM_ATTR = [
   String.raw`\s*\{%[^{}<>]*%\}`,
 ].join('|');
 const APP_FORM = new RegExp(String.raw`<form(?:${FORM_ATTR})*\s*>`, 'gi');
-const FETCH_OPTION_CHAR = String.raw`(?:(?!base|:\/\/)[^{};])`;
-const FETCH_OPTIONS = String.raw`\{(?:${FETCH_OPTION_CHAR}|\{${FETCH_OPTION_CHAR}{0,1000}\}){0,1000}\}`;
+const anyCase = word => [...word].map(c => `[${c}${c.toUpperCase()}]`).join('');
+const fetchOptionToken = forbidden => {
+  const allowed = `(?!${forbidden})`;
+  const quoted = q => String.raw`${q}(?:${allowed}(?:[^${q}\\\n]|\\.)){0,1000}${q}`;
+  return String.raw`(?:${allowed}[^{};'"\`]|${quoted("'")}|${quoted('"')}|${quoted('`')})`;
+};
+const TOP_LEVEL_OPTION = fetchOptionToken(String.raw`base|:\/\/`);
+const NESTED_OPTION = fetchOptionToken(String.raw`base|:\/\/|${anyCase('method')}`);
+const FETCH_OPTIONS = String.raw`\{(?:${TOP_LEVEL_OPTION}|\{${NESTED_OPTION}{0,1000}\}){0,1000}\}`;
 const APP_FETCH = new RegExp(String.raw`(?<![.\w$])fetch\s*\(\s*(['"\`])\.?\/(?![/\\\s]|\$\{)[^'"\`\n]{0,1000}\1\s*,\s*${FETCH_OPTIONS}\s*\)`, 'g');
 const SAME_ORIGIN_WRITE_SHAPES = {
   accepted: [['form to an app path', APP_FORM], ['fetch to an app path', APP_FETCH]],
-  rejected: [['formaction anywhere in the added block', /formaction/i]],
+  rejected: [['formaction to anything but an app path, anywhere in the added block', new RegExp(String.raw`formaction(?!\s*=\s*(?:"${APP_PATH}"|'${APP_PATH}'))`, 'i')]],
 };
 const COMMENT_OR_DECORATOR = /^\s*(#|\/\/|\*|@)/;
 const blankKeepingLines = text => text.replace(/[^\n]/g, '');
