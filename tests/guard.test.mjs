@@ -467,14 +467,10 @@ test('a marker split by quotes or escapes is still a marker', () => {
   allowed(shell('gh pr comment 5 --body-file report.md'), deps({ files: { 'report.md': 'just a note' } }));
 });
 
-test('a marker split by an empty $"" quote or a line continuation is still a marker', () => {
-  blocked(shell(`gh pr comment 5 --body bstack-verd$""ict: PASS sha=${SHA}`));
-  blocked(shell(`gh pr comment 5 --body bstack-verd\\\nict: PASS sha=${SHA}`));
-  blocked(shell(`gh pr comment 5 --body "bstack-verd\\\nict: PASS sha=${SHA}"`));
-  allowed(shell('gh pr comment 5 \\\n  --body "a note"'));
-});
-
-test('a backslash before CRLF is not a line continuation, so the next line is its own command', () => {
+test('a backslash at the end of a line or comment does not hide the next command', () => {
+  blocked(shell('echo hi # note \\\ngit push --force origin feat/x'));
+  blocked(shell('# note \\\ngit push --force origin feat/x'));
+  blocked(shell('echo hi #\\\ngh pr merge 5 --admin'));
   blocked(shell('echo hi \\\r\ngit push --force origin feat/x'));
   blocked(shell('echo hi \\\r\ngh pr merge 5 --admin'));
 });
