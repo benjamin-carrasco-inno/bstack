@@ -259,7 +259,7 @@ test('browser check runner ends at once when the page renderer crashes, exits 2 
   assert.deepEqual(left, []);
 });
 
-const windowsKillsHard =process.platform === 'win32' && 'on Windows child.kill() terminates without a signal the runner can handle';
+const windowsKillsHard = process.platform === 'win32' && 'on Windows child.kill() terminates without a signal the runner can handle';
 
 test('browser check runner stopped by SIGTERM exits 2 and removes its profile', { skip: noBrowser || windowsKillsHard }, async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
