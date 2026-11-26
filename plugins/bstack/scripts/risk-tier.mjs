@@ -25,7 +25,10 @@ const FIXTURE = /(^|\/)(fixtures|__fixtures__|testdata)\//i;
 const SCHEMA_FILE = /(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i;
 const STYLESHEET = /\.(css|scss|sass|less)$/i;
 
-const LITERAL_ITEM = /^\s*(["'`][^"'`]*["'`]|-?\d[\d_.]*)?\s*,?\s*$/;
+const AUTH_TEST_LIST_ITEM = /^\s*(["'`][^"'`]*["'`]|-?\d[\d_.]*)?\s*,?\s*$/;
+const AUTH_TEST_BYPASS = /^\s*(?:if\b.*[):]\s*)?return\s*;?\s*$|\bdependency_overrides\b/;
+const listItems = lines => lines.filter(l => l.trim() && AUTH_TEST_LIST_ITEM.test(l)).length;
+const authTestExempt = f => f.removed.every(l => AUTH_TEST_LIST_ITEM.test(l)) && listItems(f.removed) <= listItems(f.added) && !f.added.some(l => AUTH_TEST_BYPASS.test(l));
 export const RISK_PATHS = '.github/risk-paths.txt';
 export const EXPOSURE = '.github/bstack-exposure.txt';
 const POLICY_FILES = [RISK_PATHS, EXPOSURE];
@@ -33,14 +36,17 @@ const PATH_RULES = [
   [/^\.github\/(risk-paths|bstack-exposure)\.txt$/, 'risk policy file'],
   [SCHEMA_FILE, 'schema or migration file'],
   [/(^|\/)n8n\//i, 'n8n flow code (external consumer)'],
-  [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code', (q, f) => STYLESHEET.test(q) || (runnableTest(q) && f.removed.every(l => LITERAL_ITEM.test(l)))],
+  [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code', (q, f) => STYLESHEET.test(q) || (runnableTest(q) && authTestExempt(f))],
   [/(import|sync|upsert|ingest|backfill)[^/]*\.(py|rs|js|mjs|ts)$/i, 'importer or sync code'],
 ];
 
+const APP_BASE_EXPRESSIONS = ['base', 'crate::b()'];
+const escapeRegex = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const APP_BASE = String.raw`\{\{\s*(?:${APP_BASE_EXPRESSIONS.map(escapeRegex).join('|')})\s*\}\}`;
 const TEMPLATE_VAR = String.raw`\{\{[^{}"'<>]*\}\}`;
 const PLAIN_VALUE = String.raw`(?:[^"'{}<>\\]|${TEMPLATE_VAR})*`;
-const APP_PATH = String.raw`(?:${TEMPLATE_VAR})?\/(?![/\\\s])${PLAIN_VALUE}`;
-const URL_ATTR = String.raw`(?:action|formaction|hx-(?:get|post|put|patch|delete))\b`;
+const APP_PATH = String.raw`(?:${APP_BASE})?\/(?![/\\\s])${PLAIN_VALUE}`;
+const URL_ATTR = String.raw`(?:action|formaction|(?:data-)?hx-(?:get|post|put|patch|delete))\b`;
 const FORM_ATTR = [
   String.raw`\s+(?!${URL_ATTR}|on)[a-z][\w.]*(?:-(?!on)[\w.]+)*(?:\s*=\s*(?:"${PLAIN_VALUE}"|'${PLAIN_VALUE}'|[\w.-]+))?`,
   String.raw`\s+(?!formaction)${URL_ATTR}\s*=\s*(?:"${APP_PATH}"|'${APP_PATH}')`,
@@ -48,7 +54,13 @@ const FORM_ATTR = [
 ].join('|');
 const APP_FORM = new RegExp(String.raw`<form(?:${FORM_ATTR})*\s*>`, 'gi');
 const APP_FETCH = /(?<![.\w$])fetch\s*\(\s*(['"`])\.?\/(?![/\\\s]|\$\{)[^'"`]{0,1000}\1\s*,\s*\{(?![^{}]{0,1000}(?:base|:\/\/))[^{}]{0,1000}\}\s*\)/g;
-const withoutAppWrites = l => (/formaction/i.test(l) ? l : l.replace(APP_FORM, '')).replace(APP_FETCH, '');
+const SAME_ORIGIN_WRITE_SHAPES = {
+  accepted: [['form to an app path', APP_FORM], ['fetch to an app path', APP_FETCH]],
+  rejected: [['formaction anywhere on the line', /formaction/i]],
+};
+const withoutAppWrites = l => (SAME_ORIGIN_WRITE_SHAPES.rejected.some(([, re]) => re.test(l))
+  ? l
+  : SAME_ORIGIN_WRITE_SHAPES.accepted.reduce((rest, [, re]) => rest.replace(re, ''), l));
 const SCHEMA_STATEMENT = /\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i;
 
 const ADDED_OR_REMOVED = [
@@ -62,7 +74,7 @@ const ADDED_OR_REMOVED = [
 ];
 
 const WEAKENING_ADDED = [
-  [/pytest\.mark\.(skip|xfail)|@unittest\.skip|#\[ignore\]|\b(it|test|describe)\.skip\(|\bx(it|describe)\(/, 'test skipped'],
+  [/pytest\.mark\.(skip|xfail)|pytest\.skip\(|@unittest\.skip|#\[ignore\b|\bt\.Skip(Now|f)?\(|\b(it|test|describe)\.skip\(|\bx(it|describe)\(/, 'test skipped'],
   [/continue-on-error:\s*true|\|\|\s*true\b/, 'CI step allowed to fail'],
 ];
 const PROSE_EXTENSION = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;

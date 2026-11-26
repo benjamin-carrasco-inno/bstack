@@ -595,11 +595,16 @@ test('#148: a data-hx-post or data-hx-delete to an absolute URL is outbound', ()
   outboundForm('<form method="post" action="/x" data-hx-delete="https://evil.example/x">');
 });
 
-test('a huge line of unclosed form tags is classified quickly', () => {
-  const line = 'method="post" ' + ('<form a=' + 'x'.repeat(50)).repeat(20000);
-  const started = Date.now();
-  outcome('templates/big.html', { add: [line] });
-  assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
+test('a huge line of unclosed form tags costs about as much as a same-size line without forms', () => {
+  const lineOf = tag => 'method="post" ' + (`<${tag} a=` + 'x'.repeat(50)).repeat(20000);
+  const fastest = line => Math.min(...[1, 2, 3].map(() => {
+    const started = process.hrtime.bigint();
+    outcome('templates/big.html', { add: [line] });
+    return Number(process.hrtime.bigint() - started);
+  }));
+  const forms = fastest(lineOf('form'));
+  const plain = fastest(lineOf('from'));
+  assert.ok(forms < 50 * plain, `forms ${forms} ns, plain ${plain} ns`);
 });
 
 test('a file named like a test but not counted as a test keeps the auth rule', () => {
