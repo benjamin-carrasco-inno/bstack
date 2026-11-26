@@ -191,25 +191,59 @@ function giveUpSignal(seconds) {
   return { stopped, stop, clear: () => clearTimeout(timer) };
 }
 
+const PROFILE_PREFIX = 'browser-check-';
+const LONGEST_RUN_MS = 86400 * 1000 + 60000;
+
+function isRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+}
+
+function isStale(dir, name) {
+  const ownerPid = /^browser-check-(\d+)-/.exec(name)?.[1];
+  if (ownerPid) return !isRunning(Number(ownerPid));
+  return Date.now() - fs.statSync(dir).mtimeMs > LONGEST_RUN_MS;
+}
+
+function removeStaleProfiles() {
+  const tmp = os.tmpdir();
+  for (const entry of fs.readdirSync(tmp, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(PROFILE_PREFIX)) continue;
+    const dir = path.join(tmp, entry.name);
+    try {
+      if (isStale(dir, entry.name)) fs.rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
 async function main() {
   if (typeof WebSocket === 'undefined') throw new Error('needs Node 22 or later (global WebSocket)');
   const args = parseArgs(process.argv.slice(2));
+  removeStaleProfiles();
   const check = fs.readFileSync(new URL('./browser-check.js', import.meta.url), 'utf8').trim();
   const browser = findBrowser(args.browser);
   const giveUp = giveUpSignal(args.timeoutSeconds);
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-check-'));
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), `${PROFILE_PREFIX}${process.pid}-`));
   const { child, endpoint } = launch(browser, profile);
   let cdp;
+  let report;
   try {
     const work = endpoint.then(connect).then(connected => runCheck(cdp = connected, args, check, giveUp.stop));
-    const report = await Promise.race([work, giveUp.stopped]);
-    console.log(JSON.stringify(report, null, 2));
-    process.exitCode = report.findings.length ? 1 : 0;
+    report = await Promise.race([work, giveUp.stopped]);
   } finally {
     giveUp.clear();
     await closeBrowser(child, cdp);
     fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   }
+  process.exitCode = report.findings.length ? 1 : 0;
+  process.stdout.on('error', error => {
+    if (error.code !== 'EPIPE') throw error;
+  });
+  console.log(JSON.stringify(report, null, 2));
 }
 
 async function closeBrowser(child, cdp) {
