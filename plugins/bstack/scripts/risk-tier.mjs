@@ -53,14 +53,28 @@ const FORM_ATTR = [
   String.raw`\s*\{%[^{}<>]*%\}`,
 ].join('|');
 const APP_FORM = new RegExp(String.raw`<form(?:${FORM_ATTR})*\s*>`, 'gi');
-const APP_FETCH = /(?<![.\w$])fetch\s*\(\s*(['"`])\.?\/(?![/\\\s]|\$\{)[^'"`]{0,1000}\1\s*,\s*\{(?![^{}]{0,1000}(?:base|:\/\/))[^{}]{0,1000}\}\s*\)/g;
+const anyCase = word => [...word].map(c => `[${c}${c.toUpperCase()}]`).join('');
+const fetchOptionToken = forbidden => {
+  const allowed = `(?!${forbidden})`;
+  const quoted = (q, live = '') => String.raw`${q}(?:(?!${forbidden}${live})(?:[^${q}\\\n]|\\.)){0,1000}${q}`;
+  return String.raw`(?:${allowed}[^{};'"\`]|${quoted("'")}|${quoted('"')}|${quoted('`', String.raw`|\$\{`)})`;
+};
+const TOP_LEVEL_OPTION = fetchOptionToken(String.raw`base|:\/\/`);
+const NESTED_OPTION = fetchOptionToken(String.raw`base|:\/\/|${anyCase('method')}`);
+const FETCH_OPTIONS = String.raw`\{(?:${TOP_LEVEL_OPTION}|\{${NESTED_OPTION}{0,1000}\}){0,1000}\}`;
+const APP_FETCH = new RegExp(String.raw`(?<![.\w$])fetch\s*\(\s*(['"\`])\.?\/(?![/\\\s]|\$\{)[^'"\`\n]{0,1000}\1\s*,\s*${FETCH_OPTIONS}\s*\)`, 'g');
 const SAME_ORIGIN_WRITE_SHAPES = {
   accepted: [['form to an app path', APP_FORM], ['fetch to an app path', APP_FETCH]],
-  rejected: [['formaction anywhere on the line', /formaction/i]],
+  rejected: [['formaction to anything but an app path, anywhere in the added block', new RegExp(String.raw`formaction(?!\s*=\s*(?:"${APP_PATH}"|'${APP_PATH}'))`, 'i')]],
 };
-const withoutAppWrites = l => (SAME_ORIGIN_WRITE_SHAPES.rejected.some(([, re]) => re.test(l))
-  ? l
-  : SAME_ORIGIN_WRITE_SHAPES.accepted.reduce((rest, [, re]) => rest.replace(re, ''), l));
+const COMMENT_OR_DECORATOR = /^\s*(#|\/\/|\*|@)/;
+const blankKeepingLines = text => text.replace(/[^\n]/g, '');
+const withoutAppWrites = block => {
+  const text = block.map(l => (COMMENT_OR_DECORATOR.test(l) ? '' : l)).join('\n');
+  return SAME_ORIGIN_WRITE_SHAPES.rejected.some(([, re]) => re.test(text))
+    ? block
+    : SAME_ORIGIN_WRITE_SHAPES.accepted.reduce((rest, [, re]) => rest.replace(re, blankKeepingLines), text).split('\n');
+};
 const SCHEMA_STATEMENT = /\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i;
 
 const ADDED_OR_REMOVED = [
@@ -170,10 +184,12 @@ export function parseDiff(diff) {
   for (const line of String(diff ?? '').split(/\r?\n/)) {
     const header = headerPaths(line);
     if (header) {
-      f = { header, rename: [undefined, undefined], patch: [undefined, undefined], inHunk: false, added: [], removed: [], created: false, deleted: false };
+      f = { header, rename: [undefined, undefined], patch: [undefined, undefined], inHunk: false, added: [], removed: [], blocks: [], side: null, created: false, deleted: false };
       files.push(f); continue;
     }
     if (!f) continue;
+    const before = f.side;
+    f.side = null;
     const rename = RENAME.exec(line);
     const side = !f.inHunk && PATCH_SIDE.exec(line);
     const at = side && (side[1] === '---' ? 0 : 1);
@@ -183,10 +199,14 @@ export function parseDiff(diff) {
     else if (line.startsWith('new file mode')) f.created = true;
     else if (line.startsWith('deleted file mode')) f.deleted = true;
     else if (!f.inHunk && (line.startsWith('+++') || line.startsWith('---'))) continue;
-    else if (line.startsWith('+')) f.added.push(line.slice(1));
-    else if (line.startsWith('-')) f.removed.push(line.slice(1));
+    else if (line.startsWith('+') || line.startsWith('-')) {
+      f.side = line.startsWith('+') ? 'added' : 'removed';
+      f[f.side].push(line.slice(1));
+      if (f.side !== before) f.blocks.push([]);
+      f.blocks.at(-1).push(line.slice(1));
+    }
   }
-  return files.map(({ header, rename, patch, inHunk, ...rest }) => ({ ...realPaths({ header, rename, patch }), ...rest }));
+  return files.map(({ header, rename, patch, inHunk, side, ...rest }) => ({ ...realPaths({ header, rename, patch }), ...rest }));
 }
 
 function globToRegex(glob) {
@@ -261,9 +281,12 @@ export function riskTier(diff, { extraPaths = [], readFile } = {}) {
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
     if (CODE.test(p) && !isTest) {
-      for (const l of [...f.added, ...f.removed]) {
-        if (/^\s*(#|\/\/|\*)/.test(l) || /^\s*@/.test(l)) continue; // comments and decorators
-        for (const [re, why, appOnly] of ADDED_OR_REMOVED) if (re.test(l) && (!appOnly || re.test(appOnly(l)))) raise(2, `${why}: ${p}`);
+      for (const block of f.blocks) {
+        let appOnlyLines;
+        block.forEach((l, i) => {
+          if (COMMENT_OR_DECORATOR.test(l)) return;
+          for (const [re, why, appOnly] of ADDED_OR_REMOVED) if (re.test(l) && (!appOnly || re.test((appOnlyLines ??= appOnly(block))[i]))) raise(2, `${why}: ${p}`);
+        });
       }
     }
   }
