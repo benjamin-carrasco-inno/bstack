@@ -43,19 +43,21 @@ test('browser check runner without any browser exits 2 and leaves no temp profil
 test('browser check runner removes the profiles of dead runs and keeps those of live runs', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
   const deadPid = spawnSync(process.execPath, ['-e', '']).pid;
-  const stale = [`browser-check-${deadPid}-abc123`, 'browser-check-old123'];
+  const pidReused = `browser-check-${process.pid}-old456`;
+  const stale = [`browser-check-${deadPid}-abc123`, 'browser-check-old123', pidReused];
   const live = [`browser-check-${process.pid}-abc123`, 'browser-check-new123'];
-  for (const name of [...stale, ...live]) {
+  const foreign = ['browser-check-2024-results', 'browser-check-reports', 'browser-check-nomark'];
+  for (const name of [...stale, ...live, ...foreign]) {
     fs.mkdirSync(path.join(tmp, name));
-    fs.writeFileSync(path.join(tmp, name, 'Local State'), '{}');
+    fs.writeFileSync(path.join(tmp, name, name === 'browser-check-nomark' ? 'notes.txt' : 'Local State'), '{}');
   }
   const twoDaysAgo = new Date(Date.now() - 2 * 86400000);
-  fs.utimesSync(path.join(tmp, 'browser-check-old123'), twoDaysAgo, twoDaysAgo);
+  for (const name of ['browser-check-old123', pidReused, ...foreign]) fs.utimesSync(path.join(tmp, name), twoDaysAgo, twoDaysAgo);
   const run = spawnSync(process.execPath, [runner, 'http://127.0.0.1:9', '--browser', 'no-such-browser-exe'], { encoding: 'utf8', env: { ...process.env, TMPDIR: tmp, TEMP: tmp, TMP: tmp } });
   const left = fs.readdirSync(tmp).sort();
   fs.rmSync(tmp, { recursive: true, force: true });
   assert.equal(run.status, 2, run.stderr);
-  assert.deepEqual(left, live.sort());
+  assert.deepEqual(left, [...live, ...foreign].sort());
 });
 
 test('browser check runner with an unknown browser path exits 2 and names the problem', () => {

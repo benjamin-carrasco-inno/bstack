@@ -203,16 +203,21 @@ function isRunning(pid) {
   }
 }
 
+const RUNNER_PROFILE = /^browser-check-(?:(\d+)-)?[A-Za-z0-9]{6}$/;
+const BROWSER_MARKERS = ['Local State', 'DevToolsActivePort'];
+
 function isStale(dir, name) {
-  const ownerPid = /^browser-check-(\d+)-/.exec(name)?.[1];
-  if (ownerPid) return !isRunning(Number(ownerPid));
+  const match = RUNNER_PROFILE.exec(name);
+  if (!match || !BROWSER_MARKERS.some(marker => fs.existsSync(path.join(dir, marker)))) return false;
+  const ownerPid = match[1];
+  if (ownerPid && !isRunning(Number(ownerPid))) return true;
   return Date.now() - fs.statSync(dir).mtimeMs > LONGEST_RUN_MS;
 }
 
 function removeStaleProfiles() {
   const tmp = os.tmpdir();
   for (const entry of fs.readdirSync(tmp, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !entry.name.startsWith(PROFILE_PREFIX)) continue;
+    if (!entry.isDirectory()) continue;
     const dir = path.join(tmp, entry.name);
     try {
       if (isStale(dir, entry.name)) fs.rmSync(dir, { recursive: true, force: true });
