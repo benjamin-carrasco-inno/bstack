@@ -2447,3 +2447,33 @@ test('no-authoring agents: a quoted write target with a parenthesis is a literal
     blocked(psAs("Remove-Item -LiteralPath 'C:\\checkout\\app\\(marketing)\\tmp.txt'"));
   }
 });
+
+const CARGO_LOCK = fileURLToPath(new URL('../plugins/bstack/scripts/cargo-lock.mjs', import.meta.url)).replace(/\\/g, '/');
+const TO_THE_LOCK = /under the target lock: node ".*\/scripts\/cargo-lock\.mjs" cargo /;
+
+test('#153: on a shared CARGO_TARGET_DIR, cargo builds go through the target lock', () => {
+  const shared = onHost({ platform: 'linux', env: { CARGO_TARGET_DIR: '/home/u/.cargo-target' }, tmpdir: () => '/tmp' });
+  for (const command of [
+    'cargo test --workspace --locked', 'cargo +nightly clippy -- -D warnings', 'cd crates/a && cargo build', 'cargo.exe nextest run',
+    'cargo --manifest-path crates/app/Cargo.toml test', 'cargo --color always test', 'cargo -Z unstable-options test',
+    'cargo --config build.jobs=2 test', 'cargo -C crates/app build', 'cargo llvm-cov --workspace', 'cargo tarpaulin', 'cargo miri test',
+  ]) assert.match(decide(shell(command), shared) ?? '', TO_THE_LOCK, command);
+  assert.match(decide(shell('cargo test --workspace'), shared), /cargo-lock\.mjs" cargo test --workspace$/);
+  for (const command of ['cargo --version', 'cargo fmt --check', 'cargo check', 'cargo run -p app', 'cargo r', `node ${CARGO_LOCK} cargo test`]) allowed(shell(command), shared);
+  allowed(shell('cargo test'), onHost({ platform: 'linux', env: {}, tmpdir: () => '/tmp' }));
+});
+
+test('#153: read-only agents on a shared target run cargo through the lock, and only cargo through it', () => {
+  const shared = onHost({ ...GIT_BASH_HOST, env: { CARGO_TARGET_DIR: 'C:/t' } });
+  for (const agent of ['bstack:reviewer', 'bstack:adversary']) {
+    const as = asAgent(agent);
+    assert.match(decide(as('cargo test --workspace'), shared) ?? '', TO_THE_LOCK, agent);
+    for (const command of [`node ${CARGO_LOCK} cargo test --workspace`, `node "${CARGO_LOCK}" cargo --color always test`, `node ${CARGO_LOCK} cargo.exe build`]) allowed(as(command), shared);
+    for (const command of [`node ${CARGO_LOCK} npm install left-pad`, `node ${CARGO_LOCK} cargo install ripgrep`, `node ${CARGO_LOCK} cargo test --manifest-path /elsewhere/Cargo.toml`, 'node /p/scripts/cargo-lock.mjs cargo test',
+      `node ${CARGO_LOCK} cargo --config "target.'cfg(all())'.runner='powershell -c calc'" test`, `node ${CARGO_LOCK} cargo test --config=build.rustc=/tmp/x`,
+      `node ${CARGO_LOCK} cargo -Z unstable-options test`, `node ${CARGO_LOCK} cargo test -Zbuild-std`,
+      `cargo --config "target.'cfg(all())'.runner='powershell -c calc'" test`, 'cargo test --config x.toml', 'cargo -Zfoo test']) {
+      assert.match(decide(as(command), shared) ?? '', /runs only allowlisted commands/, `${agent}: ${command}`);
+    }
+  }
+});
