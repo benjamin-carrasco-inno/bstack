@@ -144,6 +144,7 @@ function changeDir(shell, c, host) {
   const move = DIR_MOVES[c.cmd];
   if (!move) return;
   if (c.inPipeline || c.args.some(a => STACK_INDEX.test(a) || (c.dialect === 'powershell' && LOCATION_HISTORY.test(a)))) return lostTrack(shell);
+  if (move !== 'go' && c.dialect === 'posix' && c.args.includes('-n')) return stackOnly(shell, move);
   const at = c.args.findIndex(a => a === '-' || (!a.startsWith('-') && !/^\/d$/i.test(a)));
   const { word: target, dialect } = inTempDir(c.args[at], c.dialect, host);
   if (move === 'pop') {
@@ -159,6 +160,11 @@ function changeDir(shell, c, host) {
     const opaque = target === undefined || c.expressions?.has(at) || OPAQUE.test(target) || TILDE.test(target);
     shell.here = { dir, known: dir !== UNKNOWN_DIR && !opaque && (shell.here.known || host.paths.isAbsolute(target, dialect)) };
   }
+}
+
+function stackOnly(shell, move) {
+  if (move === 'push') shell.stack.push({ dir: UNKNOWN_DIR, known: false });
+  else shell.stack.pop();
 }
 
 function lostTrack(shell) {

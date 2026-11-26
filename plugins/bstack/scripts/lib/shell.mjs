@@ -128,6 +128,7 @@ export function closingBacktick(line, open) {
 }
 
 const UNSEEN_PIPE_SOURCE = Object.freeze({ cmd: '', args: [], text: '' });
+const BACKGROUND_AMPERSAND = { posix: /^/, powershell: /^[ \t]*(?:$|[;\r\n)}]|&&|\|\|)/ };
 
 export function splitSegments(line, dialect = 'posix') {
   return segmentsOf(line, dialect).map(s => s.text);
@@ -221,12 +222,14 @@ function segmentsOf(line, dialect, ids = { n: 0 }, path = '') {
     }
     if (ch === '&') {
       const prev = line[i - 1];
-      if (prev === '>' || line[i + 1] === '>') { cur += ch; continue; } // 2>&1, &>
+      if (prev === '>' || prev === '<' || line[i + 1] === '>') { cur += ch; continue; } // 2>&1, <&0, &>
+      if (prev === ESCAPE[dialect]) { cur += ch; continue; }
       if (line[i + 1] === '&') { i++; emit(); endStage(); continue; }
       if (cur.trim() === '') { cur += ' '; continue; } // PowerShell call operator
       emit();
-      endStage({ list: dialect === 'cmd' });
-      if (dialect !== 'cmd') { fork(at.listStart); at.listStart = segments.length; }
+      const background = BACKGROUND_AMPERSAND[dialect]?.test(line.slice(i + 1));
+      endStage({ list: !background });
+      if (background) { fork(at.listStart); at.listStart = segments.length; }
       continue;
     }
     cur += ch;
