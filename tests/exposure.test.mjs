@@ -123,6 +123,22 @@ test('internal tier 2 judges the newest interrogate result, not an older clean o
   assert.equal(merge(github({ policy: internal, comments: [interrogate(FIRST, 1, 1), interrogate(EARLIER, 2), verdict(HEAD, 3)] })), null);
 });
 
+test('internal tier 2 refuses a blocking result on a commit no longer in the PR', () => {
+  const GONE = '3'.repeat(40);
+  const amended = [FIRST, HEAD];
+  const comments = [interrogate(FIRST, 1), verdict(HEAD, 2), interrogate(GONE, 3, 2)];
+  assert.match(merge(github({ policy: internal, commits: amended, comments })) ?? '', /blocking/);
+  assert.match(merge(github({ policy: internal, commits: amended, comments: [interrogate(GONE, 1, 2), verdict(HEAD, 2)] })) ?? '', /blocking/);
+  assert.equal(merge(github({ policy: internal, commits: amended, comments: [...comments, interrogate(HEAD, 4)] })), null);
+});
+
+test('internal tier 2 refuses a blocking result on a side-branch commit of the PR without a newer verdict', () => {
+  const sideBranch = [FIRST, [EARLIER, FIRST], [HEAD, FIRST, EARLIER]];
+  const comments = [interrogate(FIRST, 1), verdict(HEAD, 2), interrogate(EARLIER, 3, 2)];
+  assert.match(merge(github({ policy: internal, commits: sideBranch, comments })) ?? '', /blocking/);
+  assert.match(merge(github({ policy: internal, comments })) ?? '', /blocking/);
+});
+
 test('internal tier 2 fails closed when the commits of the PR cannot be read', () => {
   assert.match(merge(github({ policy: internal, failCommits: true, comments: [interrogate(EARLIER, 1), verdict(HEAD, 2)] })) ?? '', /could not read the commits/);
 });
