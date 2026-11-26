@@ -1,4 +1,4 @@
-(async ({ paths = [location.pathname + location.search], widths = [375, 768, 1280], range = [320, 1600], height = 900, resize } = {}) => {
+(async ({ paths = [location.pathname + location.search], widths = [375, 768, 1280], range = [320, 1600], height = 900, resize, statics = true, sweep = true } = {}) => {
   const IGNORED = '[hidden], [aria-hidden="true"], dialog:not([open]), template';
   const PLACEHOLDER = /\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}|\$\{[^}]*\}/g;
   const CONTROLS = 'input:not([type="hidden"], [type="submit"], [type="button"], [type="reset"], [type="image"]), select, textarea';
@@ -152,10 +152,10 @@
       const view = await open(path, width);
       const over = overflow(view.doc);
       if (over) findings.push({ check: 'overflow', path, width, ...over });
-      if (n === 0) findings.push(...staticFindings(view.doc).map(f => ({ path, ...f })));
+      if (n === 0 && statics) findings.push(...staticFindings(view.doc).map(f => ({ path, ...f })));
       view.close();
     }
-    report.push(...await breakpoints(path));
+    if (sweep) report.push(...await breakpoints(path));
   }
   return { findings, breakpoints: report };
 })

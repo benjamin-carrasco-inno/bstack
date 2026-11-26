@@ -8,6 +8,8 @@ import path from 'node:path';
 
 const USAGE = 'usage: node browser-check-run.mjs <origin> <path>... [--widths 375,768,1280] [--browser <exe>] [--timeout 120] [--login <path> --user <name> --password <secret>] [--cookie <name>=<value>]...';
 const HEIGHT = 900;
+const DEFAULT_WIDTHS = [375, 768, 1280];
+const [SWEEP_FROM, SWEEP_TO] = [320, 1600];
 const CANDIDATES = {
   win32: [
     `${process.env['PROGRAMFILES(X86)']}\\Microsoft\\Edge\\Application\\msedge.exe`,
@@ -140,12 +142,14 @@ async function openTab(cdp, paths, stop) {
   await cdp.send('Runtime.addBinding', { name: RESIZE_BINDING }, sessionId);
   cdp.on('Runtime.bindingCalled', ({ sessionId: from, params }) => {
     if (from !== sessionId || params.name !== RESIZE_BINDING) return;
-    cdp.send('Emulation.setDeviceMetricsOverride', { width: Number(params.payload), height: HEIGHT, deviceScaleFactor: 1, mobile: false }, sessionId)
+    setWidth(cdp, sessionId, Number(params.payload))
       .then(() => cdp.send('Runtime.evaluate', { expression: `globalThis.${RESIZED}()`, contextId: params.executionContextId }, sessionId))
       .catch(stop);
   });
   return sessionId;
 }
+
+const setWidth = (cdp, sessionId, width) => cdp.send('Emulation.setDeviceMetricsOverride', { width, height: HEIGHT, deviceScaleFactor: 1, mobile: false }, sessionId);
 
 async function visit(cdp, sessionId, url, shownPath) {
   const loaded = cdp.nextEvent('Page.loadEventFired', sessionId);
@@ -181,14 +185,34 @@ async function signIn(cdp, sessionId, args) {
   if (!args.login) return;
   const login = new URL(args.login, args.origin);
   const shown = login.pathname + login.search;
-  await visit(cdp, sessionId, login, shown);
-  const submitted = cdp.nextEvent('Page.loadEventFired', sessionId);
-  await evaluate(cdp, sessionId, `${FILL_LOGIN}(${JSON.stringify({ user: args.user, password: args.password })})`).catch(error => {
+  const before = (await visit(cdp, sessionId, login, shown)).href;
+  const outcome = await afterSubmit(cdp, sessionId, before, () => evaluate(cdp, sessionId, `${FILL_LOGIN}(${JSON.stringify({ user: args.user, password: args.password })})`).catch(error => {
     throw new Error(`sign-in at ${shown}: ${error.message}`);
-  });
-  await submitted;
-  const landed = new URL(await evaluate(cdp, sessionId, 'location.href'));
-  if (samePage(landed, login)) throw new Error(`sign-in at ${shown} stayed on ${shown}; check --user and --password`);
+  }));
+  if (!outcome) throw new Error(`sign-in at ${shown} changed nothing within ${SIGN_IN_WAIT_MS / 1000} s (no page load, URL change or new cookie); check --user and --password`);
+  if (samePage(outcome.landed, login) && !outcome.newCookie) throw new Error(`sign-in at ${shown} stayed on ${shown}; check --user and --password`);
+}
+
+const SIGN_IN_WAIT_MS = 5000;
+
+async function afterSubmit(cdp, sessionId, before, submit) {
+  const page = { loading: false, loads: 0 };
+  cdp.on('Page.frameStartedLoading', msg => msg.sessionId === sessionId && (page.loading = true));
+  cdp.on('Page.frameStoppedLoading', msg => msg.sessionId === sessionId && (page.loading = false));
+  cdp.on('Page.loadEventFired', msg => msg.sessionId === sessionId && page.loads++);
+  const cookies = async () => JSON.stringify((await cdp.send('Network.getCookies', { urls: [before] }, sessionId)).cookies.map(c => [c.name, c.value]));
+  const cookiesBefore = await cookies();
+  await submit();
+  const deadline = Date.now() + SIGN_IN_WAIT_MS;
+  while (page.loading || Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    if (page.loading) continue;
+    const href = await evaluate(cdp, sessionId, 'document.readyState === "complete" && location.href').catch(() => false);
+    if (!href) continue;
+    const newCookie = (await cookies()) !== cookiesBefore;
+    if (page.loads || newCookie || href !== before) return { landed: new URL(href), newCookie };
+  }
+  return null;
 }
 
 async function navigationError(start, startPath, errorText) {
@@ -228,15 +252,21 @@ async function runCheck(cdp, args, check, stop) {
   const paths = pages.map(sameOriginPath);
   const sessionId = await openTab(cdp, paths, stop);
   await signIn(cdp, sessionId, args);
+  const load = async (i, width) => {
+    await setWidth(cdp, sessionId, width);
+    const landed = await visit(cdp, sessionId, pages[i], paths[i]);
+    if (!samePage(landed, pages[i])) throw redirectError([[pages[i].href, landed.href]], start.origin);
+  };
+  const checkLoaded = options => evaluate(cdp, sessionId, `(${check})({ ...${JSON.stringify(options)}, resize: ${RESIZE_IN_PAGE} })`);
   const report = { findings: [], breakpoints: [] };
-  for (const [i, page] of pages.entries()) {
-    const landed = await visit(cdp, sessionId, page, paths[i]);
-    if (!samePage(landed, page)) throw redirectError([[page.href, landed.href]], start.origin);
-    if (i === 0) await checkStatuses(cdp, sessionId, pages, paths, start.origin);
-    const options = JSON.stringify({ paths: [paths[i]], ...(args.widths && { widths: args.widths }) });
-    const { findings, breakpoints } = await evaluate(cdp, sessionId, `(${check})({ ...${options}, resize: ${RESIZE_IN_PAGE} })`);
-    report.findings.push(...findings);
-    report.breakpoints.push(...breakpoints);
+  for (const [i, path] of paths.entries()) {
+    for (const [n, width] of (args.widths ?? DEFAULT_WIDTHS).entries()) {
+      await load(i, width);
+      if (i === 0 && n === 0) await checkStatuses(cdp, sessionId, pages, paths, start.origin);
+      report.findings.push(...(await checkLoaded({ paths: [path], widths: [width], statics: n === 0, sweep: false })).findings);
+    }
+    await load(i, SWEEP_FROM);
+    report.breakpoints.push(...(await checkLoaded({ paths: [path], widths: [], range: [SWEEP_FROM, SWEEP_TO] })).breakpoints);
   }
   return report;
 }
