@@ -680,7 +680,11 @@ const BROWSER_CHECK_OPTIONS = {
   '--cookie': value => /^[^=;\s]+=[^;]*$/.test(value),
 };
 
+const SPLIT_BY_POWERSHELL_5 = /"|\\$/;
+
 function browserCheckRule(c, ctx) {
+  const split = c.args.slice(1).find(a => SPLIT_BY_POWERSHELL_5.test(a));
+  if (split !== undefined) return refuse(ctx.agent, `the browser check with ${split}, which Windows PowerShell 5.1 can split into more arguments`, 'Leave out double quotes and a trailing backslash.');
   const operands = [];
   const unreadable = i => c.expressions?.has(i) || c.expands?.has(i);
   for (let i = 1; i < c.args.length; i++) {
