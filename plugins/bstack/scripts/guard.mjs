@@ -3,7 +3,8 @@
 // cannot hold: pushes to the default branch, skipped hooks, force-pushes, rebasing pushed branches,
 // merges without green CI and a reviewer verdict for the head SHA (or one carried across merge-ins
 // of the base branch that left the PR diff unchanged), merges through side doors
-// (gh api, MCP), forged verdicts, and commits that add comment lines over a repo's comment baseline.
+// (gh api, MCP), forged verdicts, commits that add comment lines over a repo's comment baseline, and
+// cargo builds on a shared CARGO_TARGET_DIR outside the target lock.
 // Exit 2 with a message that names the right alternative.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -15,6 +16,7 @@ import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, ti
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
+import { cargoSubcommand, isCargo } from './lib/cargo.mjs';
 import { mergeInChain, prCommits, prMergeInChain, sameChange } from './lib/carry.mjs';
 import { policyLines, readBasePolicy } from './lib/base-policy.mjs';
 import { EXPOSURE, RISK_PATHS, exposureOf, gatePlan, ghFileReader, riskTier, tierZeroDocs } from './risk-tier.mjs';
@@ -42,13 +44,14 @@ export function decide(input, deps) {
   const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
   const looped = loopBodies(line).some(body => commandsIn(body, 0, dialect).some(createsCommit));
   for (const [k, c] of commands.entries()) {
-    const reason = hiddenRule(c) ?? markerRule(c, hostDeps) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
+    const reason = hiddenRule(c) ?? markerRule(c, hostDeps) ?? cargoLockRule(c, host) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
     if (reason) return reason;
   }
   return null;
 }
 
-const REAL_HOST = { platform: process.platform, env: process.env, tmpdir: () => os.tmpdir() };
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const REAL_HOST = { platform: process.platform, env: process.env, tmpdir: () => os.tmpdir(), pluginRoot: PLUGIN_ROOT };
 const withPaths = host => ({ ...host, paths: pathsOn(host.platform) });
 
 const DIR_MOVES = {
@@ -197,6 +200,16 @@ function resolvedDir(target, here, dialect, paths) {
 function hiddenRule(c) {
   if (!c.hidden) return null;
   return `The guard cannot tell which command ${c.text.split(c.hidden)[0]}${c.hidden} runs, so it cannot check it. Drop the ${c.hidden} flag or run the command without the wrapper.`;
+}
+
+const SHARED_TARGET_WRITERS = /^(build|b|test|t|clippy|bench|nextest|llvm-cov|tarpaulin|miri)$/;
+const CARGO_LOCK = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cargo-lock.mjs').replace(/\\/g, '/');
+const isCargoLock = script => script?.replace(/\\/g, '/').toLowerCase() === CARGO_LOCK.toLowerCase();
+
+function cargoLockRule(c, host) {
+  if (c.cmd !== 'cargo' || !inEnvironment('CARGO_TARGET_DIR', host)) return null;
+  if (!SHARED_TARGET_WRITERS.test(cargoSubcommand(c.args) ?? '')) return null;
+  return `CARGO_TARGET_DIR is set, so another worktree sharing it can rebuild these binaries between build and run. Run it under the target lock: node "${CARGO_LOCK}" cargo ${c.args.join(' ')}`;
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
@@ -362,7 +375,7 @@ const nameSet = text => new Set(text.trim().split(/\s+/));
 const isLongOptionPrefixOf = (word, full) => { const name = word.split('=')[0]; return name.length > 2 && name.startsWith('--') && full.startsWith(name); };
 const clusterHas = (word, letters) => /^-[^-]/.test(word) && [...word.slice(1)].some(ch => letters.includes(ch));
 const namesAny = (word, letters, longs) => clusterHas(word, letters) || longs.some(full => isLongOptionPrefixOf(word, full));
-const ALLOWED_SUMMARY = 'read-only git and gh, file reads and searches, tests and the app run from its own worktree, HTTP to localhost, and file writes inside its worktree or the temp dir';
+const ALLOWED_SUMMARY = 'read-only git and gh, file reads and searches, tests and the app run from its own worktree, HTTP and the plugin\'s browser check against localhost, and file writes inside its worktree or the temp dir';
 const refuse = (agent, what, fix = 'Report what you would run instead.') => `The ${agent} agent runs only allowlisted commands (${ALLOWED_SUMMARY}). Refused: ${what}. ${fix}`;
 
 const CONTROL = nameSet('for switch fi done esac case in try catch finally return break continue exit throw [ [[ test true false');
@@ -387,11 +400,32 @@ const POSIX_READ_LIMITS = {
 const SAFE_VARIABLES = nameSet('CI NODE_ENV FORCE_COLOR NO_COLOR TERM LANG LC_ALL TZ DEBUG');
 const safeVariable = name => SAFE_VARIABLES.has(name.toUpperCase());
 const inEnvironment = (name, host) => Object.keys(host.env ?? {}).some(key => key.toUpperCase() === name.toUpperCase());
+const LOADER_VARIABLES = new RegExp(`^(${[
+  'PATH', 'PATHEXT', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SHELL', 'SHELLOPTS', 'COMSPEC', 'ENV', 'PROMPT_COMMAND', 'CDPATH', 'PWD', 'OLDPWD',
+  'TEMP', 'TMP', 'TMPDIR', 'EDITOR', 'VISUAL', 'PAGER', 'BROWSER', 'PSMODULEPATH', 'CLASSPATH', 'VIRTUAL_ENV', 'CC', 'CXX',
+  '(BASH|LESS|NODE|NPM|YARN|PNPM|BUN|PYTHON|PIP|PYTEST|CONDA|UV|LD|DYLD|GIT|GH|XDG|CARGO|RUST|PERL|RUBY|GEM|JAVA|DOTNET|SSH|SSL|CURL',
+  'PLAYWRIGHT|PUPPETEER|CHROME|EDGE|GCONV|PKG_CONFIG|QT|GST|GIO|GTK)\\w*', '\\w*(_BROWSERS?|_PROXY|_EDITOR|_PAGER|ASKPASS|_(PLUGIN|LIBRARY|MODULE|LIB|CERT|CA)S?_(DIR|FILE|PATH))',
+].join('|')})$`, 'i');
+const APP_DATA_VARIABLE = /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*_(DIR|DB|FILE|PATH)$/;
+const ABSOLUTE_VALUE = { posix: /^(~$|~\/|\/(?!\/)|[a-z]:\/)/i, powershell: /^(~$|~[\\/]|[a-z]:[\\/])/i };
+const PARENT_SEGMENT = /(^|[\\/])\.\.([\\/]|$)/;
+const PATH_LIST = /[;:]/;
 
-function environmentRule(c, ctx) {
-  const names = Object.keys(c.env).filter(name => !safeVariable(name));
-  const exported = c.cmd === '' ? names.find(name => /[A-Z]/.test(name) || inEnvironment(name, ctx.host)) : names[0];
-  return exported ? refuse(ctx.agent, `setting ${exported}, which can change what a command runs or where it writes`, `Set only ${[...SAFE_VARIABLES].join(', ')}.`) : null;
+function ownedPath(value, at, ctx) {
+  if (value === null || !ABSOLUTE_VALUE[at.dialect]?.test(value) || PARENT_SEGMENT.test(value) || (at.dialect === 'posix' && value.includes('\\'))) return false;
+  if (PATH_LIST.test(value.replace(/^[a-z]:/i, ''))) return false;
+  const target = writeTarget(value, knownCwd(at), at.dialect, ctx.host, false);
+  return Boolean(target) && owns(ctx.root, target, ctx.host);
+}
+
+const allowedVariable = (name, value, at, ctx) => safeVariable(name) || (APP_DATA_VARIABLE.test(name) && !LOADER_VARIABLES.test(name) && ownedPath(value, at, ctx));
+const refuseVariable = (ctx, name) => refuse(ctx.agent, `setting ${name}, which can change what a command runs or where it writes`,
+  `Set only ${[...SAFE_VARIABLES].join(', ')}, or point an app data variable (a name ending in _DIR, _DB, _FILE or _PATH, such as DATA_DIR) at an absolute literal path without .. inside your worktree or the temp dir.`);
+
+function environmentRule(c, ctx, at) {
+  const exported = Object.keys(c.env).filter(name => c.cmd !== '' || /[A-Z]/.test(name) || inEnvironment(name, ctx.host));
+  const refused = exported.find(name => !allowedVariable(name, c.env[name], at, ctx));
+  return refused ? refuseVariable(ctx, refused) : null;
 }
 
 const FILTERS = ['filter', 'include', 'exclude', 'credential'];
@@ -440,7 +474,7 @@ function noAuthoringRule(line, dialect, cwd, agent, root, host) {
   const commands = located(parsed, cwd, host).map(escapedArgsUnresolved);
   for (const [k, c] of commands.entries()) {
     const target = k > 0 && endsInRedirect(commands[k - 1].text, commands[k - 1].dialect) && words(c.text, c.dialect).length === 1;
-    const reason = (target ? null : environmentRule(parsed[k], ctx) ?? agentCommandRule(c, ctx)) ?? redirectRule(c, ctx, commands[k + 1]);
+    const reason = (target ? null : environmentRule(parsed[k], ctx, c) ?? agentCommandRule(c, ctx)) ?? redirectRule(c, ctx, commands[k + 1]);
     if (reason) return reason;
   }
   for (const inner of quotedSubstitutions(text, dialect)) {
@@ -497,11 +531,14 @@ function dotnetRule(text, agent) {
   return null;
 }
 
+const LITERAL_STRING = /^(?:'([^']*)'|"([^"$`]*)")$/;
+const literalString = text => { const m = LITERAL_STRING.exec(text); return m ? m[1] ?? m[2] : null; };
+
 function expressionRule(c, ctx) {
   const set = POWERSHELL_ASSIGNMENT.exec(c.text);
   if (set) {
     const variable = /^env:(\w+)$/i.exec(set[1]);
-    if (variable && !safeVariable(variable[1])) return refuse(ctx.agent, `setting $env:${variable[1]}, which can change what a command runs or where it writes`, `Set only ${[...SAFE_VARIABLES].join(', ')}.`);
+    if (variable && !allowedVariable(variable[1], literalString(set[2].trim()), c, ctx)) return refuseVariable(ctx, `$env:${variable[1]}`);
     if (DEFAULT_PARAMETERS.test(set[1])) return refuse(ctx.agent, `setting $${set[1]}, which changes where cmdlets write`);
     const value = set[2].trim();
     if (!value || EXPRESSION_START.test(value)) return value ? expressionRule({ ...c, text: value }, ctx) : null;
@@ -623,6 +660,49 @@ function nodeProblem(args) {
   return args.includes('--test') || args.some(a => !a.startsWith('-')) ? null : 'without a script file reads code from stdin';
 }
 
+const PAGE_PATH = /^\/(?![\\/])[^\s\\]*$/;
+
+function browserCheckRule(c, ctx) {
+  const operands = [];
+  for (let i = 1; i < c.args.length; i++) {
+    const a = c.args[i];
+    if (c.expressions?.has(i)) return refuse(ctx.agent, 'the browser check with an argument the guard cannot read', 'Write each argument literally.');
+    if (/^--(widths|timeout)$/.test(a)) i++;
+    else if (a.startsWith('-')) return refuse(ctx.agent, `the browser check with ${a}`, 'Let it find Chrome or Edge itself.');
+    else operands.push(a);
+  }
+  const [origin = '', ...pages] = operands;
+  const away = pages.find(p => !PAGE_PATH.test(p));
+  return localOnly(ctx, origin) ?? (away ? refuse(ctx.agent, `the browser check on ${away}, which is not a path on the origin`, 'Pass paths such as / or /settings.') : null);
+}
+
+const PLUGIN_SCRIPTS = { 'skills/verify/browser-check-run.mjs': browserCheckRule };
+
+function pluginScript(c, ctx) {
+  const root = ctx.host.pluginRoot;
+  const target = root && c.args.length && !c.expressions?.has(0) && writeTarget(c.args[0], knownCwd(c), c.dialect, ctx.host, false);
+  if (!target || !ctx.host.paths.contains(ctx.host.paths.resolvePath(root), target)) return null;
+  const same = file => ctx.host.paths.contains(target, file) && ctx.host.paths.contains(file, target);
+  const name = Object.keys(PLUGIN_SCRIPTS).find(rel => same(ctx.host.paths.resolvePath(root, rel)));
+  return name ? PLUGIN_SCRIPTS[name] : () => refuse(ctx.agent, `node ${c.args[0]}: of the plugin's own scripts only ${Object.keys(PLUGIN_SCRIPTS).join(', ')} is on the list`);
+}
+
+const runNode = runner(nodeProblem);
+const runCargo = runner(cargoProblem);
+
+function nodeRule(c, ctx) {
+  const shipped = pluginScript(c, ctx);
+  return shipped && inWorktree(c, ctx) ? shipped(c, ctx) : runNode(c, ctx);
+}
+
+function nodeAllowed(c, ctx) {
+  const [script, program, ...rest] = c.args;
+  const literal = i => !(c.expressions?.has(i) ?? false);
+  if (!(literal(0) && literal(1) && isCargoLock(script) && isCargo(program))) return nodeRule(c, ctx);
+  const expressions = new Set([...(c.expressions ?? [])].map(i => i - 2));
+  return runCargo({ ...c, cmd: 'cargo', args: rest, expressions }, ctx);
+}
+
 const PYTHON_MODULES = /^(pytest|unittest|uvicorn)$/;
 
 function pythonProblem(args) {
@@ -650,8 +730,12 @@ function packageProblem(args) {
   return sub === undefined || PACKAGE_COMMANDS.test(sub) ? null : `${sub} is not on the list (test, run, start, install, ci)`;
 }
 
+const CARGO_INLINE_CONFIG = /^(--config|-Z)(=|$)|^-Z./;
+
 function cargoProblem(args) {
-  const sub = args.find(a => !a.startsWith('-') && !a.startsWith('+'));
+  const inline = args.find(a => CARGO_INLINE_CONFIG.test(a));
+  if (inline) return `${inline} sets cargo configuration (a runner, a linker) from the command line`;
+  const sub = cargoSubcommand(args);
   return /^(test|build|check|run|nextest)$/.test(sub ?? '') || (args.length === 1 && VERSION.test(args[0])) ? null : `${sub ?? ''} is not on the list (test, build, check, run)`;
 }
 
@@ -663,7 +747,7 @@ function sqliteRule(c, ctx) {
 
 const LOCAL_URL = /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])(:\d+)?([/?#]|$)/i;
 const CURL_FLAGS = /^-[sSiIvfLkGg46N]+$|^--(silent|show-error|include|head|verbose|fail|fail-with-body|location|insecure|get|compressed|no-buffer|http1\.1|http2|globoff|no-progress-meter)$/;
-const CURL_VALUED = /^(-[XHdmubeA]|--(request|header|data|data-raw|data-binary|data-urlencode|json|max-time|user|cookie|connect-timeout|retry|user-agent|referer))$/;
+const CURL_VALUED = /^(-[XHdmubeAF]|--(request|header|data|data-raw|data-binary|data-urlencode|json|max-time|user|cookie|connect-timeout|retry|user-agent|referer|form|form-string))$/;
 const localOnly = (ctx, url) => (LOCAL_URL.test(url) ? null : refuse(ctx.agent, `a request to ${url}; only localhost is on the list`, 'Exercise the app on localhost, never a production URL.'));
 
 function writeOutFormat(args, i) {
@@ -683,9 +767,10 @@ function curlRule(c, ctx) {
       continue;
     }
     const [opt, ...glued] = a.split('=');
-    if (CURL_FLAGS.test(a) || /^-[XHdmubeA]./.test(a) || (glued.length && CURL_VALUED.test(opt))) continue;
+    if (CURL_FLAGS.test(a) || /^-[XHdmubeAF]./.test(a) || (glued.length && CURL_VALUED.test(opt))) continue;
     if (CURL_VALUED.test(a)) { i++; continue; }
-    const output = /^(-o|--output)$/.test(opt) ? (glued.length ? glued.join('=') : c.args[++i]) : null;
+    const gluedJar = /^-c./.test(a) ? a.slice(2) : null;
+    const output = gluedJar ?? (/^(-o|--output|-c|--cookie-jar)$/.test(opt) ? (glued.length ? glued.join('=') : c.args[++i]) : null);
     if (output !== null) { const reason = insideRule(c, ctx, output ?? '', false); if (reason) return reason; continue; }
     const url = opt === '--url' ? (glued.length ? glued.join('=') : c.args[++i] ?? '') : a.startsWith('-') ? null : a;
     if (url === null) return refuse(ctx.agent, `curl ${a} is not on the list`);
@@ -798,7 +883,7 @@ function ghAllowed(c, ctx) {
 
 const AGENT_COMMANDS = {
   git: gitAllowed, gh: ghAllowed,
-  node: runner(nodeProblem), python: runner(pythonProblem), python3: runner(pythonProblem), py: runner(pythonProblem),
+  node: nodeAllowed, python: runner(pythonProblem), python3: runner(pythonProblem), py: runner(pythonProblem),
   pytest: runner(), uvicorn: runner(),
   npm: runner(packageProblem), pnpm: runner(packageProblem), yarn: runner(packageProblem), bun: runner(packageProblem),
   cargo: runner(cargoProblem),

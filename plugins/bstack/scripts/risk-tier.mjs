@@ -25,7 +25,10 @@ const FIXTURE = /(^|\/)(fixtures|__fixtures__|testdata)\//i;
 const SCHEMA_FILE = /(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i;
 const STYLESHEET = /\.(css|scss|sass|less)$/i;
 
-const LITERAL_ITEM = /^\s*(["'`][^"'`]*["'`]|-?\d[\d_.]*)?\s*,?\s*$/;
+const AUTH_TEST_LIST_ITEM = /^\s*(["'`][^"'`]*["'`]|-?\d[\d_.]*)?\s*,?\s*$/;
+const AUTH_TEST_BYPASS = /^\s*(?:if\b.*[):]\s*)?return\s*;?\s*$|\bdependency_overrides\b/;
+const listItems = lines => lines.filter(l => l.trim() && AUTH_TEST_LIST_ITEM.test(l)).length;
+const authTestExempt = f => f.removed.every(l => AUTH_TEST_LIST_ITEM.test(l)) && listItems(f.removed) <= listItems(f.added) && !f.added.some(l => AUTH_TEST_BYPASS.test(l));
 export const RISK_PATHS = '.github/risk-paths.txt';
 export const EXPOSURE = '.github/bstack-exposure.txt';
 const POLICY_FILES = [RISK_PATHS, EXPOSURE];
@@ -33,22 +36,45 @@ const PATH_RULES = [
   [/^\.github\/(risk-paths|bstack-exposure)\.txt$/, 'risk policy file'],
   [SCHEMA_FILE, 'schema or migration file'],
   [/(^|\/)n8n\//i, 'n8n flow code (external consumer)'],
-  [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code', (q, f) => STYLESHEET.test(q) || (runnableTest(q) && f.removed.every(l => LITERAL_ITEM.test(l)))],
+  [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code', (q, f) => STYLESHEET.test(q) || (runnableTest(q) && authTestExempt(f))],
   [/(import|sync|upsert|ingest|backfill)[^/]*\.(py|rs|js|mjs|ts)$/i, 'importer or sync code'],
 ];
 
+const APP_BASE_EXPRESSIONS = ['base', 'crate::b()'];
+const escapeRegex = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const APP_BASE = String.raw`\{\{\s*(?:${APP_BASE_EXPRESSIONS.map(escapeRegex).join('|')})\s*\}\}`;
 const TEMPLATE_VAR = String.raw`\{\{[^{}"'<>]*\}\}`;
 const PLAIN_VALUE = String.raw`(?:[^"'{}<>\\]|${TEMPLATE_VAR})*`;
-const APP_PATH = String.raw`(?:${TEMPLATE_VAR})?\/(?![/\\\s])${PLAIN_VALUE}`;
-const URL_ATTR = String.raw`(?:action|formaction|hx-(?:get|post|put|patch|delete))\b`;
+const APP_PATH = String.raw`(?:${APP_BASE})?\/(?![/\\\s])${PLAIN_VALUE}`;
+const URL_ATTR = String.raw`(?:action|formaction|(?:data-)?hx-(?:get|post|put|patch|delete))\b`;
 const FORM_ATTR = [
   String.raw`\s+(?!${URL_ATTR}|on)[a-z][\w.]*(?:-(?!on)[\w.]+)*(?:\s*=\s*(?:"${PLAIN_VALUE}"|'${PLAIN_VALUE}'|[\w.-]+))?`,
   String.raw`\s+(?!formaction)${URL_ATTR}\s*=\s*(?:"${APP_PATH}"|'${APP_PATH}')`,
   String.raw`\s*\{%[^{}<>]*%\}`,
 ].join('|');
 const APP_FORM = new RegExp(String.raw`<form(?:${FORM_ATTR})*\s*>`, 'gi');
-const APP_FETCH = /(?<![.\w$])fetch\s*\(\s*(['"`])\.?\/(?![/\\\s]|\$\{)[^'"`]{0,1000}\1\s*,\s*\{(?![^{}]{0,1000}(?:base|:\/\/))[^{}]{0,1000}\}\s*\)/g;
-const withoutAppWrites = l => (/formaction/i.test(l) ? l : l.replace(APP_FORM, '')).replace(APP_FETCH, '');
+const anyCase = word => [...word].map(c => `[${c}${c.toUpperCase()}]`).join('');
+const fetchOptionToken = forbidden => {
+  const allowed = `(?!${forbidden})`;
+  const quoted = (q, live = '') => String.raw`${q}(?:(?!${forbidden}${live})(?:[^${q}\\\n]|\\.)){0,1000}${q}`;
+  return String.raw`(?:${allowed}[^{};'"\`]|${quoted("'")}|${quoted('"')}|${quoted('`', String.raw`|\$\{`)})`;
+};
+const TOP_LEVEL_OPTION = fetchOptionToken(String.raw`base|:\/\/`);
+const NESTED_OPTION = fetchOptionToken(String.raw`base|:\/\/|${anyCase('method')}`);
+const FETCH_OPTIONS = String.raw`\{(?:${TOP_LEVEL_OPTION}|\{${NESTED_OPTION}{0,1000}\}){0,1000}\}`;
+const APP_FETCH = new RegExp(String.raw`(?<![.\w$])fetch\s*\(\s*(['"\`])\.?\/(?![/\\\s]|\$\{)[^'"\`\n]{0,1000}\1\s*,\s*${FETCH_OPTIONS}\s*\)`, 'g');
+const SAME_ORIGIN_WRITE_SHAPES = {
+  accepted: [['form to an app path', APP_FORM], ['fetch to an app path', APP_FETCH]],
+  rejected: [['formaction to anything but an app path, anywhere in the added block', new RegExp(String.raw`formaction(?!\s*=\s*(?:"${APP_PATH}"|'${APP_PATH}'))`, 'i')]],
+};
+const COMMENT_OR_DECORATOR = /^\s*(#|\/\/|\*|@)/;
+const blankKeepingLines = text => text.replace(/[^\n]/g, '');
+const withoutAppWrites = block => {
+  const text = block.map(l => (COMMENT_OR_DECORATOR.test(l) ? '' : l)).join('\n');
+  return SAME_ORIGIN_WRITE_SHAPES.rejected.some(([, re]) => re.test(text))
+    ? block
+    : SAME_ORIGIN_WRITE_SHAPES.accepted.reduce((rest, [, re]) => rest.replace(re, blankKeepingLines), text).split('\n');
+};
 const SCHEMA_STATEMENT = /\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b/i;
 
 const ADDED_OR_REMOVED = [
@@ -62,7 +88,7 @@ const ADDED_OR_REMOVED = [
 ];
 
 const WEAKENING_ADDED = [
-  [/pytest\.mark\.(skip|xfail)|@unittest\.skip|#\[ignore\]|\b(it|test|describe)\.skip\(|\bx(it|describe)\(/, 'test skipped'],
+  [/pytest\.mark\.(skip|xfail)|pytest\.skip\(|@unittest\.skip|#\[ignore\b|\bt\.Skip(Now|f)?\(|\b(it|test|describe)\.skip\(|\bx(it|describe)\(/, 'test skipped'],
   [/continue-on-error:\s*true|\|\|\s*true\b/, 'CI step allowed to fail'],
 ];
 const PROSE_EXTENSION = /\.(md|markdown|rst|txt|adoc|asciidoc)$/i;
@@ -158,10 +184,12 @@ export function parseDiff(diff) {
   for (const line of String(diff ?? '').split(/\r?\n/)) {
     const header = headerPaths(line);
     if (header) {
-      f = { header, rename: [undefined, undefined], patch: [undefined, undefined], inHunk: false, added: [], removed: [], created: false, deleted: false };
+      f = { header, rename: [undefined, undefined], patch: [undefined, undefined], inHunk: false, added: [], removed: [], blocks: [], side: null, created: false, deleted: false };
       files.push(f); continue;
     }
     if (!f) continue;
+    const before = f.side;
+    f.side = null;
     const rename = RENAME.exec(line);
     const side = !f.inHunk && PATCH_SIDE.exec(line);
     const at = side && (side[1] === '---' ? 0 : 1);
@@ -171,10 +199,14 @@ export function parseDiff(diff) {
     else if (line.startsWith('new file mode')) f.created = true;
     else if (line.startsWith('deleted file mode')) f.deleted = true;
     else if (!f.inHunk && (line.startsWith('+++') || line.startsWith('---'))) continue;
-    else if (line.startsWith('+')) f.added.push(line.slice(1));
-    else if (line.startsWith('-')) f.removed.push(line.slice(1));
+    else if (line.startsWith('+') || line.startsWith('-')) {
+      f.side = line.startsWith('+') ? 'added' : 'removed';
+      f[f.side].push(line.slice(1));
+      if (f.side !== before) f.blocks.push([]);
+      f.blocks.at(-1).push(line.slice(1));
+    }
   }
-  return files.map(({ header, rename, patch, inHunk, ...rest }) => ({ ...realPaths({ header, rename, patch }), ...rest }));
+  return files.map(({ header, rename, patch, inHunk, side, ...rest }) => ({ ...realPaths({ header, rename, patch }), ...rest }));
 }
 
 function globToRegex(glob) {
@@ -249,9 +281,12 @@ export function riskTier(diff, { extraPaths = [], readFile } = {}) {
     if (/(^|\/)\.github\/workflows\//.test(p) && f.removed.some(l => /^\s*(-\s+)?(run|uses):/.test(l))) raise(2, `CI step removed or changed: ${p}`);
 
     if (CODE.test(p) && !isTest) {
-      for (const l of [...f.added, ...f.removed]) {
-        if (/^\s*(#|\/\/|\*)/.test(l) || /^\s*@/.test(l)) continue; // comments and decorators
-        for (const [re, why, appOnly] of ADDED_OR_REMOVED) if (re.test(l) && (!appOnly || re.test(appOnly(l)))) raise(2, `${why}: ${p}`);
+      for (const block of f.blocks) {
+        let appOnlyLines;
+        block.forEach((l, i) => {
+          if (COMMENT_OR_DECORATOR.test(l)) return;
+          for (const [re, why, appOnly] of ADDED_OR_REMOVED) if (re.test(l) && (!appOnly || re.test((appOnlyLines ??= appOnly(block))[i]))) raise(2, `${why}: ${p}`);
+        });
       }
     }
   }
@@ -282,7 +317,7 @@ function main() {
       try { base = run('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).trim(); } catch { base = 'origin/main'; }
     }
     diff = run('git', ['diff', '--no-color', `${base}...HEAD`]) + run('git', ['diff', '--no-color', 'HEAD']);
-    const atBase = file => (run('git', ['ls-tree', '--name-only', base, file]).trim() ? run('git', ['show', `${base}:${file}`]) : '');
+    const atBase = file => (run('git', ['ls-tree', '--full-tree', '--name-only', base, '--', file]).trim() ? run('git', ['show', `${base}:${file}`]) : '');
     policy = atBase(RISK_PATHS);
     exposure = atBase(EXPOSURE);
   }

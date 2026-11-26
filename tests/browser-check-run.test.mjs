@@ -40,6 +40,26 @@ test('browser check runner without any browser exits 2 and leaves no temp profil
   assert.deepEqual(left, []);
 });
 
+test('browser check runner removes the profiles of dead runs and keeps those of live runs', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
+  const deadPid = spawnSync(process.execPath, ['-e', '']).pid;
+  const pidReused = `browser-check-${process.pid}-old456`;
+  const stale = [`browser-check-${deadPid}-abc123`, 'browser-check-old123', pidReused];
+  const live = [`browser-check-${process.pid}-abc123`, 'browser-check-new123'];
+  const foreign = ['browser-check-2024-results', 'browser-check-reports', 'browser-check-nomark'];
+  for (const name of [...stale, ...live, ...foreign]) {
+    fs.mkdirSync(path.join(tmp, name));
+    fs.writeFileSync(path.join(tmp, name, name === 'browser-check-nomark' ? 'notes.txt' : 'Local State'), '{}');
+  }
+  const twoDaysAgo = new Date(Date.now() - 2 * 86400000);
+  for (const name of ['browser-check-old123', pidReused, ...foreign]) fs.utimesSync(path.join(tmp, name), twoDaysAgo, twoDaysAgo);
+  const run = spawnSync(process.execPath, [runner, 'http://127.0.0.1:9', '--browser', 'no-such-browser-exe'], { encoding: 'utf8', env: { ...process.env, TMPDIR: tmp, TEMP: tmp, TMP: tmp } });
+  const left = fs.readdirSync(tmp).sort();
+  fs.rmSync(tmp, { recursive: true, force: true });
+  assert.equal(run.status, 2, run.stderr);
+  assert.deepEqual(left, [...live, ...foreign].sort());
+});
+
 test('browser check runner with an unknown browser path exits 2 and names the problem', () => {
   const run = spawnSync(process.execPath, [runner, 'http://127.0.0.1:9', '--browser', 'no-such-browser-exe'], { encoding: 'utf8' });
   assert.equal(run.status, 2);
@@ -47,6 +67,8 @@ test('browser check runner with an unknown browser path exits 2 and names the pr
 });
 
 const fixture = name => fs.readFileSync(new URL(`fixtures/browser-check/${name}`, import.meta.url));
+let releaseHeld;
+const held = new Promise(resolve => { releaseHeld = resolve; });
 const html = body => (_, res) => res.writeHead(200, { 'content-type': 'text/html' }).end(body);
 const routes = {
   '/': html(fixture('defects.html')),
@@ -54,6 +76,11 @@ const routes = {
   '/delay': (req, res) => setTimeout(() => html(fixture('defects.html'))(req, res), Number(new URL(req.url, 'http://x').searchParams.get('ms'))),
   '/hanging-image': html('<!doctype html><html lang="en"><title>Hanging image</title><img src="/never" alt=""></html>'),
   '/never': () => server.emit('never-requested'),
+  '/held': async (req, res) => {
+    server.emit('held-requested');
+    await held;
+    html(fixture('clean.html'))(req, res);
+  },
   '/settings': (_, res) => res.writeHead(302, { location: '/login' }).end(),
   '/no-content': (_, res) => res.writeHead(204).end(),
   '/login': html(fixture('clean.html')),
@@ -65,7 +92,42 @@ const routes = {
   '/xfo-deny': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'x-frame-options': 'DENY' }).end(fixture('clean.html')),
   '/csp-frame-ancestors-none': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'content-security-policy': "frame-ancestors 'none'" }).end(fixture('clean.html')),
   '/query': (req, res) => html(fixture(req.url.endsWith('?v=bad') ? 'defects.html' : 'clean.html'))(req, res),
+  '/sized-on-load': html(sizedPage('')),
+  '/sized-on-resize': html(sizedPage("addEventListener('resize', size);")),
+  '/spa-login': (req, res) => html(SPA_LOGIN_FORM)(req, res),
+  '/api/login': async (req, res) => {
+    const form = new URLSearchParams(await bodyOf(req));
+    if (form.get('user') !== 'demo' || form.get('password') !== 'secret') return res.writeHead(401).end();
+    res.writeHead(200, { 'set-cookie': 'session=ok; HttpOnly; Path=/' }).end('ok');
+  },
+  '/auth/login': signIn,
+  '/auth/account': (req, res) => {
+    if (!/(^|; )session=ok(;|$)/.test(req.headers.cookie ?? '')) return res.writeHead(302, { location: '/auth/login' }).end();
+    res.writeHead(200, { 'content-type': 'text/html', 'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'" }).end(fixture('defects.html'));
+  },
 };
+function sizedPage(onResize) {
+  const size = "const size = () => { document.getElementById('track').style.width = innerWidth + 'px'; }; size();";
+  return `<!doctype html><html lang="en"><title>Sized from innerWidth</title><style>body { margin: 0; }</style><body><div id="track" style="block-size: 10px"></div><script>${size} ${onResize}</script></body></html>`;
+}
+const SPA_LOGIN_FORM = `<!doctype html><html lang="en"><title>Sign in</title><form id="f"><label>User <input name="user" type="text"></label><label>Password <input name="password" type="password"></label><button>Sign in</button></form>
+<script>document.getElementById('f').addEventListener('submit', async event => {
+  event.preventDefault();
+  const answer = await fetch('/api/login', { method: 'POST', body: new URLSearchParams(new FormData(event.target)) });
+  if (answer.ok) history.pushState({}, '', '/app');
+});</script></html>`;
+const LOGIN_FORM = '<!doctype html><html lang="en"><title>Sign in</title><form method="post"><label>User <input name="user" type="text"></label><label>Password <input name="password" type="password"></label><button>Sign in</button></form></html>';
+async function bodyOf(req) {
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  return body;
+}
+async function signIn(req, res) {
+  if (req.method !== 'POST') return html(LOGIN_FORM)(req, res);
+  const form = new URLSearchParams(await bodyOf(req));
+  if (form.get('user') !== 'demo' || form.get('password') !== 'secret') return html(LOGIN_FORM)(req, res);
+  res.writeHead(303, { location: '/auth/account', 'set-cookie': 'session=ok; HttpOnly; Path=/' }).end();
+}
 const route = (req, res) => (routes[new URL(req.url, 'http://x').pathname] ?? ((_, r) => r.writeHead(404).end('not found')))(req, res);
 const server = http.createServer(route);
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -198,20 +260,68 @@ test('browser check runner exits 2 and names where it landed when the start page
   for (const args of [['/settings'], ['/clean', '/settings']]) {
     const run = await runAsync([origin, ...args]);
     assert.equal(run.status, 2, `${args.join(' ')}: ${run.stdout}`);
-    assert.match(run.stderr, /\/settings redirected to \/login; .*no session/, args.join(' '));
+    assert.match(run.stderr, /\/settings redirected to \/login; .*--login .*--cookie/, args.join(' '));
   }
 });
 
-test('browser check runner exits 2 without a stack trace when a page refuses framing, and removes its profile', { skip: noBrowser }, async () => {
-  for (const refusing of ['/xfo-deny', '/csp-frame-ancestors-none']) {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
-    const run = await runAsync([origin, '/clean', refusing], { TMPDIR: tmp, TEMP: tmp, TMP: tmp });
-    const left = fs.readdirSync(tmp).filter(name => name.startsWith('browser-check-'));
-    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
-    assert.equal(run.status, 2, `${refusing}: ${run.stdout}${run.stderr}`);
-    assert.ok(run.stderr.includes(`${refusing} refuses framing (X-Frame-Options or CSP frame-ancestors)`), run.stderr);
-    assert.doesNotMatch(run.stderr, /TypeError|\n\s+at /, refusing);
-    assert.deepEqual(left, [], refusing);
+test('browser check runner checks pages that refuse framing, since it loads each page top-level', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/clean', '/xfo-deny', '/csp-frame-ancestors-none']);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { findings: [], breakpoints: [] });
+});
+
+const assertSignedInReport = run => {
+  assert.equal(run.status, 1, run.stdout + run.stderr);
+  const report = JSON.parse(run.stdout);
+  assert.equal(report.findings.length, 5);
+  assert.ok(report.findings.every(f => f.path === '/auth/account'), run.stdout);
+  assert.deepEqual(report.breakpoints.map(({ path: p, width }) => [p, width]), [['/auth/account', 640]]);
+};
+
+test('browser check runner signs in through a login form and checks a page that denies framing', { skip: noBrowser }, async () => {
+  assertSignedInReport(await runAsync([origin, '/auth/account', '--login', '/auth/login', '--user', 'demo', '--password', 'secret']));
+});
+
+test('browser check runner given a session cookie checks a page behind login', { skip: noBrowser }, async () => {
+  assertSignedInReport(await runAsync([origin, '/auth/account', '--cookie', 'session=ok']));
+});
+
+test('browser check runner without a session reports the redirect to login, not a pass', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/auth/account']);
+  assert.equal(run.status, 2, run.stdout);
+  assert.match(run.stderr, /\/auth\/account redirected to \/auth\/login; .*--login/);
+});
+
+test('browser check runner exits 2 when the sign-in does not leave the login page', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/auth/account', '--login', '/auth/login', '--user', 'demo', '--password', 'wrong']);
+  assert.equal(run.status, 2, run.stdout);
+  assert.match(run.stderr, /sign-in at \/auth\/login stayed on \/auth\/login/);
+});
+
+test('browser check runner signs in through a login form that posts with fetch and changes the URL with pushState', { skip: noBrowser }, async () => {
+  assertSignedInReport(await runAsync([origin, '/auth/account', '--login', '/spa-login', '--user', 'demo', '--password', 'secret']));
+});
+
+test('browser check runner exits 2 soon, naming the sign-in, when a fetch login changes nothing', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/auth/account', '--login', '/spa-login', '--user', 'demo', '--password', 'wrong', '--timeout', '60']);
+  assert.equal(run.status, 2, run.stdout);
+  assert.match(run.stderr, /sign-in at \/spa-login changed nothing within 5 s/);
+  assert.ok(run.seconds < 30, `took ${run.seconds} s`);
+});
+
+test('browser check runner loads each page at each width, so a layout sized from innerWidth on load or on resize is no overflow', { skip: noBrowser }, async () => {
+  for (const args of [['/sized-on-load'], ['/sized-on-resize'], ['/clean', '/sized-on-load', '/sized-on-resize'], ['/sized-on-resize', '/sized-on-resize']]) {
+    const run = await runAsync([origin, ...args]);
+    assert.equal(run.status, 0, `${args.join(' ')}: ${run.stdout}${run.stderr}`);
+    assert.deepEqual(JSON.parse(run.stdout).findings, [], args.join(' '));
+  }
+});
+
+test('browser check runner rejects --login without --user and --password, and a cookie without a name', () => {
+  for (const args of [['--login', '/auth/login'], ['--login', '/auth/login', '--user', 'demo'], ['--cookie', 'novalue']]) {
+    const run = spawnSync(process.execPath, [runner, 'http://127.0.0.1:9', ...args], { encoding: 'utf8' });
+    assert.equal(run.status, 2, args.join(' '));
+    assert.match(run.stderr, /usage: node browser-check-run\.mjs/, args.join(' '));
   }
 });
 
@@ -235,6 +345,51 @@ test('browser check runner gives up at --timeout on a page that never finishes l
   assert.equal(run.status, 2, run.stderr);
   assert.match(run.stderr, /no result within 5 s/);
   assert.ok(run.seconds < 15, `took ${run.seconds} s`);
+  assert.deepEqual(left, []);
+});
+
+const profilesIn = dir => fs.readdirSync(dir).filter(name => name.startsWith('browser-check-'));
+
+test('browser check runner whose reader closes before the report still removes its profile and keeps its exit code', { skip: noBrowser }, async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
+  const child = spawn(process.execPath, [runner, origin, '/clean'], { env: { ...process.env, TMPDIR: tmp, TEMP: tmp, TMP: tmp } });
+  child.stdout.destroy();
+  let stderr = '';
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const [status] = await once(child, 'close');
+  const left = profilesIn(tmp);
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  assert.equal(status, 0, stderr);
+  assert.doesNotMatch(stderr, /EPIPE/);
+  assert.deepEqual(left, []);
+});
+
+test('browser check runner killed by its reader after the first line of the report leaves no profile', { skip: noBrowser }, async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
+  const child = spawn(process.execPath, [runner, origin, '/'], { env: { ...process.env, TMPDIR: tmp, TEMP: tmp, TMP: tmp } });
+  child.stdout.once('data', () => child.kill('SIGKILL'));
+  await once(child, 'close');
+  const left = profilesIn(tmp);
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  assert.deepEqual(left, []);
+});
+
+test('browser check runner keeps the profile of a concurrent run, and that run completes', { skip: noBrowser }, async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
+  const env = { TMPDIR: tmp, TEMP: tmp, TMP: tmp };
+  const requested = once(server, 'held-requested');
+  const first = runAsync([origin, '/held'], env);
+  await requested;
+  const [profile] = profilesIn(tmp);
+  const second = await runAsync([origin, '/clean'], env);
+  const kept = fs.existsSync(path.join(tmp, profile));
+  releaseHeld();
+  const run = await first;
+  const left = profilesIn(tmp);
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  assert.equal(second.status, 0, second.stderr);
+  assert.ok(kept, `${profile} was removed while its run was going`);
+  assert.equal(run.status, 0, run.stderr);
   assert.deepEqual(left, []);
 });
 
