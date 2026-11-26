@@ -402,6 +402,19 @@ test('risky code under a quoted path raises the tier', () => {
   assert.equal(tier(quoted('"a/app/my db.py"', '"b/app/my db.py"', ['+conn.execute("DELETE FROM orders WHERE id = ?")'])), 2);
 });
 
+const hunk = (p, lines) => [`diff --git a/${p} b/${p}`, 'index 1111111..2222222 100644', `--- a/${p}`, `+++ b/${p}`, '@@ -1,2 +1,2 @@', ...lines];
+
+test('a removed line starting with -- and an added line starting with ++ stay in the hunk', () => {
+  const [sql, c] = parseDiff([...hunk('db/m.sql', ['--- comment', ' keep']), ...hunk('src/m.c', ['+++i;', ' keep'])].join('\n'));
+  assert.deepEqual([sql?.path, sql?.removed], ['db/m.sql', ['-- comment']]);
+  assert.deepEqual([c?.path, c?.added], ['src/m.c', ['++i;']]);
+});
+
+test('the headers of a second file after a hunk still parse as headers', () => {
+  const files = parseDiff([...hunk('a.py', ['-x=1', '+x=2']), ...hunk('b.py', ['-y=1', '+y=2'])].join('\n'));
+  assert.deepEqual(files.map(f => [f.path, f.added, f.removed]), [['a.py', ['x=2'], ['x=1']], ['b.py', ['y=2'], ['y=1']]]);
+});
+
 test('adding tests stays tier 1', () => {
   assert.equal(tier(file('tests/test_api.py', { created: true, add: ['def test_c():', '    assert c()'] })), 1);
 });
