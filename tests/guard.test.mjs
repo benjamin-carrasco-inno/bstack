@@ -1,4 +1,4 @@
-﻿import { after, test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -24,8 +24,9 @@ const legacyInterrogate = n => ({ body: `<!-- bstack-interrogate v1 -->\nbstack-
 const BASE_RISK_PATHS = /^repos\/([\w.-]+\/[\w.-]+)\/contents\/\.github\/risk-paths\.txt\?ref=(.+)$/;
 const BASE_EXPOSURE = /^repos\/[\w.-]+\/[\w.-]+\/contents\/\.github\/bstack-exposure\.txt\?ref=main$/;
 const NOT_FOUND = () => new Error('gh: Not Found (HTTP 404)');
+const REPO = /^repos\/[\w.-]+\/[\w.-]+$/;
 
-function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, files = {}, riskPaths = NOT_FOUND } = {}) {
+function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, files = {}, riskPaths = NOT_FOUND, repoGone = false } = {}) {
   return {
     git: (_cwd, args) => {
       if (args.includes('@{u}')) { if (!upstream) throw new Error('no upstream'); return upstream; }
@@ -37,6 +38,7 @@ function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, fil
       if (args[1] === 'diff') return diff;
       if (args[0] === 'api' && BASE_RISK_PATHS.test(args.at(-1))) { if (typeof riskPaths === 'function') throw riskPaths(); return riskPaths; }
       if (args[0] === 'api' && BASE_EXPOSURE.test(args.at(-1))) throw NOT_FOUND();
+      if (args[0] === 'api' && REPO.test(args.at(-1))) { if (repoGone) throw NOT_FOUND(); return 'o/r'; }
       throw new Error(`unexpected gh ${args.join(' ')}`);
     },
     readFile: f => files[f.replace(/\\/g, '/').split('/').pop()] ?? null,
@@ -228,7 +230,7 @@ test('a merge in another repo reads the PR, diff and verdict from that repo', ()
     const d = { ...base, gh: (cwd, args) => { calls.push(args); return base.gh(cwd, args); } };
     allowed(shell(command), d);
     const named = args => args.includes('https://github.com/o/r/pull/7') || args.join(' ').includes('-R o/r');
-    assert.deepEqual(calls.map(a => a[0] === 'api' ? a.at(-1) : a[1]), ['view', 'diff', 'repos/o/r/contents/.github/risk-paths.txt?ref=main'], command);
+    assert.deepEqual(calls.map(a => a[0] === 'api' ? a.at(-1) : a[1]), ['view', 'diff', 'repos/o/r/contents/.github/risk-paths.txt?ref=main', 'repos/o/r'], command);
     assert.ok(calls.filter(a => a[0] === 'pr').every(named), `${command}: ${JSON.stringify(calls)}`);
   }
 });
@@ -252,10 +254,12 @@ test('the merge gate takes risk-paths.txt from the base branch, never from the c
 });
 
 test('the merge gate fails closed with a retry hint when the base risk-paths.txt cannot be read', () => {
-  for (const failure of ['gh: Server Error (HTTP 502)', 'error connecting to api.github.com', 'gh: Bad credentials (HTTP 401)']) {
+  for (const failure of ['gh: Server Error (HTTP 502)', 'error connecting to api.github.com', 'gh: Bad credentials (HTTP 401)', 'gh: No commit found for the ref main (HTTP 404)']) {
     const reason = decide(shell('gh pr merge 5 --squash'), deps({ riskPaths: () => new Error(failure), pr: { comments: [verdict('PASS')] } }));
     assert.match(reason ?? '', /could not read \.github\/risk-paths\.txt from main in o\/r .*Retry the merge/, failure);
   }
+  const gone = decide(shell('gh pr merge 5 --squash'), deps({ repoGone: true, pr: { comments: [verdict('PASS')] } }));
+  assert.match(gone ?? '', /could not read \.github\/risk-paths\.txt from main in o\/r \(gh: Not Found \(HTTP 404\)\)/);
 });
 
 test('a PR that edits risk-paths.txt is tier 2 and judged with the base branch version', () => {

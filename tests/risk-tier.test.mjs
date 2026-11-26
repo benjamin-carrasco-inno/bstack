@@ -419,11 +419,17 @@ test('a change to the repo risk policy file is tier 2, a nested file of that nam
   assert.equal(tier(file('docs/.github/risk-paths.txt', { add: ['x'] })), 1);
 });
 
-test('risk-tier.mjs without --pr takes risk-paths.txt from the base ref, not the working tree', () => {
+test('risk-tier.mjs without --pr takes risk-paths.txt from the base ref, not the working tree, from any directory', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-tier-cli-'));
   const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
-  const cli = () => JSON.parse(execFileSync(process.execPath, [SCRIPT, '--base', 'main'], { cwd: repo, encoding: 'utf8' }));
   const listed = 'listed in .github/risk-paths.txt: app/main.py';
+  const tier2FromRootAndSubdir = () => {
+    for (const cwd of [repo, path.join(repo, 'app')]) {
+      const r = JSON.parse(execFileSync(process.execPath, [SCRIPT, '--base', 'main'], { cwd, encoding: 'utf8' }));
+      assert.equal(r.tier, 2, `${cwd}: ${r.reasons.join('; ')}`);
+      assert.ok(r.reasons.includes(listed), `${cwd}: ${r.reasons.join('; ')}`);
+    }
+  };
   try {
     git('init', '-q', '-b', 'main');
     fs.mkdirSync(path.join(repo, '.github'));
@@ -435,10 +441,10 @@ test('risk-tier.mjs without --pr takes risk-paths.txt from the base ref, not the
     git('checkout', '-q', '-b', 'feat');
     fs.writeFileSync(path.join(repo, 'app', 'main.py'), 'x = 1\n');
     fs.writeFileSync(path.join(repo, '.github', 'risk-paths.txt'), '# edited locally\n');
-    assert.ok(cli().reasons.includes(listed));
+    tier2FromRootAndSubdir();
     fs.rmSync(path.join(repo, '.github', 'risk-paths.txt'));
     git('commit', '-q', '-am', 'drop the policy');
-    assert.ok(cli().reasons.includes(listed));
+    tier2FromRootAndSubdir();
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }

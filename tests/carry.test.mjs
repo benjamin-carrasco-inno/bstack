@@ -35,8 +35,9 @@ const MERGED_ONCE = [commit(PR_COMMIT, BASE_OLD), commit(JUDGED, PR_COMMIT), com
 const verdict = (result, at = JUDGED) => ({ body: commentBody('verdict', result, at, 'report'), createdAt: '2026-11-25T10:00:00Z' });
 const interrogate = (blocking, at = JUDGED) => ({ body: commentBody('interrogate', { confirmed: blocking, blocking }, at, 'report'), createdAt: '2026-11-25T11:00:00Z' });
 const POLICY_READ = /\/contents\/\.github\/(risk-paths|bstack-exposure)\.txt\?ref=/;
-const notFound = endpoint => { throw new Error(`HTTP 404: ${endpoint}`); };
-const carryApiCall = c => c.startsWith('api') && !POLICY_READ.test(c);
+const notFound = endpoint => { throw new Error(`gh: Not Found (HTTP 404): ${endpoint}`); };
+const REPO_PROBE = /^api --jq \.full_name repos\/[\w.-]+\/[\w.-]+$/;
+const carryApiCall = c => c.startsWith('api') && !POLICY_READ.test(c) && !REPO_PROBE.test(c);
 
 function fakeGitHub({ head = MERGE, commits = MERGED_ONCE, diffs, comments, checks = GREEN, files = {}, basePolicy, failApi = false, postFails = false, base = 'main' }) {
   const posted = [];
@@ -53,6 +54,7 @@ function fakeGitHub({ head = MERGE, commits = MERGED_ONCE, diffs, comments, chec
       if (args[1] === 'diff') return diffs[head];
       if (args[0] !== 'api') throw new Error(`unexpected gh ${args.join(' ')}`);
       const endpoint = args.find(a => a.startsWith('repos/'));
+      if (endpoint === 'repos/o/r') return 'o/r';
       if (POLICY_READ.test(endpoint)) return endpoint.includes('risk-paths') ? basePolicy ?? notFound(endpoint) : notFound(endpoint);
       if (failApi) throw new Error('HTTP 504: gateway timeout');
       if (/\/pulls\/5\/commits/.test(endpoint)) return commits.map(c => [c.sha, ...c.parents].join(' ')).join('\n');
