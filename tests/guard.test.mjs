@@ -25,6 +25,7 @@ const BASE_RISK_PATHS = /^repos\/([\w.-]+\/[\w.-]+)\/contents\/\.github\/risk-pa
 const BASE_EXPOSURE = /^repos\/[\w.-]+\/[\w.-]+\/contents\/\.github\/bstack-exposure\.txt\?ref=main$/;
 const NOT_FOUND = () => new Error('gh: Not Found (HTTP 404)');
 const REPO = /^repos\/[\w.-]+\/[\w.-]+$/;
+const basePolicyCall = endpoint => BASE_RISK_PATHS.test(endpoint) || BASE_EXPOSURE.test(endpoint) || REPO.test(endpoint);
 
 function deps({ branch = 'feat/x', upstream = '', pr = {}, diff = CODE_DIFF, files = {}, riskPaths = NOT_FOUND, repoGone = false } = {}) {
   return {
@@ -293,7 +294,7 @@ test('a repo flag before pr merge hits the same merge gate', () => {
     const base = deps({ pr: { number: 7, url: 'https://github.com/o/r/pull/7', comments: [verdict('PASS')] } });
     const d = { ...base, gh: (cwd, args) => { calls.push(args); return base.gh(cwd, args); } };
     allowed(shell(`gh ${repoFlag} pr merge 7 --squash --delete-branch`), d);
-    assert.ok(calls.length > 0 && calls.every(a => a.join(' ').includes('-R o/r') || a.includes('https://github.com/o/r/pull/7') || a.at(-1).startsWith('repos/o/r/')), `${repoFlag}: ${JSON.stringify(calls)}`);
+    assert.ok(calls.length > 0 && calls.every(a => a.join(' ').includes('-R o/r') || a.includes('https://github.com/o/r/pull/7') || /^repos\/o\/r(\/|$)/.test(a.at(-1))), `${repoFlag}: ${JSON.stringify(calls)}`);
   }
 });
 
@@ -420,7 +421,7 @@ test('the merge gate reads a prose file that names a weakening at the PR head to
     const base = deps({ diff: PROSE_DIFF, pr: { comments } });
     const gh = (cwd, args) => {
       calls.push(args);
-      if (args[0] !== 'api' || BASE_RISK_PATHS.test(args.at(-1))) return base.gh(cwd, args);
+      if (args[0] !== 'api' || basePolicyCall(args.at(-1))) return base.gh(cwd, args);
       if (head instanceof Error) throw head;
       return head;
     };
@@ -428,7 +429,7 @@ test('the merge gate reads a prose file that names a weakening at the PR head to
   };
   const named = gate('# CI\n\nNever add `|| true`.\n');
   allowed(shell('gh pr merge 5 --squash'), named.d);
-  assert.deepEqual(named.calls.find(a => a[0] === 'api' && !BASE_RISK_PATHS.test(a.at(-1))),['api', '-H', 'Accept: application/vnd.github.raw', `repos/o/r/contents/docs/my%20ci.md?ref=${SHA}`]);
+  assert.deepEqual(named.calls.find(a => a[0] === 'api' && !basePolicyCall(a.at(-1))),['api', '-H', 'Accept: application/vnd.github.raw', `repos/o/r/contents/docs/my%20ci.md?ref=${SHA}`]);
   blocked(shell('gh pr merge 5 --squash'), gate('```!\nnpm test\n```\n\nNever add `|| true`.\n```!\nNever add `|| true`.\n```\n', [verdict('PASS')]).d);
   blocked(shell('gh pr merge 5 --squash'), gate(new Error('HTTP 404'), [verdict('PASS')]).d);
   allowed(shell('gh pr merge 5 --squash'), gate(new Error('HTTP 404'), [verdict('PASS'), interrogate(0)]).d);
