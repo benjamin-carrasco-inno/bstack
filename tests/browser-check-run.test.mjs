@@ -230,6 +230,35 @@ test('browser check runner gives up at --timeout on a page that never finishes l
   assert.deepEqual(left, []);
 });
 
+async function killRenderers(profile) {
+  const [port, browserPath] = fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').split('\n');
+  const ws = new WebSocket(`ws://127.0.0.1:${port}${browserPath}`);
+  await once(ws, 'open');
+  const reply = once(ws, 'message');
+  ws.send(JSON.stringify({ id: 1, method: 'SystemInfo.getProcessInfo' }));
+  const [{ data }] = await reply;
+  const { processInfo } = JSON.parse(data).result;
+  for (const { id } of processInfo.filter(p => p.type === 'renderer')) process.kill(id, 'SIGKILL');
+  ws.close();
+}
+
+test('browser check runner ends at once when the page renderer crashes, exits 2 and removes its profile', { skip: noBrowser }, async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
+  const requested = once(server, 'never-requested');
+  const running = runAsync([origin, '/hanging-image', '--timeout', '30'], { TMPDIR: tmp, TEMP: tmp, TMP: tmp });
+  await requested;
+  const [profile] = fs.readdirSync(tmp).filter(name => name.startsWith('browser-check-'));
+  await killRenderers(path.join(tmp, profile));
+  const run = await running;
+  const left = fs.readdirSync(tmp).filter(name => name.startsWith('browser-check-'));
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  assert.equal(run.status, 2, run.stderr);
+  assert.match(run.stderr, /the page crashed while checking \/hanging-image/);
+  assert.doesNotMatch(run.stderr, /--timeout/);
+  assert.ok(run.seconds < 15, `took ${run.seconds} s`);
+  assert.deepEqual(left, []);
+});
+
 const windowsKillsHard = process.platform === 'win32' && 'on Windows child.kill() terminates without a signal the runner can handle';
 
 test('browser check runner stopped by SIGTERM exits 2 and removes its profile', { skip: noBrowser || windowsKillsHard }, async () => {

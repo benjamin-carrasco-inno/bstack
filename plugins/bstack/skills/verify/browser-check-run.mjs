@@ -118,9 +118,11 @@ function failureOf({ exception, text }) {
   return deliberate ? description.split('\n')[0].replace(/^Error: /, '') : description;
 }
 
-async function openStartPage(cdp, start) {
+async function openStartPage(cdp, start, paths, stop) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  cdp.on('Inspector.targetCrashed', msg => msg.sessionId === sessionId && stop(new Error(`the page crashed while checking ${paths.join(', ')}`)));
+  await cdp.send('Inspector.enable', {}, sessionId);
   await cdp.send('Page.enable', {}, sessionId);
   cdp.on('Page.javascriptDialogOpening', msg => cdp.send('Page.handleJavaScriptDialog', { accept: true }, msg.sessionId).catch(() => {}));
   const loaded = cdp.nextEvent('Page.loadEventFired', sessionId);
@@ -157,12 +159,12 @@ async function pageStatuses(cdp, sessionId, pages, paths) {
   }));
 }
 
-async function runCheck(cdp, args, check) {
+async function runCheck(cdp, args, check, stop) {
   const pages = args.paths.map(p => new URL(p, args.origin));
   const [start] = pages;
   const sameOriginPath = url => (url.origin === start.origin ? url.pathname + url.search + url.hash : url.href);
   const paths = pages.map(sameOriginPath);
-  const sessionId = await openStartPage(cdp, start);
+  const sessionId = await openStartPage(cdp, start, paths, stop);
   const statuses = await pageStatuses(cdp, sessionId, pages, paths);
   const redirects = statuses.filter(s => s.status >= 300 && s.status < 400 && s.landed);
   if (redirects.length) throw redirectError(redirects.map(s => [s.requested, s.landed]), start.origin);
@@ -174,11 +176,13 @@ async function runCheck(cdp, args, check) {
 
 function giveUpSignal(seconds) {
   let timer;
+  let stop;
   const stopped = new Promise((_, reject) => {
+    stop = reject;
     timer = setTimeout(() => reject(new Error(`no result within ${seconds} s; a page or one of its resources may never finish loading (raise --timeout for a slow app)`)), seconds * 1000);
     for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => reject(new Error(`stopped by ${signal}`)));
   });
-  return { stopped, clear: () => clearTimeout(timer) };
+  return { stopped, stop, clear: () => clearTimeout(timer) };
 }
 
 async function main() {
@@ -191,7 +195,7 @@ async function main() {
   const { child, endpoint } = launch(browser, profile);
   let cdp;
   try {
-    const work = endpoint.then(connect).then(connected => runCheck(cdp = connected, args, check));
+    const work = endpoint.then(connect).then(connected => runCheck(cdp = connected, args, check, giveUp.stop));
     const report = await Promise.race([work, giveUp.stopped]);
     console.log(JSON.stringify(report, null, 2));
     process.exitCode = report.findings.length ? 1 : 0;
