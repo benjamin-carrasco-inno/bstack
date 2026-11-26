@@ -953,6 +953,8 @@ test('no-authoring agents point an app variable at a literal path in their workt
       'PATH=/tmp/bin uvicorn app.main:app', 'NODE_OPTIONS=/tmp/x.js npm test', 'PYTHONPATH=/repo/x pytest', 'PYTHONSTARTUP=/tmp/x.py python /tmp/a.py',
       'LD_PRELOAD=/tmp/x.so pytest', 'GIT_DIR=/repo/.git git diff', 'BASH_ENV=/tmp/x.sh npm test', 'HOME=/tmp/h git diff', 'NPM_CONFIG_PREFIX=/tmp/x npm i',
       'CDPATH=/tmp; cd x', 'LESSOPEN="|/tmp/x.sh" less a.txt', 'SUDO_ASKPASS=/tmp/x.sh pytest',
+      'DATA_DIR=~beca/dev/shop/data uvicorn app.main:app', 'DATA_DIR=~root/x uvicorn app.main:app',
+      'cd /checkout/data; cd /repo; DATA_DIR=~-/ uvicorn app.main:app', 'DATA_DIR=~+/x uvicorn app.main:app',
     ]) refused(shell(command), linux);
     for (const command of [
       "$env:DATA_DIR='D:\\prod'; uvicorn app.main:app", '$env:DATA_DIR = $x; uvicorn app.main:app', '$env:DATA_DIR = (Get-Location); uvicorn app.main:app',
