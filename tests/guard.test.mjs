@@ -1709,8 +1709,10 @@ test('a verdict saved during an outage is posted by the merge gate and unblocks 
   assert.deepEqual(removed, ['f0']);
 });
 
-test('a saved verdict for an older head is dropped, not posted, and does not unblock', () => {
+test('a saved verdict for an older head that a PR commit followed is dropped, not posted, and does not unblock', () => {
   const { d, removed, posted } = withPending([saved(OLD)]);
+  const gh = d.gh;
+  d.gh = (cwd, args) => (args[0] === 'api' && args.some(a => a.includes('/pulls/5/commits')) ? `${OLD}\n${SHA} ${OLD}` : gh(cwd, args));
   blocked(shell('gh pr merge 5 --squash'), d);
   assert.deepEqual(posted, []);
   assert.deepEqual(removed, ['f0']);
