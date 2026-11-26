@@ -170,7 +170,7 @@ export function parseDiff(diff) {
     else if (line.startsWith('@@')) f.inHunk = true;
     else if (line.startsWith('new file mode')) f.created = true;
     else if (line.startsWith('deleted file mode')) f.deleted = true;
-    else if (line.startsWith('+++') || line.startsWith('---')) continue;
+    else if (!f.inHunk && (line.startsWith('+++') || line.startsWith('---'))) continue;
     else if (line.startsWith('+')) f.added.push(line.slice(1));
     else if (line.startsWith('-')) f.removed.push(line.slice(1));
   }
