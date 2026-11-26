@@ -1204,18 +1204,26 @@ function postCarried(pr, risk, results, cwd, deps) {
   return null;
 }
 
-// Verdicts the hook saved while GitHub did not answer: post the ones it accepted for this head, drop
-// other heads, empty entries and entries a verdict of the same kind posted since then has replaced.
+// Verdicts the hook saved while GitHub did not answer: post the ones it accepted for this head or for
+// a head it moved from only by merges of the base branch, drop other heads, empty entries and entries
+// a verdict of the same kind posted since then has replaced.
 function postSaved(pr, cwd, deps) {
   const repo = repoOfUrl(pr.url);
   if (!repo) return null;
   pr.comments ??= [];
+  let chain;
   for (const { file, entry } of deps.pending.list(repo, String(pr.number))) {
     const body = String(entry.body ?? '');
-    if ((entry.head ?? entry.sha) !== pr.headRefOid || !(entry.kind in KINDS) || !body.trim() || replaced(entry, pr.comments)) { deps.pending.remove(file); continue; }
+    const savedHead = entry.head ?? entry.sha;
+    if (!(entry.kind in KINDS) || !body.trim() || replaced(entry, pr.comments)) { deps.pending.remove(file); continue; }
+    if (savedHead !== pr.headRefOid) {
+      try { chain ??= prMergeInChain(args => deps.gh(cwd, ['api', ...args]), repo, pr.number, pr.headRefOid); }
+      catch (e) { return `bstack could not read the commits of ${pr.url} to post the ${entry.kind} it saved for ${String(savedHead).slice(0, 7)} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
+      if (!chain.includes(savedHead)) { deps.pending.remove(file); continue; }
+    }
     if (!pr.comments.some(c => String(c.body ?? '').trim() === body.trim())) {
       try { deps.postComment(cwd, pr.url, body); }
-      catch (e) { return `bstack could not post the ${entry.kind} it saved for ${pr.headRefOid.slice(0, 7)} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
+      catch (e) { return `bstack could not post the ${entry.kind} it saved for ${String(savedHead).slice(0, 7)} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
       pr.comments.push({ body, createdAt: new Date().toISOString() });
     }
     deps.pending.remove(file);
