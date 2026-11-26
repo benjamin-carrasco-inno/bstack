@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ASSIGNMENT, UNRESOLVED, closingBacktick, closingParen, commandsIn, endsInRedirect, loopBodies, parseGit, redirectTargets, tokenize, withoutHeredocBodies, words } from './lib/shell.mjs';
+import { ASSIGNMENT, ESCAPE, UNRESOLVED, closingBacktick, closingParen, commandsIn, endsInRedirect, loopBodies, parseGit, redirectTargets, tokenize, withoutHeredocBodies, words } from './lib/shell.mjs';
 import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, timeOf, userOkFor } from './lib/verdicts.mjs';
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
@@ -199,7 +199,7 @@ const SAVED_VERDICTS = 'Saved verdicts are written only by the bstack hook when 
 function markerRule(c, deps) {
   const [ghGroup, ghAction] = c.cmd === 'gh' ? ghSubcommand(c.args) : [];
   const readOnlyGh = c.cmd === 'gh' && (/^(view|checks|diff|list|status)$/.test(ghAction ?? '') || (ghGroup === 'api' && !hasWriteFields(c.args)));
-  if (MARKER.test(c.text) && !READ_ONLY.has(c.cmd) && !readOnlyGh) {
+  if (carriesMarker(c) && !READ_ONLY.has(c.cmd) && !readOnlyGh) {
     return 'Verdict and interrogate lines are posted by the bstack hook when the bstack:reviewer or bstack:adversary agent finishes, and only the user writes the user-OK line on GitHub. Run that agent or ask the user instead of writing the line yourself.';
   }
   if (!READ_ONLY.has(c.cmd) && [...pathArgs(c), ...redirectTargets(c.text).map(w => w.text)].some(a => PENDING_PATH.test(a))) return SAVED_VERDICTS;
@@ -216,6 +216,10 @@ function markerRule(c, deps) {
     }
   }
   return null;
+}
+
+function carriesMarker(c) {
+  return MARKER.test(c.text) || MARKER.test(c.args.join(' ').replaceAll(ESCAPE[c.dialect], ''));
 }
 
 function bodyFileReason({ file, at }, deps) {
