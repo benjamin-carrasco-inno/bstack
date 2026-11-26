@@ -913,7 +913,7 @@ test('no-authoring agents run the browser check the plugin ships, against localh
     ok(shell(`${LINUX_CHECK} http://localhost:8130 / /settings`), LINUX_PLUGIN);
 
     for (const command of [
-      `${WINDOWS_CHECK} https://dashboard.inno.dk /`, `${WINDOWS_CHECK} http://127.0.0.1:8130 http://evil.example/`, `${WINDOWS_CHECK} http://127.0.0.1:8130 //evil.example/`,
+      `${WINDOWS_CHECK} https://shop.example.com /`, `${WINDOWS_CHECK} http://127.0.0.1:8130 http://evil.example/`, `${WINDOWS_CHECK} http://127.0.0.1:8130 //evil.example/`,
       `${WINDOWS_CHECK} http://127.0.0.1:8130 / --browser C:\\Temp\\evil.exe`, 'node C:\\plugins\\bstack\\scripts\\verdict.mjs',
       'node C:\\plugins\\bstack\\..\\other\\x.mjs', 'node C:\\plugins\\other\\skills\\verify\\browser-check-run.mjs http://127.0.0.1:8130 /',
       'node --import C:\\checkout\\x.mjs C:\\plugins\\bstack\\skills\\verify\\browser-check-run.mjs http://127.0.0.1:8130 /',
@@ -947,6 +947,7 @@ test('no-authoring agents point an app variable at a literal path in their workt
       'DATA_DIR=/tmp/a:/checkout uvicorn app.main:app', 'DATA_DIR=/tmp/../checkout uvicorn app.main:app',
       'PATH=/tmp/bin uvicorn app.main:app', 'NODE_OPTIONS=/tmp/x.js npm test', 'PYTHONPATH=/repo/x pytest', 'PYTHONSTARTUP=/tmp/x.py python /tmp/a.py',
       'LD_PRELOAD=/tmp/x.so pytest', 'GIT_DIR=/repo/.git git diff', 'BASH_ENV=/tmp/x.sh npm test', 'HOME=/tmp/h git diff', 'NPM_CONFIG_PREFIX=/tmp/x npm i',
+      'CDPATH=/tmp; cd x', 'LESSOPEN="|/tmp/x.sh" less a.txt', 'SUDO_ASKPASS=/tmp/x.sh pytest',
     ]) refused(shell(command), linux);
     for (const command of [
       "$env:DATA_DIR='D:\\prod'; uvicorn app.main:app", '$env:DATA_DIR = $x; uvicorn app.main:app', '$env:DATA_DIR = (Get-Location); uvicorn app.main:app',

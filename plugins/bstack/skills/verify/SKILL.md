@@ -9,9 +9,9 @@ description: Run the app and prove behaviour on the real surface. Start it safel
 
 ## Start safely
 
-- Use the repo's launch configuration (`.claude/launch.json`) or its documented dev command, pointed at test fixtures and a temporary data directory, in a worktree. Never production data, production URLs or real accounts.
-- **Side effects first.** Before running any path that could publish, send mail, call webhooks or paid APIs, or write to shared storage, confirm the app is in a dry-run, simulator or test mode and that outbound targets are empty or local mocks. If the mode lives in a database or a settings page, check it there, not in the code. A "test" mode that still talks to the real platform is not safe. If you cannot confirm it, do not run that path. Report the gap instead.
-- No launch configuration: derive the start command from the README or Dockerfile, use a temporary data directory, and list "add a launch config on fixtures" as a finding.
+- Use the repo's launch configuration (`.claude/launch.json`) or its documented dev command on test fixtures, in a worktree, via `run_in_background`, on a literal temp data path (`DATA_DIR=/tmp/review`). Never production data, production URLs or real accounts.
+- **Side effects first.** Before running any path that could publish, send mail, call webhooks or paid APIs, or write to shared storage, confirm the app is in a dry-run, simulator or test mode and that outbound targets are empty or local mocks. If the mode lives in a database or a settings page, check it there, not in the code. A "test" mode that still talks to the real platform is not safe. If you cannot confirm it, do not run that path; report the gap.
+- No launch configuration: derive the start command from the README or Dockerfile and list "add a launch config on fixtures" as a finding.
 
 ## Find the surface
 

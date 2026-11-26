@@ -48,7 +48,8 @@ export function decide(input, deps) {
   return null;
 }
 
-const REAL_HOST = { platform: process.platform, env: process.env, tmpdir: () => os.tmpdir() };
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const REAL_HOST = { platform: process.platform, env: process.env, tmpdir: () => os.tmpdir(), pluginRoot: PLUGIN_ROOT };
 const withPaths = host => ({ ...host, paths: pathsOn(host.platform) });
 
 const DIR_MOVES = {
@@ -342,7 +343,7 @@ const nameSet = text => new Set(text.trim().split(/\s+/));
 const isLongOptionPrefixOf = (word, full) => { const name = word.split('=')[0]; return name.length > 2 && name.startsWith('--') && full.startsWith(name); };
 const clusterHas = (word, letters) => /^-[^-]/.test(word) && [...word.slice(1)].some(ch => letters.includes(ch));
 const namesAny = (word, letters, longs) => clusterHas(word, letters) || longs.some(full => isLongOptionPrefixOf(word, full));
-const ALLOWED_SUMMARY = 'read-only git and gh, file reads and searches, tests and the app run from its own worktree, HTTP to localhost, and file writes inside its worktree or the temp dir';
+const ALLOWED_SUMMARY = 'read-only git and gh, file reads and searches, tests and the app run from its own worktree, HTTP and the plugin\'s browser check against localhost, and file writes inside its worktree or the temp dir';
 const refuse = (agent, what, fix = 'Report what you would run instead.') => `The ${agent} agent runs only allowlisted commands (${ALLOWED_SUMMARY}). Refused: ${what}. ${fix}`;
 
 const CONTROL = nameSet('for switch fi done esac case in try catch finally return break continue exit throw [ [[ test true false');
@@ -367,11 +368,28 @@ const POSIX_READ_LIMITS = {
 const SAFE_VARIABLES = nameSet('CI NODE_ENV FORCE_COLOR NO_COLOR TERM LANG LC_ALL TZ DEBUG');
 const safeVariable = name => SAFE_VARIABLES.has(name.toUpperCase());
 const inEnvironment = (name, host) => Object.keys(host.env ?? {}).some(key => key.toUpperCase() === name.toUpperCase());
+const LOADER_VARIABLES = new RegExp(`^(${[
+  'PATH', 'PATHEXT', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SHELL', 'SHELLOPTS', 'COMSPEC', 'ENV', 'PROMPT_COMMAND', 'CDPATH', 'PWD', 'OLDPWD',
+  'TEMP', 'TMP', 'TMPDIR', 'EDITOR', 'VISUAL', 'PAGER', 'BROWSER', 'PSMODULEPATH', 'CLASSPATH', 'VIRTUAL_ENV', 'CC', 'CXX',
+  '(BASH|LESS|NODE|NPM|YARN|PNPM|BUN|PYTHON|PIP|PYTEST|CONDA|UV|LD|DYLD|GIT|GH|XDG|CARGO|RUST|PERL|RUBY|GEM|JAVA|DOTNET|SSH|SSL|CURL)\\w*', '\\w*(_BROWSER|_PROXY|_EDITOR|_PAGER|ASKPASS)',
+].join('|')})$`, 'i');
+const PATH_VALUE = /[\\/]|^\.\.?$/;
+const PATH_LIST = /[;:]/;
 
-function environmentRule(c, ctx) {
-  const names = Object.keys(c.env).filter(name => !safeVariable(name));
-  const exported = c.cmd === '' ? names.find(name => /[A-Z]/.test(name) || inEnvironment(name, ctx.host)) : names[0];
-  return exported ? refuse(ctx.agent, `setting ${exported}, which can change what a command runs or where it writes`, `Set only ${[...SAFE_VARIABLES].join(', ')}.`) : null;
+function ownedPath(value, at, ctx) {
+  if (value === null || !PATH_VALUE.test(value) || PATH_LIST.test(value.replace(/^[a-z]:/i, ''))) return false;
+  const target = writeTarget(value, knownCwd(at), at.dialect, ctx.host, false);
+  return Boolean(target) && owns(ctx.root, target, ctx.host);
+}
+
+const allowedVariable = (name, value, at, ctx) => safeVariable(name) || (!LOADER_VARIABLES.test(name) && ownedPath(value, at, ctx));
+const refuseVariable = (ctx, name) => refuse(ctx.agent, `setting ${name}, which can change what a command runs or where it writes`,
+  `Set only ${[...SAFE_VARIABLES].join(', ')}, or point an app variable such as DATA_DIR at a literal path inside your worktree or the temp dir.`);
+
+function environmentRule(c, ctx, at) {
+  const exported = Object.keys(c.env).filter(name => c.cmd !== '' || /[A-Z]/.test(name) || inEnvironment(name, ctx.host));
+  const refused = exported.find(name => !allowedVariable(name, c.env[name], at, ctx));
+  return refused ? refuseVariable(ctx, refused) : null;
 }
 
 const FILTERS = ['filter', 'include', 'exclude', 'credential'];
@@ -420,7 +438,7 @@ function noAuthoringRule(line, dialect, cwd, agent, root, host) {
   const commands = located(parsed, cwd, host).map(escapedArgsUnresolved);
   for (const [k, c] of commands.entries()) {
     const target = k > 0 && endsInRedirect(commands[k - 1].text, commands[k - 1].dialect) && words(c.text, c.dialect).length === 1;
-    const reason = (target ? null : environmentRule(parsed[k], ctx) ?? agentCommandRule(c, ctx)) ?? redirectRule(c, ctx, commands[k + 1]);
+    const reason = (target ? null : environmentRule(parsed[k], ctx, c) ?? agentCommandRule(c, ctx)) ?? redirectRule(c, ctx, commands[k + 1]);
     if (reason) return reason;
   }
   for (const inner of quotedSubstitutions(text, dialect)) {
@@ -477,11 +495,14 @@ function dotnetRule(text, agent) {
   return null;
 }
 
+const LITERAL_STRING = /^(?:'([^']*)'|"([^"$`]*)")$/;
+const literalString = text => { const m = LITERAL_STRING.exec(text); return m ? m[1] ?? m[2] : null; };
+
 function expressionRule(c, ctx) {
   const set = POWERSHELL_ASSIGNMENT.exec(c.text);
   if (set) {
     const variable = /^env:(\w+)$/i.exec(set[1]);
-    if (variable && !safeVariable(variable[1])) return refuse(ctx.agent, `setting $env:${variable[1]}, which can change what a command runs or where it writes`, `Set only ${[...SAFE_VARIABLES].join(', ')}.`);
+    if (variable && !allowedVariable(variable[1], literalString(set[2].trim()), c, ctx)) return refuseVariable(ctx, `$env:${variable[1]}`);
     if (DEFAULT_PARAMETERS.test(set[1])) return refuse(ctx.agent, `setting $${set[1]}, which changes where cmdlets write`);
     const value = set[2].trim();
     if (!value || EXPRESSION_START.test(value)) return value ? expressionRule({ ...c, text: value }, ctx) : null;
@@ -601,6 +622,40 @@ function nodeProblem(args) {
   const inline = args.find(a => a === '-' || /^-[a-zA-Z]*[epi]/.test(a) || /^--(eval|print|interactive|input-type)(=|$)/.test(a) || a.includes('data:'));
   if (inline) return `${inline} runs code from the command line or stdin`;
   return args.includes('--test') || args.some(a => !a.startsWith('-')) ? null : 'without a script file reads code from stdin';
+}
+
+const PAGE_PATH = /^\/(?![\\/])[^\s\\]*$/;
+
+function browserCheckRule(c, ctx) {
+  const operands = [];
+  for (let i = 1; i < c.args.length; i++) {
+    const a = c.args[i];
+    if (c.expressions?.has(i)) return refuse(ctx.agent, 'the browser check with an argument the guard cannot read', 'Write each argument literally.');
+    if (/^--(widths|timeout)$/.test(a)) i++;
+    else if (a.startsWith('-')) return refuse(ctx.agent, `the browser check with ${a}`, 'Let it find Chrome or Edge itself.');
+    else operands.push(a);
+  }
+  const [origin = '', ...pages] = operands;
+  const away = pages.find(p => !PAGE_PATH.test(p));
+  return localOnly(ctx, origin) ?? (away ? refuse(ctx.agent, `the browser check on ${away}, which is not a path on the origin`, 'Pass paths such as / or /settings.') : null);
+}
+
+const PLUGIN_SCRIPTS = { 'skills/verify/browser-check-run.mjs': browserCheckRule };
+
+function pluginScript(c, ctx) {
+  const root = ctx.host.pluginRoot;
+  const target = root && c.args.length && !c.expressions?.has(0) && writeTarget(c.args[0], knownCwd(c), c.dialect, ctx.host, false);
+  if (!target || !ctx.host.paths.contains(ctx.host.paths.resolvePath(root), target)) return null;
+  const same = file => ctx.host.paths.contains(target, file) && ctx.host.paths.contains(file, target);
+  const name = Object.keys(PLUGIN_SCRIPTS).find(rel => same(ctx.host.paths.resolvePath(root, rel)));
+  return name ? PLUGIN_SCRIPTS[name] : () => refuse(ctx.agent, `node ${c.args[0]}: of the plugin's own scripts only ${Object.keys(PLUGIN_SCRIPTS).join(', ')} is on the list`);
+}
+
+const runNode = runner(nodeProblem);
+
+function nodeRule(c, ctx) {
+  const shipped = pluginScript(c, ctx);
+  return shipped && inWorktree(c, ctx) ? shipped(c, ctx) : runNode(c, ctx);
 }
 
 const PYTHON_MODULES = /^(pytest|unittest|uvicorn)$/;
@@ -778,7 +833,7 @@ function ghAllowed(c, ctx) {
 
 const AGENT_COMMANDS = {
   git: gitAllowed, gh: ghAllowed,
-  node: runner(nodeProblem), python: runner(pythonProblem), python3: runner(pythonProblem), py: runner(pythonProblem),
+  node: nodeRule, python: runner(pythonProblem), python3: runner(pythonProblem), py: runner(pythonProblem),
   pytest: runner(), uvicorn: runner(),
   npm: runner(packageProblem), pnpm: runner(packageProblem), yarn: runner(packageProblem), bun: runner(packageProblem),
   cargo: runner(cargoProblem),
