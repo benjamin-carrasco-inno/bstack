@@ -1,4 +1,4 @@
-(async ({ paths = [location.pathname + location.search], widths = [375, 768, 1280], range = [320, 1600], height = 900 } = {}) => {
+(async ({ paths = [location.pathname + location.search], widths = [375, 768, 1280], range = [320, 1600], height = 900, resize, statics = true, sweep = true } = {}) => {
   const IGNORED = '[hidden], [aria-hidden="true"], dialog:not([open]), template';
   const PLACEHOLDER = /\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}|\$\{[^}]*\}/g;
   const CONTROLS = 'input:not([type="hidden"], [type="submit"], [type="button"], [type="reset"], [type="image"]), select, textarea';
@@ -16,7 +16,20 @@
     return chain.join(' > ');
   };
 
-  const open = async (path, width) => {
+  const freeze = doc => {
+    const style = doc.createElement('style');
+    style.textContent = FREEZE;
+    doc.head.append(style);
+    return doc.fonts?.ready;
+  };
+
+  const openHere = async width => {
+    await resize(width);
+    await freeze(document);
+    return { doc: document, size: resize, close() {} };
+  };
+
+  const openInFrame = async (path, width) => {
     const frame = document.createElement('iframe');
     frame.setAttribute('aria-hidden', 'true');
     frame.style.cssText = `position:fixed;left:-20000px;top:0;width:${width}px;height:${height}px;border:0;opacity:0;pointer-events:none`;
@@ -29,12 +42,11 @@
       frame.remove();
       throw new Error(`${path} refuses framing (X-Frame-Options or CSP frame-ancestors) or is on another origin; the check loads each page in an iframe`);
     }
-    const freeze = doc.createElement('style');
-    freeze.textContent = FREEZE;
-    doc.head.append(freeze);
-    await doc.fonts?.ready;
-    return frame;
+    await freeze(doc);
+    return { doc, size: async w => { frame.style.width = `${w}px`; }, close: () => frame.remove() };
   };
+
+  const open = (path, width) => (resize ? openHere(width) : openInFrame(path, width));
 
   const overflow = doc => {
     const root = doc.documentElement;
@@ -100,21 +112,21 @@
   };
 
   const breakpoints = async path => {
-    const frame = await open(path, range[0]);
-    const els = layouts(frame.contentDocument);
-    const at = width => {
-      frame.style.width = `${width}px`;
+    const view = await open(path, range[0]);
+    const els = layouts(view.doc);
+    const at = async width => {
+      await view.size(width);
       return els.map(columns);
     };
     const switches = [];
-    let before = at(range[0]);
+    let before = await at(range[0]);
     for (let width = range[0] + 16; width <= range[1] + 15; width += 16) {
       const end = Math.min(width, range[1]);
-      const after = at(end);
+      const after = await at(end);
       if (after.some((c, i) => c.count !== before[i].count)) {
-        let previous = at(end - 16 < range[0] ? range[0] : end - 16);
+        let previous = await at(end - 16 < range[0] ? range[0] : end - 16);
         for (let w = Math.max(range[0], end - 15); w <= end; w++) {
-          const now = at(w);
+          const now = await at(w);
           now.forEach((c, i) => {
             if (c.count !== previous[i].count) switches.push({ element: describe(els[i]), width: w, from: previous[i].count, to: c.count, narrowestColumnCh: Math.round(c.narrowest / chWidth(els[i])) });
           });
@@ -124,7 +136,7 @@
       before = after;
       if (end === range[1]) break;
     }
-    frame.remove();
+    view.close();
     const merged = new Map();
     for (const s of switches) {
       const key = JSON.stringify(s);
@@ -137,14 +149,13 @@
   const report = [];
   for (const path of paths) {
     for (const [n, width] of widths.entries()) {
-      const frame = await open(path, width);
-      const doc = frame.contentDocument;
-      const over = overflow(doc);
+      const view = await open(path, width);
+      const over = overflow(view.doc);
       if (over) findings.push({ check: 'overflow', path, width, ...over });
-      if (n === 0) findings.push(...staticFindings(doc).map(f => ({ path, ...f })));
-      frame.remove();
+      if (n === 0 && statics) findings.push(...staticFindings(view.doc).map(f => ({ path, ...f })));
+      view.close();
     }
-    report.push(...await breakpoints(path));
+    if (sweep) report.push(...await breakpoints(path));
   }
   return { findings, breakpoints: report };
 })

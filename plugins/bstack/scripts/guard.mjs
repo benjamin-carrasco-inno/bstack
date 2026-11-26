@@ -727,7 +727,7 @@ function sqliteRule(c, ctx) {
 
 const LOCAL_URL = /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])(:\d+)?([/?#]|$)/i;
 const CURL_FLAGS = /^-[sSiIvfLkGg46N]+$|^--(silent|show-error|include|head|verbose|fail|fail-with-body|location|insecure|get|compressed|no-buffer|http1\.1|http2|globoff|no-progress-meter)$/;
-const CURL_VALUED = /^(-[XHdmubeA]|--(request|header|data|data-raw|data-binary|data-urlencode|json|max-time|user|cookie|connect-timeout|retry|user-agent|referer))$/;
+const CURL_VALUED = /^(-[XHdmubeAF]|--(request|header|data|data-raw|data-binary|data-urlencode|json|max-time|user|cookie|connect-timeout|retry|user-agent|referer|form|form-string))$/;
 const localOnly = (ctx, url) => (LOCAL_URL.test(url) ? null : refuse(ctx.agent, `a request to ${url}; only localhost is on the list`, 'Exercise the app on localhost, never a production URL.'));
 
 function writeOutFormat(args, i) {
@@ -747,9 +747,10 @@ function curlRule(c, ctx) {
       continue;
     }
     const [opt, ...glued] = a.split('=');
-    if (CURL_FLAGS.test(a) || /^-[XHdmubeA]./.test(a) || (glued.length && CURL_VALUED.test(opt))) continue;
+    if (CURL_FLAGS.test(a) || /^-[XHdmubeAF]./.test(a) || (glued.length && CURL_VALUED.test(opt))) continue;
     if (CURL_VALUED.test(a)) { i++; continue; }
-    const output = /^(-o|--output)$/.test(opt) ? (glued.length ? glued.join('=') : c.args[++i]) : null;
+    const gluedJar = /^-c./.test(a) ? a.slice(2) : null;
+    const output = gluedJar ?? (/^(-o|--output|-c|--cookie-jar)$/.test(opt) ? (glued.length ? glued.join('=') : c.args[++i]) : null);
     if (output !== null) { const reason = insideRule(c, ctx, output ?? '', false); if (reason) return reason; continue; }
     const url = opt === '--url' ? (glued.length ? glued.join('=') : c.args[++i] ?? '') : a.startsWith('-') ? null : a;
     if (url === null) return refuse(ctx.agent, `curl ${a} is not on the list`);

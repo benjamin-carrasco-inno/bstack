@@ -6,7 +6,10 @@ import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 
-const USAGE = 'usage: node browser-check-run.mjs <origin> <path>... [--widths 375,768,1280] [--browser <exe>] [--timeout 120]';
+const USAGE = 'usage: node browser-check-run.mjs <origin> <path>... [--widths 375,768,1280] [--browser <exe>] [--timeout 120] [--login <path> --user <name> --password <secret>] [--cookie <name>=<value>]...';
+const HEIGHT = 900;
+const DEFAULT_WIDTHS = [375, 768, 1280];
+const [SWEEP_FROM, SWEEP_TO] = [320, 1600];
 const CANDIDATES = {
   win32: [
     `${process.env['PROGRAMFILES(X86)']}\\Microsoft\\Edge\\Application\\msedge.exe`,
@@ -23,7 +26,7 @@ const CANDIDATES = {
 };
 
 function parseArgs(argv) {
-  const args = { paths: [], widths: undefined, browser: process.env.BROWSER_CHECK_BROWSER, timeoutSeconds: 120 };
+  const args = { paths: [], widths: undefined, browser: process.env.BROWSER_CHECK_BROWSER, timeoutSeconds: 120, cookies: [] };
   const value = i => {
     if (argv[i + 1] === undefined || argv[i + 1].startsWith('--')) throw new Error(`${argv[i]} needs a value\n${USAGE}`);
     return argv[i + 1];
@@ -32,12 +35,18 @@ function parseArgs(argv) {
     if (argv[i] === '--widths') args.widths = value(i++).split(',').map(Number);
     else if (argv[i] === '--browser') args.browser = value(i++);
     else if (argv[i] === '--timeout') args.timeoutSeconds = Number(value(i++));
+    else if (argv[i] === '--login') args.login = value(i++);
+    else if (argv[i] === '--user') args.user = value(i++);
+    else if (argv[i] === '--password') args.password = value(i++);
+    else if (argv[i] === '--cookie') args.cookies.push(value(i++));
     else if (!args.origin) args.origin = argv[i];
     else args.paths.push(argv[i]);
   }
   if (!URL.canParse(args.origin ?? '') || !/^https?:$/.test(new URL(args.origin).protocol)) throw new Error(USAGE);
   if (args.widths?.some(w => !Number.isInteger(w) || w < 1)) throw new Error(`--widths takes positive integers, such as 375,768,1280\n${USAGE}`);
   if (!(args.timeoutSeconds > 0 && args.timeoutSeconds <= 86400)) throw new Error(`--timeout takes seconds above 0 and up to 86400\n${USAGE}`);
+  if (args.login && !(args.user && args.password)) throw new Error(`--login needs --user and --password\n${USAGE}`);
+  if (args.cookies.some(c => !/^[^=;\s]+=[^;]*$/.test(c))) throw new Error(`--cookie takes one <name>=<value>\n${USAGE}`);
   const { pathname, search } = new URL(args.origin);
   if (!args.paths.length) args.paths.push(pathname + search);
   return args;
@@ -118,21 +127,92 @@ function failureOf({ exception, text }) {
   return deliberate ? description.split('\n')[0].replace(/^Error: /, '') : description;
 }
 
-async function openStartPage(cdp, start, paths, stop) {
+const RESIZE_BINDING = '__browserCheckResize';
+const RESIZED = '__browserCheckResized';
+const RESIZE_IN_PAGE = `width => new Promise(done => { globalThis.${RESIZED} = done; globalThis.${RESIZE_BINDING}(String(width)); })`;
+
+async function openTab(cdp, paths, stop) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   cdp.on('Inspector.targetCrashed', msg => msg.sessionId === sessionId && stop(new Error(`the page crashed while checking ${paths.join(', ')}`)));
   await cdp.send('Inspector.enable', {}, sessionId);
   await cdp.send('Page.enable', {}, sessionId);
+  await cdp.send('Runtime.enable', {}, sessionId);
   cdp.on('Page.javascriptDialogOpening', msg => cdp.send('Page.handleJavaScriptDialog', { accept: true }, msg.sessionId).catch(() => {}));
+  await cdp.send('Runtime.addBinding', { name: RESIZE_BINDING }, sessionId);
+  cdp.on('Runtime.bindingCalled', ({ sessionId: from, params }) => {
+    if (from !== sessionId || params.name !== RESIZE_BINDING) return;
+    setWidth(cdp, sessionId, Number(params.payload))
+      .then(() => cdp.send('Runtime.evaluate', { expression: `globalThis.${RESIZED}()`, contextId: params.executionContextId }, sessionId))
+      .catch(stop);
+  });
+  return sessionId;
+}
+
+const setWidth = (cdp, sessionId, width) => cdp.send('Emulation.setDeviceMetricsOverride', { width, height: HEIGHT, deviceScaleFactor: 1, mobile: false }, sessionId);
+
+async function visit(cdp, sessionId, url, shownPath) {
   const loaded = cdp.nextEvent('Page.loadEventFired', sessionId);
-  const { errorText } = await cdp.send('Page.navigate', { url: start.href }, sessionId);
-  if (errorText) throw await navigationError(start, paths[0], errorText);
+  const { errorText } = await cdp.send('Page.navigate', { url: url.href }, sessionId);
+  if (errorText) throw await navigationError(url, shownPath, errorText);
   await loaded;
   const landed = new URL(await evaluate(cdp, sessionId, 'location.href'));
-  if (!/^https?:$/.test(landed.protocol)) throw new Error(`could not open ${start.href}; is the app running?`);
-  if (landed.origin + landed.pathname !== start.origin + start.pathname) throw redirectError([[start.href, landed.href]], start.origin);
-  return sessionId;
+  if (!/^https?:$/.test(landed.protocol)) throw new Error(`could not open ${url.href}; is the app running?`);
+  return landed;
+}
+
+const samePage = (a, b) => a.origin + a.pathname === b.origin + b.pathname;
+
+const FILL_LOGIN = `(({ user, password }) => {
+  const secret = document.querySelector('input[type="password"]');
+  if (!secret?.form) throw new Error('no password field inside a form');
+  const name = secret.form.querySelector('input:not([type]), input[type="text"], input[type="email"]');
+  const set = (input, value) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  if (name) set(name, user);
+  set(secret, password);
+  secret.form.requestSubmit();
+})`;
+
+async function signIn(cdp, sessionId, args) {
+  for (const cookie of args.cookies) {
+    const [name, ...value] = cookie.split('=');
+    await cdp.send('Network.setCookie', { name, value: value.join('='), url: args.origin }, sessionId);
+  }
+  if (!args.login) return;
+  const login = new URL(args.login, args.origin);
+  const shown = login.pathname + login.search;
+  const before = (await visit(cdp, sessionId, login, shown)).href;
+  const outcome = await afterSubmit(cdp, sessionId, before, () => evaluate(cdp, sessionId, `${FILL_LOGIN}(${JSON.stringify({ user: args.user, password: args.password })})`).catch(error => {
+    throw new Error(`sign-in at ${shown}: ${error.message}`);
+  }));
+  if (!outcome) throw new Error(`sign-in at ${shown} changed nothing within ${SIGN_IN_WAIT_MS / 1000} s (no page load, URL change or new cookie); check --user and --password`);
+  if (samePage(outcome.landed, login) && !outcome.newCookie) throw new Error(`sign-in at ${shown} stayed on ${shown}; check --user and --password`);
+}
+
+const SIGN_IN_WAIT_MS = 5000;
+
+async function afterSubmit(cdp, sessionId, before, submit) {
+  const page = { loading: false, loads: 0 };
+  cdp.on('Page.frameStartedLoading', msg => msg.sessionId === sessionId && (page.loading = true));
+  cdp.on('Page.frameStoppedLoading', msg => msg.sessionId === sessionId && (page.loading = false));
+  cdp.on('Page.loadEventFired', msg => msg.sessionId === sessionId && page.loads++);
+  const cookies = async () => JSON.stringify((await cdp.send('Network.getCookies', { urls: [before] }, sessionId)).cookies.map(c => [c.name, c.value]));
+  const cookiesBefore = await cookies();
+  await submit();
+  const deadline = Date.now() + SIGN_IN_WAIT_MS;
+  while (page.loading || Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    if (page.loading) continue;
+    const href = await evaluate(cdp, sessionId, 'document.readyState === "complete" && location.href').catch(() => false);
+    if (!href) continue;
+    const newCookie = (await cookies()) !== cookiesBefore;
+    if (page.loads || newCookie || href !== before) return { landed: new URL(href), newCookie };
+  }
+  return null;
 }
 
 async function navigationError(start, startPath, errorText) {
@@ -144,7 +224,7 @@ async function navigationError(start, startPath, errorText) {
 function redirectError(redirects, origin) {
   const shown = href => (new URL(href).origin === origin ? href.slice(origin.length) : href);
   const list = redirects.map(([requested, landed]) => `${shown(requested)} redirected to ${shown(landed)}`).join(', ');
-  return new Error(`${list}; pass the path it lands on, or for a page behind login inject browser-check.js in a signed-in browser (the runner has no session)`);
+  return new Error(`${list}; pass the path it lands on, or sign in first with --login <path> --user <name> --password <secret> or --cookie <name>=<value>`);
 }
 
 function responseOf(url, cookie) {
@@ -170,14 +250,33 @@ async function runCheck(cdp, args, check, stop) {
   const [start] = pages;
   const sameOriginPath = url => (url.origin === start.origin ? url.pathname + url.search + url.hash : url.href);
   const paths = pages.map(sameOriginPath);
-  const sessionId = await openStartPage(cdp, start, paths, stop);
+  const sessionId = await openTab(cdp, paths, stop);
+  await signIn(cdp, sessionId, args);
+  const load = async (i, width) => {
+    await setWidth(cdp, sessionId, width);
+    const landed = await visit(cdp, sessionId, pages[i], paths[i]);
+    if (!samePage(landed, pages[i])) throw redirectError([[pages[i].href, landed.href]], start.origin);
+  };
+  const checkLoaded = options => evaluate(cdp, sessionId, `(${check})({ ...${JSON.stringify(options)}, resize: ${RESIZE_IN_PAGE} })`);
+  const report = { findings: [], breakpoints: [] };
+  for (const [i, path] of paths.entries()) {
+    for (const [n, width] of (args.widths ?? DEFAULT_WIDTHS).entries()) {
+      await load(i, width);
+      if (i === 0 && n === 0) await checkStatuses(cdp, sessionId, pages, paths, start.origin);
+      report.findings.push(...(await checkLoaded({ paths: [path], widths: [width], statics: n === 0, sweep: false })).findings);
+    }
+    await load(i, SWEEP_FROM);
+    report.breakpoints.push(...(await checkLoaded({ paths: [path], widths: [], range: [SWEEP_FROM, SWEEP_TO] })).breakpoints);
+  }
+  return report;
+}
+
+async function checkStatuses(cdp, sessionId, pages, paths, origin) {
   const statuses = await pageStatuses(cdp, sessionId, pages, paths);
   const redirects = statuses.filter(s => s.status >= 300 && s.status < 400 && s.landed);
-  if (redirects.length) throw redirectError(redirects.map(s => [s.requested, s.landed]), start.origin);
+  if (redirects.length) throw redirectError(redirects.map(s => [s.requested, s.landed]), origin);
   const missing = statuses.filter(s => s.status >= 400);
   if (missing.length) throw new Error(`pages did not load: ${missing.map(s => `${s.path} (${s.status})`).join(', ')}`);
-  const options = JSON.stringify({ paths, ...(args.widths && { widths: args.widths }) });
-  return evaluate(cdp, sessionId, `(${check})(${options})`);
 }
 
 function giveUpSignal(seconds) {

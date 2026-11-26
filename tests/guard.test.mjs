@@ -1003,6 +1003,24 @@ test('#34: no-authoring agents: curl --write-out writes no file, and node flag c
   }
 });
 
+test('#154: no-authoring agents send multipart forms and keep a cookie jar only against a loopback host', () => {
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const host of ['127.0.0.1:8000', 'localhost:8000', '[::1]:8000']) {
+      for (const command of [
+        `curl -s -F title=x -F file=@/tmp/a.png http://${host}/items`, `curl -s --form-string 'name=a;b' -b /tmp/jar -c /tmp/jar http://${host}/x`,
+        `curl -s --form title=x --cookie-jar /tmp/jar http://${host}/x`, `curl -Ftitle=x -c/tmp/jar http://${host}/x`, `curl --cookie-jar=/tmp/jar -F a=b http://${host}/x`,
+      ]) ok(shell(command));
+    }
+    ok(ps('curl.exe -s -F title=x -c $env:TEMP/jar http://127.0.0.1:8000/x'));
+    for (const command of [
+      'curl -s -F title=x https://example.com/items', "curl -s --form-string 'name=a' http://example.com/x", 'curl -s --form title=x http://10.0.0.5/x',
+      'curl -s -b /tmp/jar -c /tmp/jar https://example.com/x', 'curl -Ftitle=x http://localhost.example.com/x', 'curl -s -c /checkout/jar http://127.0.0.1:8000/x',
+    ]) refused(shell(command));
+  }
+});
+
 test('#34: no-authoring agents: an unquoted heredoc body runs its substitutions, a quoted one is text', () => {
   for (const agent of NO_AUTHORING) {
     const refused = refusedFor(agent);
