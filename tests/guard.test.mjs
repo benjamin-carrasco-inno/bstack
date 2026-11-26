@@ -944,6 +944,76 @@ test('no-authoring agents run the browser check the plugin ships, against localh
   }
 });
 
+test('#186: no-authoring agents sign the browser check in with literal values and a login path on the loopback origin', () => {
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of [
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user admin --password 'p@ss w0rd'`,
+      `${WINDOWS_CHECK} http://localhost:8130 /admin --login /inno-social/login?next=/admin --user admin@example.com --password secret --widths 1280`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --cookie session=abc123`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --cookie session=abc --cookie csrf=x=y`,
+    ]) ok(ps(command), WINDOWS_PLUGIN);
+    ok(shell(`${LINUX_CHECK} http://localhost:8130 /admin --login /login --user admin --password 'secret'`), LINUX_PLUGIN);
+    ok(shell(`${LINUX_CHECK} http://[::1]:8130 /admin --cookie session=abc`), LINUX_PLUGIN);
+
+    for (const command of [
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login http://127.0.0.1:8130/login --user a --password b`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login https://evil.example/login --user a --password b`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login //evil.example/login --user a --password b`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login login --user a --password b`,
+      `${WINDOWS_CHECK} https://shop.example.com /admin --login /login --user a --password b`,
+      `${WINDOWS_CHECK} https://shop.example.com /admin --cookie session=abc`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --cookie session`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --cookie 'a=b; c=d'`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --chrome C:\\Temp\\evil.exe`, `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --headed`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user a --password b --browser C:\\Temp\\evil.exe`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user $u --password b`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user a --password $env:SECRET`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user a --password (Get-Content pw.txt)`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --cookie $c`, `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login $p --user a --password b`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user a --password 'x\\" --browser C:\\Temp\\evil.exe'`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user 'a\\" --browser C:\\Temp\\evil.exe' --password b`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --cookie 's=x\\" --browser C:\\Temp\\evil.exe'`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user 'a b\\' --password 'c --browser C:\\Temp\\evil.exe'`,
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --widths '1280\\" --browser C:\\Temp\\evil.exe'`,
+      ...['--user @a --password b', '--user a --password @a', '--widths @a', '--timeout @a', '--cookie @a', '--widths 1280x', '--timeout 5s']
+        .map(opts => `$a = 'x','--browser','C:\\Temp\\evil.exe'; ${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user u --password p ${opts}`),
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 '/a"' --login /login --user 'x --browser C:\\Temp\\evil.exe' --password b`,
+    ]) refused(ps(command), WINDOWS_PLUGIN);
+    for (const command of [
+      `${LINUX_CHECK} http://localhost:8130 /admin --login /login --user * --password b`,
+      `${LINUX_CHECK} http://localhost:8130 /admin --login /login --user a --password 'b[c]'`,
+      `${LINUX_CHECK} http://localhost:8130 /admin --login /login --user "$U" --password b`,
+      `${LINUX_CHECK} http://localhost:8130 /admin --login /login --user a --password $(cat pw)`,
+      `${LINUX_CHECK} http://localhost:8130 /admin --cookie $C`,
+    ]) refused(shell(command), LINUX_PLUGIN);
+  }
+});
+
+test('#186: no-authoring agents set PORT to a literal port number for a command from their worktree', () => {
+  const linux = onHost(linuxHost({}));
+  for (const agent of NO_AUTHORING) {
+    const refused = refusedFor(agent);
+    const ok = allowedFor(agent);
+    for (const command of ['PORT=8081 uvicorn app.main:app', 'PORT=1024 npm start', 'PORT=65535 npm start', 'cd /repo; PORT=8081 npm start']) ok(shell(command), linux);
+    for (const command of [
+      "$env:PORT = '8081'; cargo run", '$env:PORT = "8081"; npm start', '$env:PORT = 8081; npm start', "$env:port = '8130'; npm start",
+      `$env:PORT = '8131'; $env:DATA_DIR = 'C:\\Temp\\x'; npm start`,
+    ]) ok(ps(command));
+
+    for (const command of [
+      'PORT=80 npm start', 'PORT=1023 npm start', 'PORT=65536 npm start', 'PORT=08081 npm start', 'PORT=$P npm start', 'PORT=8081x npm start',
+      'PORT= npm start', 'PORT=8081,8082 npm start', 'cd /checkout; PORT=8081 npm start', "PORT='8081;x' npm start",
+    ]) refused(shell(command), linux);
+    for (const command of [
+      "$env:PORT = '80'; npm start", "$env:PORT = '70000'; npm start", '$env:PORT = $p; npm start', '$env:PORT = (Get-Content port.txt); npm start',
+      "$env:PORT = '8081 '; npm start", "cd C:\\checkout; $env:PORT = '8081'; npm start",
+    ]) refused(ps(command));
+  }
+});
+
 test('no-authoring agents find the shipped browser check next to the running guard', () => {
   const script = fileURLToPath(new URL('../plugins/bstack/skills/verify/browser-check-run.mjs', import.meta.url));
   const input = process.platform === 'win32' ? ps(`node "${script}" http://127.0.0.1:8130 /`) : shell(`node "${script}" http://127.0.0.1:8130 /`);
