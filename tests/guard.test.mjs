@@ -1095,6 +1095,24 @@ test('no-authoring agents: a cd they cannot resolve makes the cwd unknown', () =
   allowed(ps('cd $env:USERPROFILE; Set-Content a.txt x'));
 });
 
+test('no-authoring agents: cd ~-, PowerShell cd - and cd +, and pushd or popd with +N or -N make the cwd unknown', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(as('cd ../other; cd ../repo; cd ~-; git restore README.md'));
+    blocked(psAs('cd ../other; cd -; git restore README.md'));
+    blocked(psAs('cd ../other; cd -; cd +; git restore README.md'));
+    blocked(as('pushd /other; pushd /repo; pushd +1; git restore a.mjs'));
+    blocked(as('pushd /other; pushd /repo; pushd -1; git restore a.mjs'));
+    blocked(as('pushd /other; popd +1; git restore a.mjs'));
+    blocked(as('pushd /other; popd -0; git restore a.mjs'));
+    blocked(as('cd -; git restore a.mjs'));
+
+    allowed(as('cd ../other; cd -; git restore a.mjs'));
+    allowed(as('pushd /other; popd; git restore a.mjs'));
+  }
+});
+
 test('no-authoring agents: cmd %VAR% targets cannot be resolved', () => {
   for (const agent of NO_AUTHORING) {
     const as = asAgent(agent);
@@ -1489,6 +1507,19 @@ test('a body source behind a wrapper that changes directory is refused, wherever
   allowed(shell('env FOO=1 gh pr comment 5 --body-file ok.md'), files);
   allowed(shell('sudo -u x gh pr comment 5 --body-file ok.md'), files);
   allowed(shell('env -C /evil gh pr comment 5 --body "just a note"'), files);
+});
+
+test('a cd in a pipeline stage, behind & or in a subshell does not move the cwd for the body file', () => {
+  const verdictIn = dir => onHost(LINUX_HOST, { ...deps(), readFile: f => (f === `${dir}/vx.md` ? `bstack-verdict: PASS sha=${SHA}` : 'just a note') });
+  for (const command of ['cd /clean | gh pr comment 5 --body-file vx.md', 'cd /clean & gh pr comment 5 --body-file vx.md', '(cd /clean); gh pr comment 5 --body-file vx.md',
+    'cd /clean && true & gh pr comment 5 --body-file vx.md', 'echo $(cd /clean); gh pr comment 5 --body-file vx.md', 'true | cd /clean; gh pr comment 5 --body-file vx.md']) {
+    assert.ok(decide(shell(command), verdictIn('/repo')), command);
+  }
+  for (const command of ['(cd /clean; gh pr comment 5 --body-file vx.md)', 'cd /clean && gh pr comment 5 --body-file vx.md &', '{ cd /clean; }; gh pr comment 5 --body-file vx.md']) {
+    assert.ok(decide(shell(command), verdictIn('/clean')), command);
+  }
+  assert.equal(decide(shell('(cd /clean); gh pr comment 5 --body-file vx.md'), verdictIn('/clean')), null);
+  assert.ok(decide(ps('cd /clean | gh pr comment 5 --body-file vx.md'), onHost(GIT_BASH_HOST, { ...deps(), readFile: () => 'just a note' })));
 });
 
 test('a body file the guard cannot read is refused', () => {
