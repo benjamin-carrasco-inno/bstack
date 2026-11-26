@@ -60,6 +60,9 @@ const DIR_MOVES = {
   popd: 'pop', 'pop-location': 'pop',
 };
 const HOME = /^~(?=$|[\\/])/;
+const TILDE = /^~/;
+const STACK_INDEX = /^[+-]\d+$/;
+const LOCATION_HISTORY = /^[+-]$/;
 const OPAQUE = /[$`]|%[^%\s]+%/;
 const TEMP_PREFIX = {
   posix: /^(?:\/tmp|\$\{?(?<name>TMPDIR|TEMP|TMP)\}?)(?=$|\/)/,
@@ -142,19 +145,36 @@ function shellState(scopes, scope, start) {
 
 function changeDir(shell, c, host) {
   const move = DIR_MOVES[c.cmd];
+  if (!move) return;
+  if (c.args.some(a => STACK_INDEX.test(a) || (c.dialect === 'powershell' && LOCATION_HISTORY.test(a)))) return lostTrack(shell);
+  if (move !== 'go' && c.dialect === 'posix' && c.args.includes('-n')) return stackOnly(shell, move);
   const at = c.args.findIndex(a => a === '-' || (!a.startsWith('-') && !/^\/d$/i.test(a)));
   const { word: target, dialect } = inTempDir(c.args[at], c.dialect, host);
   if (move === 'pop') {
-    if (shell.stack.length) [shell.previous, shell.here] = [shell.here, shell.stack.pop()];
-  } else if (move && target === '-') {
-    if (shell.previous !== undefined) [shell.previous, shell.here] = [shell.here, shell.previous];
-  } else if (move) {
+    if (!shell.stack.length) return lostTrack(shell);
+    [shell.previous, shell.here] = [shell.here, shell.stack.pop()];
+  } else if (target === '-') {
+    if (shell.previous === undefined) return lostTrack(shell);
+    [shell.previous, shell.here] = [shell.here, shell.previous];
+  } else {
     if (move === 'push') shell.stack.push(shell.here);
     shell.previous = shell.here;
     const dir = resolvedDir(target, shell.here.dir, dialect, host.paths);
-    const opaque = target === undefined || c.expressions?.has(at) || OPAQUE.test(target) || HOME.test(target);
+    const opaque = target === undefined || c.expressions?.has(at) || OPAQUE.test(target) || TILDE.test(target);
     shell.here = { dir, known: dir !== UNKNOWN_DIR && !opaque && (shell.here.known || host.paths.isAbsolute(target, dialect)) };
   }
+}
+
+function stackOnly(shell, move) {
+  if (move === 'push') shell.stack.push({ dir: UNKNOWN_DIR, known: false });
+  else shell.stack.pop();
+}
+
+function lostTrack(shell) {
+  const unknown = { dir: UNKNOWN_DIR, known: false };
+  shell.here = unknown;
+  shell.previous = unknown;
+  shell.stack = shell.stack.map(() => unknown);
 }
 
 function setVariables(env, c) {

@@ -1217,6 +1217,30 @@ test('no-authoring agents: a cd they cannot resolve makes the cwd unknown', () =
   allowed(ps('cd $env:USERPROFILE; Set-Content a.txt x'));
 });
 
+test('no-authoring agents: cd ~-, PowerShell cd - and cd +, and pushd or popd with +N or -N make the cwd unknown', () => {
+  for (const agent of NO_AUTHORING) {
+    const as = asAgent(agent);
+    const psAs = psAsAgent(agent);
+    blocked(as('cd ../other; cd ../repo; cd ~-; git restore README.md'));
+    blocked(psAs('cd ../other; cd -; git restore README.md'));
+    blocked(psAs('cd ../other; cd -; cd +; git restore README.md'));
+    blocked(as('pushd /other; pushd /repo; pushd +1; git restore a.mjs'));
+    blocked(as('pushd /other; pushd /repo; pushd -1; git restore a.mjs'));
+    blocked(as('pushd /other; popd +1; git restore a.mjs'));
+    blocked(as('pushd /other; popd -0; git restore a.mjs'));
+    blocked(as('cd -; git restore a.mjs'));
+    blocked(psAs('cd ../other; Set-Location -Path -; git restore README.md'));
+
+    allowed(as('cd ../other; cd -; git restore a.mjs'));
+    allowed(as('pushd /other; popd; git restore a.mjs'));
+    allowed(as('pushd -n /other; git restore a.mjs'));
+    blocked(as('echo x\\\\& rm -rf /home/x'));
+    blocked(as('cd /other >|/dev/null && git restore a.mjs'));
+    blocked(as('pushd -n /other; popd; git restore a.mjs'));
+    allowed(as('pushd /other; pushd -n /x; popd -n; popd; git restore a.mjs'));
+  }
+});
+
 test('no-authoring agents: cmd %VAR% targets cannot be resolved', () => {
   for (const agent of NO_AUTHORING) {
     const as = asAgent(agent);
@@ -1611,6 +1635,29 @@ test('a body source behind a wrapper that changes directory is refused, wherever
   allowed(shell('env FOO=1 gh pr comment 5 --body-file ok.md'), files);
   allowed(shell('sudo -u x gh pr comment 5 --body-file ok.md'), files);
   allowed(shell('env -C /evil gh pr comment 5 --body "just a note"'), files);
+});
+
+test('a cd before a redirect, an escaped & or the call operator still moves the cwd for the body file', () => {
+  const verdictIn = dir => onHost(LINUX_HOST, { ...deps(), readFile: f => (f === `${dir}/vx.md` ? `bstack-verdict: PASS sha=${SHA}` : 'just a note') });
+  for (const command of ['(cd /clean; gh pr comment 5 --body-file vx.md)', 'cd /clean && gh pr comment 5 --body-file vx.md &', '{ cd /clean; }; gh pr comment 5 --body-file vx.md',
+    'cd /clean <&0; gh pr comment 5 --body-file vx.md', 'cd /clean 0<&-; gh pr comment 5 --body-file vx.md', 'cd /clean <&0 && gh pr comment 5 --body-file vx.md',
+    'cd /clean && echo a\\&b && gh pr comment 5 --body-file vx.md', 'cd /clean >|/dev/null && gh pr comment 5 --body-file vx.md', 'cd /clean >| /dev/null; gh pr comment 5 --body-file vx.md',
+    'cd /clean >&2; gh pr comment 5 --body-file vx.md', 'cd /clean &>/dev/null; gh pr comment 5 --body-file vx.md', 'cd /clean; echo x\\\\& gh pr comment 5 --body-file vx.md']) {
+    assert.ok(decide(shell(command), verdictIn('/clean')), command);
+  }
+  assert.ok(decide(shell('echo x\\\\& gh pr comment 5 --body-file vx.md'), verdictIn('/repo')));
+  assert.ok(decide(shell('echo x\\\\& git push --force origin main'), deps({ branch: 'main' })));
+  const psVerdictInClean = onHost(GIT_BASH_HOST, { ...deps(), readFile: f => (/[\\/]clean[\\/]vx\.md$/i.test(f) ? `bstack-verdict: PASS sha=${SHA}` : 'just a note') });
+  for (const command of ['cd C:\\clean && $r = & gh pr comment 5 --body-file vx.md', 'Set-Location C:\\clean && $out = & gh pr comment 5 --body-file vx.md']) {
+    assert.ok(decide(ps(command), psVerdictInClean), command);
+  }
+});
+
+test('a command after an escaped line break is still checked', () => {
+  blocked(shell('git status && \\\n  git push --force origin main'), deps({ branch: 'main' }));
+  blocked(shell('true && \\\n  gh pr merge 5 --squash'));
+  blocked(ps('git status; `\ngit push --force origin main'), deps({ branch: 'main' }));
+  blocked(asAgent('bstack:reviewer')('cd \\\n/other; git restore a.mjs'));
 });
 
 test('a body file the guard cannot read is refused', () => {
