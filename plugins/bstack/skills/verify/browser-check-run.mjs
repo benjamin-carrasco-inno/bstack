@@ -127,12 +127,18 @@ async function openStartPage(cdp, start, paths, stop) {
   cdp.on('Page.javascriptDialogOpening', msg => cdp.send('Page.handleJavaScriptDialog', { accept: true }, msg.sessionId).catch(() => {}));
   const loaded = cdp.nextEvent('Page.loadEventFired', sessionId);
   const { errorText } = await cdp.send('Page.navigate', { url: start.href }, sessionId);
-  if (errorText) throw new Error(`could not open ${start.href} (${errorText}); is the app running?`);
+  if (errorText) throw await navigationError(start, paths[0], errorText);
   await loaded;
   const landed = new URL(await evaluate(cdp, sessionId, 'location.href'));
   if (!/^https?:$/.test(landed.protocol)) throw new Error(`could not open ${start.href}; is the app running?`);
   if (landed.origin + landed.pathname !== start.origin + start.pathname) throw redirectError([[start.href, landed.href]], start.origin);
   return sessionId;
+}
+
+async function navigationError(start, startPath, errorText) {
+  const answered = await responseOf(start, '').catch(() => undefined);
+  if (answered) return new Error(`${startPath} answered ${answered.status} without a page to check (${errorText})`);
+  return new Error(`could not open ${start.href} (${errorText}); is the app running?`);
 }
 
 function redirectError(redirects, origin) {

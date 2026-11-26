@@ -55,6 +55,7 @@ const routes = {
   '/hanging-image': html('<!doctype html><html lang="en"><title>Hanging image</title><img src="/never" alt=""></html>'),
   '/never': () => server.emit('never-requested'),
   '/settings': (_, res) => res.writeHead(302, { location: '/login' }).end(),
+  '/no-content': (_, res) => res.writeHead(204).end(),
   '/login': html(fixture('clean.html')),
   '/spa': html(String(fixture('clean.html')).replace('</body>', '<script>history.replaceState(null, "", "/spa?tab=home")</script></body>')),
   '/app/docs/a': html(fixture('clean.html')),
@@ -125,7 +126,14 @@ const noBrowser = /no Chrome or Edge found/.test(deadOrigin.stderr) && 'no Chrom
 
 test('browser check runner exits 2 when nothing listens on the origin', { skip: noBrowser }, () => {
   assert.equal(deadOrigin.status, 2, deadOrigin.stderr);
-  assert.match(deadOrigin.stderr, new RegExp(`could not open http://127\\.0\\.0\\.1:${deadPort}/ \\(net::ERR_CONNECTION_REFUSED\\)`));
+  assert.match(deadOrigin.stderr, new RegExp(`could not open http://127\\.0\\.0\\.1:${deadPort}/ \\(net::ERR_CONNECTION_REFUSED\\); is the app running\\?`));
+});
+
+test('browser check runner exits 2 and names the status when the start page answers 204 without a document', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/no-content']);
+  assert.equal(run.status, 2, run.stdout + run.stderr);
+  assert.match(run.stderr, /\/no-content answered 204/);
+  assert.doesNotMatch(run.stderr, /is the app running/);
 });
 
 test('browser check runner reports the defects fixture with exit 1 and its breakpoint', { skip: noBrowser }, async () => {
