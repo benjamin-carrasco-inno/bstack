@@ -387,19 +387,20 @@ const LOADER_VARIABLES = new RegExp(`^(${[
   'PLAYWRIGHT|PUPPETEER|CHROME|EDGE|GCONV|PKG_CONFIG|QT|GST|GIO|GTK)\\w*', '\\w*(_BROWSERS?|_PROXY|_EDITOR|_PAGER|ASKPASS|_(PLUGIN|LIBRARY|MODULE|LIB|CERT|CA)S?_(DIR|FILE|PATH))',
 ].join('|')})$`, 'i');
 const APP_DATA_VARIABLE = /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*_(DIR|DB|FILE|PATH)$/;
-const PATH_VALUE = /[\\/]|^\.\.?$/;
+const ABSOLUTE_VALUE = { posix: /^(~$|~\/|\/(?!\/)|[a-z]:\/)/i, powershell: /^(~$|~[\\/]|[a-z]:[\\/])/i };
+const PARENT_SEGMENT = /(^|[\\/])\.\.([\\/]|$)/;
 const PATH_LIST = /[;:]/;
-const TILDE_PREFIX = /^~(?![\\/]|$)/;
 
 function ownedPath(value, at, ctx) {
-  if (value === null || !PATH_VALUE.test(value) || TILDE_PREFIX.test(value) || PATH_LIST.test(value.replace(/^[a-z]:/i, ''))) return false;
+  if (value === null || !ABSOLUTE_VALUE[at.dialect]?.test(value) || PARENT_SEGMENT.test(value) || (at.dialect === 'posix' && value.includes('\\'))) return false;
+  if (PATH_LIST.test(value.replace(/^[a-z]:/i, ''))) return false;
   const target = writeTarget(value, knownCwd(at), at.dialect, ctx.host, false);
   return Boolean(target) && owns(ctx.root, target, ctx.host);
 }
 
 const allowedVariable = (name, value, at, ctx) => safeVariable(name) || (APP_DATA_VARIABLE.test(name) && !LOADER_VARIABLES.test(name) && ownedPath(value, at, ctx));
 const refuseVariable = (ctx, name) => refuse(ctx.agent, `setting ${name}, which can change what a command runs or where it writes`,
-  `Set only ${[...SAFE_VARIABLES].join(', ')}, or point an app data variable (a name ending in _DIR, _DB, _FILE or _PATH, such as DATA_DIR) at a literal path inside your worktree or the temp dir.`);
+  `Set only ${[...SAFE_VARIABLES].join(', ')}, or point an app data variable (a name ending in _DIR, _DB, _FILE or _PATH, such as DATA_DIR) at an absolute literal path without .. inside your worktree or the temp dir.`);
 
 function environmentRule(c, ctx, at) {
   const exported = Object.keys(c.env).filter(name => c.cmd !== '' || /[A-Z]/.test(name) || inEnvironment(name, ctx.host));
