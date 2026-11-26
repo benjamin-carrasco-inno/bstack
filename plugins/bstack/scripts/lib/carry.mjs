@@ -15,14 +15,6 @@ export function mergeInChain(commits, head) {
   return chain;
 }
 
-// The PR commits on head's first-parent line, head first: the order the PR was built in.
-export function firstParentLine(commits, head) {
-  const bySha = new Map(commits.map(c => [c.sha, c]));
-  const line = [head];
-  for (let c = bySha.get(head); c && bySha.has(c.parents[0]) && !line.includes(c.parents[0]); c = bySha.get(c.parents[0])) line.push(c.parents[0]);
-  return line;
-}
-
 // The PR's commits, read from GitHub. Throws when the list cannot be read or may be cut off.
 export function prCommits(api, repo, number) {
   if (!repo) throw new Error('the repository of the PR is unknown');

@@ -104,7 +104,7 @@ test('internal tier 2 does not let a merge-in of main stand in for a fix of bloc
   assert.equal(merge(github({ policy: internal, commits: fixedAfterMerge, comments: findings })), null);
 });
 
-test('internal tier 2 judges the latest commit with a result, not the latest result in time', () => {
+test('internal tier 2 does not let a later clean result on an older commit hide blocking findings', () => {
   const headBlockedThenOldClean = [verdict(HEAD, 1), interrogate(HEAD, 2, 2), interrogate(EARLIER, 3)];
   const mergedOnly = [FIRST, EARLIER, [HEAD, EARLIER, MAIN_TIP]];
   for (const commits of [[FIRST, EARLIER, HEAD], mergedOnly]) {
@@ -113,7 +113,7 @@ test('internal tier 2 judges the latest commit with a result, not the latest res
   const fix = [FIRST, EARLIER, HEAD];
   assert.equal(merge(github({ policy: internal, commits: fix, comments: [interrogate(EARLIER, 1, 2), interrogate(FIRST, 2), verdict(HEAD, 3)] })), null);
   const sideCommit = [FIRST, [EARLIER, FIRST], [HEAD, FIRST, EARLIER]];
-  assert.match(merge(github({ policy: internal, commits: sideCommit, comments: [interrogate(EARLIER, 1), verdict(HEAD, 2)] })) ?? '', /run bstack:interrogate/);
+  assert.equal(merge(github({ policy: internal, commits: sideCommit, comments: [interrogate(EARLIER, 1), verdict(HEAD, 2)] })), null);
   assert.equal(merge(github({ policy: internal, commits: fix, comments: [interrogate(FIRST, 1, 2), interrogate(EARLIER, 2), verdict(HEAD, 3)] })), null);
   assert.equal(merge(github({ policy: internal, commits: fix, comments: [interrogate(EARLIER, 1), interrogate(FIRST, 2, 2), verdict(HEAD, 3)] })), null);
 });

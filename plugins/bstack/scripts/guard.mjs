@@ -15,7 +15,7 @@ import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, ti
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
-import { firstParentLine, mergeInChain, prCommits, prMergeInChain, sameChange } from './lib/carry.mjs';
+import { mergeInChain, prCommits, prMergeInChain, sameChange } from './lib/carry.mjs';
 import { policyLines, readBasePolicy } from './lib/base-policy.mjs';
 import { EXPOSURE, RISK_PATHS, exposureOf, gatePlan, ghFileReader, riskTier, tierZeroDocs } from './risk-tier.mjs';
 
@@ -1097,9 +1097,9 @@ function mergeGate(args, cwd, deps, c, line) {
   return postCarried(pr, risk, [verdict], cwd, deps);
 }
 
-// Internal exposure: the result on the latest judged commit of head's first-parent line counts, newest
-// first on that commit. Blocking findings need a later commit that is not a merge-in of the base, and
-// a verdict judged after them.
+// Internal exposure: a result on any commit of the PR counts. A blocking result stays open until a
+// later clean result on the head, or until a PR commit outside the merge-in chain of the head follows
+// it and a verdict is posted after it. A blocking result on a commit not in the PR stays open.
 function internalInterrogate(pr, verdict, why, { cwd, deps, repo }) {
   const head = pr.headRefOid;
   const results = (pr.comments ?? []).filter(c => shaOf('interrogate', c.body));
@@ -1108,17 +1108,18 @@ function internalInterrogate(pr, verdict, why, { cwd, deps, repo }) {
     try { commits = prCommits(args => deps.gh(cwd, ['api', ...args]), repo, pr.number); }
     catch (e) { return `bstack could not read the commits of ${pr.url} (${String(e.message ?? e).split('\n')[0]}). Retry the merge; the gate fails closed.`; }
   }
-  const line = firstParentLine(commits, head);
-  const place = c => line.indexOf(shaOf('interrogate', c.body));
-  const newest = results.filter(c => place(c) >= 0).sort((a, b) => place(a) - place(b) || timeOf(b) - timeOf(a))[0];
-  if (!newest) return `Tier 2${why}: run bstack:interrogate on head ${head.slice(0, 7)} before merging, and get the user's OK if a revert cannot undo it.`;
-  const judgedOn = shaOf('interrogate', newest.body);
-  const { blocking } = latestFor('interrogate', [newest], judgedOn);
-  if (!blocking) return null;
-  const verdictAt = Math.max(...pr.comments.filter(c => shaOf('verdict', c.body) === verdict.from).map(timeOf));
-  const fixedSince = !mergeInChain(commits, head).includes(judgedOn);
-  if (fixedSince && verdictAt > timeOf(newest)) return null;
-  return `Interrogate found ${blocking} blocking finding(s) on ${judgedOn.slice(0, 7)}. Fix each as a failing test that now passes, push, and run bstack:reviewer on the new head.`;
+  const inPr = new Set([head, ...commits.map(c => c.sha)]);
+  const chain = mergeInChain(commits, head);
+  const judgedOn = c => shaOf('interrogate', c.body);
+  const blockingOf = c => latestFor('interrogate', [c], judgedOn(c)).blocking;
+  const lastAt = cs => Math.max(...cs.map(timeOf));
+  const cleanOnHeadAt = lastAt(results.filter(c => judgedOn(c) === head && !blockingOf(c)));
+  const verdictAt = lastAt(pr.comments.filter(c => shaOf('verdict', c.body) === verdict.from));
+  const fixed = c => inPr.has(judgedOn(c)) && !chain.includes(judgedOn(c)) && verdictAt > timeOf(c);
+  const open = results.filter(c => blockingOf(c) && !(cleanOnHeadAt > timeOf(c)) && !fixed(c)).sort((a, b) => timeOf(b) - timeOf(a))[0];
+  if (open) return `Interrogate found ${blockingOf(open)} blocking finding(s) on ${judgedOn(open).slice(0, 7)}. Fix each as a failing test that now passes, push, and run bstack:reviewer on the new head.`;
+  if (!results.some(c => inPr.has(judgedOn(c)))) return `Tier 2${why}: run bstack:interrogate on head ${head.slice(0, 7)} before merging, and get the user's OK if a revert cannot undo it.`;
+  return null;
 }
 
 // --- results judged on an older head, carried across merge-ins of the base branch -------------------
