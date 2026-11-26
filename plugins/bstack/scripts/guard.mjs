@@ -670,14 +670,14 @@ function nodeProblem(args) {
 
 const PAGE_PATH = /^\/(?![\\/])[^\s\\]*$/;
 
-const anyValue = () => true;
+const CREDENTIAL = /^[\w.%+=:,~/-][\w.%+=:,~/@ -]*$/;
 const BROWSER_CHECK_OPTIONS = {
-  '--widths': anyValue,
-  '--timeout': anyValue,
+  '--widths': value => /^\d+(,\d+)*$/.test(value),
+  '--timeout': value => /^\d+$/.test(value),
   '--login': value => PAGE_PATH.test(value),
-  '--user': anyValue,
-  '--password': anyValue,
-  '--cookie': value => /^[^=;\s]+=[^;]*$/.test(value),
+  '--user': value => CREDENTIAL.test(value),
+  '--password': value => CREDENTIAL.test(value),
+  '--cookie': value => /^[\w.%+:~/-]+=[\w.%+=:,~/-]*$/.test(value),
 };
 
 const SPLIT_BY_POWERSHELL_5 = /"|\\$/;
@@ -694,7 +694,7 @@ function browserCheckRule(c, ctx) {
     if (valid) {
       const value = c.args[++i];
       if (unreadable(i)) return refuse(ctx.agent, `the browser check with ${a} and a value the guard cannot read`, 'Write each argument literally.');
-      if (value === undefined || !valid(value)) return refuse(ctx.agent, `the browser check with ${a} ${value ?? 'and no value'}`, 'Pass --login a path on the origin such as /login, and --cookie one <name>=<value>.');
+      if (value === undefined || !valid(value)) return refuse(ctx.agent, `the browser check with ${a} ${value ?? 'and no value'}`, 'Pass --login a path on the origin such as /login, --widths and --timeout numbers, --cookie one <name>=<value>, and --user and --password made of letters, digits, spaces and ._%+=:,~/@- (not starting with @ or a space).');
     } else if (a.startsWith('-')) return refuse(ctx.agent, `the browser check with ${a}`, 'Let it find Chrome or Edge itself.');
     else operands.push(a);
   }

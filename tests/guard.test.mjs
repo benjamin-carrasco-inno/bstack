@@ -978,8 +978,13 @@ test('#186: no-authoring agents sign the browser check in with literal values an
       `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --cookie 's=x\\" --browser C:\\Temp\\evil.exe'`,
       `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user 'a b\\' --password 'c --browser C:\\Temp\\evil.exe'`,
       `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --widths '1280\\" --browser C:\\Temp\\evil.exe'`,
+      ...['--user @a --password b', '--user a --password @a', '--widths @a', '--timeout @a', '--cookie @a', '--widths 1280x', '--timeout 5s']
+        .map(opts => `$a = 'x','--browser','C:\\Temp\\evil.exe'; ${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user u --password p ${opts}`),
+      `${WINDOWS_CHECK} http://127.0.0.1:8130 '/a"' --login /login --user 'x --browser C:\\Temp\\evil.exe' --password b`,
     ]) refused(ps(command), WINDOWS_PLUGIN);
     for (const command of [
+      `${LINUX_CHECK} http://localhost:8130 /admin --login /login --user * --password b`,
+      `${LINUX_CHECK} http://localhost:8130 /admin --login /login --user a --password 'b[c]'`,
       `${LINUX_CHECK} http://localhost:8130 /admin --login /login --user "$U" --password b`,
       `${LINUX_CHECK} http://localhost:8130 /admin --login /login --user a --password $(cat pw)`,
       `${LINUX_CHECK} http://localhost:8130 /admin --cookie $C`,
