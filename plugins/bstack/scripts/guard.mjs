@@ -422,9 +422,12 @@ function ownedPath(value, at, ctx) {
   return Boolean(target) && owns(ctx.root, target, ctx.host);
 }
 
-const allowedVariable = (name, value, at, ctx) => safeVariable(name) || (APP_DATA_VARIABLE.test(name) && !LOADER_VARIABLES.test(name) && ownedPath(value, at, ctx));
+const LISTEN_PORT = /^[1-9]\d{3,4}$/;
+const listenPort = (value, at, ctx) => LISTEN_PORT.test(value ?? '') && Number(value) >= 1024 && Number(value) <= 65535 && inWorktree(at, ctx);
+const allowedVariable = (name, value, at, ctx) => safeVariable(name) || (name.toUpperCase() === 'PORT' && listenPort(value, at, ctx))
+  || (APP_DATA_VARIABLE.test(name) && !LOADER_VARIABLES.test(name) && ownedPath(value, at, ctx));
 const refuseVariable = (ctx, name) => refuse(ctx.agent, `setting ${name}, which can change what a command runs or where it writes`,
-  `Set only ${[...SAFE_VARIABLES].join(', ')}, or point an app data variable (a name ending in _DIR, _DB, _FILE or _PATH, such as DATA_DIR) at an absolute literal path without .. inside your worktree or the temp dir.`);
+  `Set only ${[...SAFE_VARIABLES].join(', ')}, PORT to a literal number from 1024 to 65535 from your worktree, or point an app data variable (a name ending in _DIR, _DB, _FILE or _PATH, such as DATA_DIR) at an absolute literal path without .. inside your worktree or the temp dir.`);
 
 function environmentRule(c, ctx, at) {
   const exported = Object.keys(c.env).filter(name => c.cmd !== '' || /[A-Z]/.test(name) || inEnvironment(name, ctx.host));
@@ -537,12 +540,13 @@ function dotnetRule(text, agent) {
 
 const LITERAL_STRING = /^(?:'([^']*)'|"([^"$`]*)")$/;
 const literalString = text => { const m = LITERAL_STRING.exec(text); return m ? m[1] ?? m[2] : null; };
+const literalNumber = text => (/^\d+$/.test(text) ? text : null);
 
 function expressionRule(c, ctx) {
   const set = POWERSHELL_ASSIGNMENT.exec(c.text);
   if (set) {
     const variable = /^env:(\w+)$/i.exec(set[1]);
-    if (variable && !allowedVariable(variable[1], literalString(set[2].trim()), c, ctx)) return refuseVariable(ctx, `$env:${variable[1]}`);
+    if (variable && !allowedVariable(variable[1], literalString(set[2].trim()) ?? literalNumber(set[2].trim()), c, ctx)) return refuseVariable(ctx, `$env:${variable[1]}`);
     if (DEFAULT_PARAMETERS.test(set[1])) return refuse(ctx.agent, `setting $${set[1]}, which changes where cmdlets write`);
     const value = set[2].trim();
     if (!value || EXPRESSION_START.test(value)) return value ? expressionRule({ ...c, text: value }, ctx) : null;
@@ -666,13 +670,28 @@ function nodeProblem(args) {
 
 const PAGE_PATH = /^\/(?![\\/])[^\s\\]*$/;
 
+const anyValue = () => true;
+const BROWSER_CHECK_OPTIONS = {
+  '--widths': anyValue,
+  '--timeout': anyValue,
+  '--login': value => PAGE_PATH.test(value),
+  '--user': anyValue,
+  '--password': anyValue,
+  '--cookie': value => /^[^=;\s]+=[^;]*$/.test(value),
+};
+
 function browserCheckRule(c, ctx) {
   const operands = [];
+  const unreadable = i => c.expressions?.has(i) || c.expands?.has(i);
   for (let i = 1; i < c.args.length; i++) {
     const a = c.args[i];
-    if (c.expressions?.has(i)) return refuse(ctx.agent, 'the browser check with an argument the guard cannot read', 'Write each argument literally.');
-    if (/^--(widths|timeout)$/.test(a)) i++;
-    else if (a.startsWith('-')) return refuse(ctx.agent, `the browser check with ${a}`, 'Let it find Chrome or Edge itself.');
+    if (unreadable(i)) return refuse(ctx.agent, 'the browser check with an argument the guard cannot read', 'Write each argument literally.');
+    const valid = Object.hasOwn(BROWSER_CHECK_OPTIONS, a) && BROWSER_CHECK_OPTIONS[a];
+    if (valid) {
+      const value = c.args[++i];
+      if (unreadable(i)) return refuse(ctx.agent, `the browser check with ${a} and a value the guard cannot read`, 'Write each argument literally.');
+      if (value === undefined || !valid(value)) return refuse(ctx.agent, `the browser check with ${a} ${value ?? 'and no value'}`, 'Pass --login a path on the origin such as /login, and --cookie one <name>=<value>.');
+    } else if (a.startsWith('-')) return refuse(ctx.agent, `the browser check with ${a}`, 'Let it find Chrome or Edge itself.');
     else operands.push(a);
   }
   const [origin = '', ...pages] = operands;

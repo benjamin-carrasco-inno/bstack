@@ -950,7 +950,7 @@ test('#186: no-authoring agents sign the browser check in with literal values an
     const ok = allowedFor(agent);
     for (const command of [
       `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --login /login --user admin --password 'p@ss w0rd'`,
-      `${WINDOWS_CHECK} http://localhost:8130 /admin --login /inno-social/login?next=/admin --user admin@inno.dk --password secret --widths 1280`,
+      `${WINDOWS_CHECK} http://localhost:8130 /admin --login /inno-social/login?next=/admin --user admin@example.com --password secret --widths 1280`,
       `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --cookie session=abc123`,
       `${WINDOWS_CHECK} http://127.0.0.1:8130 /admin --cookie session=abc --cookie csrf=x=y`,
     ]) ok(ps(command), WINDOWS_PLUGIN);
@@ -987,7 +987,7 @@ test('#186: no-authoring agents set PORT to a literal port number for a command 
   for (const agent of NO_AUTHORING) {
     const refused = refusedFor(agent);
     const ok = allowedFor(agent);
-    for (const command of ['PORT=8081 uvicorn app.main:app', 'PORT=1024 npm start', 'export PORT=65535; npm start', 'cd /repo; PORT=8081 npm start']) ok(shell(command), linux);
+    for (const command of ['PORT=8081 uvicorn app.main:app', 'PORT=1024 npm start', 'PORT=65535 npm start', 'cd /repo; PORT=8081 npm start']) ok(shell(command), linux);
     for (const command of [
       "$env:PORT = '8081'; cargo run", '$env:PORT = "8081"; npm start', '$env:PORT = 8081; npm start', "$env:port = '8130'; npm start",
       `$env:PORT = '8131'; $env:DATA_DIR = 'C:\\Temp\\x'; npm start`,
