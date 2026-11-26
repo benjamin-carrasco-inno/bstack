@@ -33,7 +33,7 @@ When several fit, the riskiest wins. Every route that changes code ends in ship,
 
 ## Risk tier
 
-Computed, not chosen. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/risk-tier.mjs"` after the first diff (or `--pr <n>`). The merge guard recomputes the tier from the PR diff, so a label in the PR body changes nothing. You may treat a change as riskier than the script says, never as safer.
+Computed, not chosen. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/risk-tier.mjs"` after the first diff (or `--pr <n>`); it also prints what the gate requires. The guard recomputes it from the PR diff. Treat a change as riskier than the script says, never as safer.
 
 - **0** docs only: CI.
 - **1** code, config, CI, agent instructions: CI, your own full diff read, and a `bstack:reviewer` verdict.
@@ -45,19 +45,19 @@ A repo can raise paths to tier 2 with globs in the base branch's `.github/risk-p
 
 Weekly quota is real. Spend where risk is.
 - Main session: the user's choice (default Opus, medium). High for tier 2 work; never xhigh or max by default.
-- Builder: the ticket's `Expected tier` sets the worker's `model`. Sonnet for tier 0-1 in an `internal` repo (`.github/bstack-exposure.txt`, missing is `external`), else the session's model, also for `risk-paths.txt` paths. A higher computed tier mid-build changes nothing; the gate decides.
+- Builder: the ticket's `Expected tier` sets the worker's `model`. Sonnet for tier 0-1 in an [internal](../interrogate/SKILL.md#exposure) repo, else the session's model, also for `risk-paths.txt` paths. A higher computed tier mid-build changes nothing; the gate decides.
 - Mechanical work (polling CI, bulk renames): a Haiku subagent.
 - Fable for implementation only when the user names it, or after Opus failed twice on a task.
 
 ## Subagents
 
 - A scoped change goes to a `bstack:worker`, with the goal, the files, and the check that proves it.
-- Fix rounds stay with the builder, who knows why the code is as it is: fix your own change, continue the worker that built one (SendMessage). A fresh worker gets the PR and findings only when the builder is gone.
+- Fix rounds stay with the builder: fix your own change, continue the worker that built one (SendMessage), a fresh one only when it is gone.
 - Big read-only searches go to Explore. Parallel work in one repo uses one worktree per agent.
 
 ## Gates
 
-Every playbook step names the evidence that opens it. Inconclusive evidence, or evidence from the wrong surface (a unit test where the user hit an HTTP route), keeps the gate closed. A lane that cannot run (no test runner, the app will not start) is a gap to report and fix, never a pass.
+Every playbook step names the evidence that opens it. Inconclusive evidence, or evidence from the wrong surface (a unit test where the user hit an HTTP route), keeps the gate closed. A lane that cannot run is a gap to fix, never a pass.
 
 ## Principles
 

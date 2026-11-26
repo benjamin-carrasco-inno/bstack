@@ -3,8 +3,8 @@
 //   0  docs only                      -> CI
 //   1  code, config, CI, instructions -> CI + reviewer verdict
 //   2  data, schema, side effects, auth, concurrency, importers, weakened checks -> + interrogate
-// Usage: node risk-tier.mjs [--pr <n>] [--base <ref>]   (prints JSON: { tier, reasons })
-// .github/risk-paths.txt comes from the base: the PR's base branch through gh, or <ref> through git.
+// Usage: node risk-tier.mjs [--pr <n>] [--base <ref>]   (prints JSON: { tier, reasons, exposure, flow, steps })
+// The policy files come from the base: the PR's base branch through gh, or <ref> through git.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,8 +27,10 @@ const STYLESHEET = /\.(css|scss|sass|less)$/i;
 
 const LITERAL_ITEM = /^\s*(["'`][^"'`]*["'`]|-?\d[\d_.]*)?\s*,?\s*$/;
 export const RISK_PATHS = '.github/risk-paths.txt';
+export const EXPOSURE = '.github/bstack-exposure.txt';
+const POLICY_FILES = [RISK_PATHS, EXPOSURE];
 const PATH_RULES = [
-  [/^\.github\/risk-paths\.txt$/, 'risk policy file'],
+  [/^\.github\/(risk-paths|bstack-exposure)\.txt$/, 'risk policy file'],
   [SCHEMA_FILE, 'schema or migration file'],
   [/(^|\/)n8n\//i, 'n8n flow code (external consumer)'],
   [/(auth|login|session|permission|password|secret|crypt|oauth|token)[^/]*$/i, 'auth or secrets code', (q, f) => STYLESHEET.test(q) || (runnableTest(q) && f.removed.every(l => LITERAL_ITEM.test(l)))],
@@ -190,6 +192,26 @@ export const tierZeroDocs = extraPaths => {
   return p => isDocs(p) && !listed(p);
 };
 
+export const exposureOf = text => (policyLines(text).join('\n') === 'internal' ? 'internal' : 'external');
+
+const OWNER_OK = 'the owner comments bstack-user-ok sha=<head>';
+const STEPS = {
+  0: ['CI green'],
+  1: ['CI green', 'reviewer verdict for the head'],
+  external: ['CI green', 'reviewer verdict for the head', 'interrogate for the head without blocking findings (after 3 blocking rounds: the owner OK)'],
+  internal: ['CI green', 'reviewer verdict for the head', 'interrogate for a commit of this PR; blocking findings only on an earlier commit, judged before the verdict'],
+};
+
+// A policy file change or a path in risk-paths.txt keeps the external flow.
+export function gatePlan(diff, tier, { extraPaths = [], exposure = 'external' } = {}) {
+  const paths = parseDiff(diff).flatMap(f => [f.path, f.oldPath]).filter(Boolean).map(p => p.replace(/\\/g, '/'));
+  const policyChange = tier === 2 && paths.some(p => POLICY_FILES.includes(p));
+  const listed = riskPathsMatcher(extraPaths);
+  const flow = tier === 2 && exposure === 'internal' && !policyChange && !paths.some(listed) ? 'internal' : 'external';
+  const steps = tier === 2 ? [...STEPS[flow], ...(policyChange ? [OWNER_OK] : [])] : STEPS[tier];
+  return { exposure, flow, policyChange, steps };
+}
+
 const readOrNull =(readFile, p) => { try { return readFile?.(p) ?? null; } catch { return null; } };
 
 export function riskTier(diff, { extraPaths = [], readFile } = {}) {
@@ -243,24 +265,31 @@ export const ghFileReader = (gh, repo, sha) => p =>
 function main() {
   const args = process.argv.slice(2);
   const opt = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
-  const run = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', maxBuffer: 64 << 20 });
+  const run = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
   let diff;
   let policy;
+  let exposure = '';
   let readFile = p => fs.readFileSync(path.join(run('git', ['rev-parse', '--show-toplevel']).trim(), p), 'utf8');
   if (opt('--pr')) {
     diff = run('gh', ['pr', 'diff', opt('--pr')]);
     const pr = JSON.parse(run('gh', ['pr', 'view', opt('--pr'), '--json', 'url,headRefOid,baseRefName']));
     readFile = ghFileReader(a => run('gh', a), repoOfUrl(pr.url), pr.headRefOid);
     policy = readBasePolicy(a => run('gh', a), repoOfUrl(pr.url), pr.baseRefName, RISK_PATHS);
+    try { exposure = readBasePolicy(a => run('gh', a), repoOfUrl(pr.url), pr.baseRefName, EXPOSURE); } catch { exposure = ''; }
   } else {
     let base = opt('--base');
     if (!base) {
       try { base = run('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).trim(); } catch { base = 'origin/main'; }
     }
     diff = run('git', ['diff', '--no-color', `${base}...HEAD`]) + run('git', ['diff', '--no-color', 'HEAD']);
-    policy = run('git', ['ls-tree', '--name-only', base, RISK_PATHS]).trim() ? run('git', ['show', `${base}:${RISK_PATHS}`]) : '';
+    const atBase = file => (run('git', ['ls-tree', '--name-only', base, file]).trim() ? run('git', ['show', `${base}:${file}`]) : '');
+    policy = atBase(RISK_PATHS);
+    exposure = atBase(EXPOSURE);
   }
-  console.log(JSON.stringify(riskTier(diff, { extraPaths: policyLines(policy), readFile }), null, 2));
+  const extraPaths = policyLines(policy);
+  const risk = riskTier(diff, { extraPaths, readFile });
+  const plan = gatePlan(diff, risk.tier, { extraPaths, exposure: exposureOf(exposure) });
+  console.log(JSON.stringify({ ...risk, exposure: plan.exposure, flow: plan.flow, steps: plan.steps }, null, 2));
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

@@ -5,7 +5,7 @@ description: Sort incoming GitHub issues (bug reports and requests) into work an
 
 # Triage
 
-**Goal:** every open issue is either ready to build with criteria a reviewer can check, waiting on someone named, or closed with a reason. An agent can then take work from the queue without asking.
+**Goal:** every open issue is either ready to build with criteria a reviewer can check, waiting on someone named, or closed with a reason.
 
 ## States
 
@@ -33,7 +33,7 @@ Issues labelled `plan:*` belong to a map or spec (`bstack:plan`) and are not tri
 
 ## Talking to people
 
-Labels, briefs and links are part of the work, and so is closing an issue because the work it asked for is merged. Anything that asks a reporter something or closes their request for another reason (duplicate, already built, wontfix) is a message to a person: draft them all, show them to the user once, and post only after the OK. The user's own issues and issues an agent created need no OK. Never mention or assign someone else without the OK.
+Anything that asks a reporter something or closes their request for another reason (duplicate, already built, wontfix) is a message to a person: draft them all, show them to the user once, and post only after the OK. The user's own issues and issues an agent created need no OK. Never mention or assign someone else without the OK.
 
 ## Done
 
