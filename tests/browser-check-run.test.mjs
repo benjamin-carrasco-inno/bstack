@@ -92,7 +92,21 @@ const routes = {
   '/xfo-deny': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'x-frame-options': 'DENY' }).end(fixture('clean.html')),
   '/csp-frame-ancestors-none': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'content-security-policy': "frame-ancestors 'none'" }).end(fixture('clean.html')),
   '/query': (req, res) => html(fixture(req.url.endsWith('?v=bad') ? 'defects.html' : 'clean.html'))(req, res),
+  '/auth/login': signIn,
+  '/auth/account': (req, res) => {
+    if (!/(^|; )session=ok(;|$)/.test(req.headers.cookie ?? '')) return res.writeHead(302, { location: '/auth/login' }).end();
+    res.writeHead(200, { 'content-type': 'text/html', 'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'" }).end(fixture('defects.html'));
+  },
 };
+const LOGIN_FORM = '<!doctype html><html lang="en"><title>Sign in</title><form method="post"><label>User <input name="user" type="text"></label><label>Password <input name="password" type="password"></label><button>Sign in</button></form></html>';
+async function signIn(req, res) {
+  if (req.method !== 'POST') return html(LOGIN_FORM)(req, res);
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  const form = new URLSearchParams(body);
+  if (form.get('user') !== 'demo' || form.get('password') !== 'secret') return html(LOGIN_FORM)(req, res);
+  res.writeHead(303, { location: '/auth/account', 'set-cookie': 'session=ok; HttpOnly; Path=/' }).end();
+}
 const route = (req, res) => (routes[new URL(req.url, 'http://x').pathname] ?? ((_, r) => r.writeHead(404).end('not found')))(req, res);
 const server = http.createServer(route);
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -225,20 +239,49 @@ test('browser check runner exits 2 and names where it landed when the start page
   for (const args of [['/settings'], ['/clean', '/settings']]) {
     const run = await runAsync([origin, ...args]);
     assert.equal(run.status, 2, `${args.join(' ')}: ${run.stdout}`);
-    assert.match(run.stderr, /\/settings redirected to \/login; .*no session/, args.join(' '));
+    assert.match(run.stderr, /\/settings redirected to \/login; .*--login .*--cookie/, args.join(' '));
   }
 });
 
-test('browser check runner exits 2 without a stack trace when a page refuses framing, and removes its profile', { skip: noBrowser }, async () => {
-  for (const refusing of ['/xfo-deny', '/csp-frame-ancestors-none']) {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
-    const run = await runAsync([origin, '/clean', refusing], { TMPDIR: tmp, TEMP: tmp, TMP: tmp });
-    const left = fs.readdirSync(tmp).filter(name => name.startsWith('browser-check-'));
-    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
-    assert.equal(run.status, 2, `${refusing}: ${run.stdout}${run.stderr}`);
-    assert.ok(run.stderr.includes(`${refusing} refuses framing (X-Frame-Options or CSP frame-ancestors)`), run.stderr);
-    assert.doesNotMatch(run.stderr, /TypeError|\n\s+at /, refusing);
-    assert.deepEqual(left, [], refusing);
+test('browser check runner checks pages that refuse framing, since it loads each page top-level', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/clean', '/xfo-deny', '/csp-frame-ancestors-none']);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { findings: [], breakpoints: [] });
+});
+
+const assertSignedInReport = run => {
+  assert.equal(run.status, 1, run.stdout + run.stderr);
+  const report = JSON.parse(run.stdout);
+  assert.equal(report.findings.length, 5);
+  assert.ok(report.findings.every(f => f.path === '/auth/account'), run.stdout);
+  assert.deepEqual(report.breakpoints.map(({ path: p, width }) => [p, width]), [['/auth/account', 640]]);
+};
+
+test('browser check runner signs in through a login form and checks a page that denies framing', { skip: noBrowser }, async () => {
+  assertSignedInReport(await runAsync([origin, '/auth/account', '--login', '/auth/login', '--user', 'demo', '--password', 'secret']));
+});
+
+test('browser check runner given a session cookie checks a page behind login', { skip: noBrowser }, async () => {
+  assertSignedInReport(await runAsync([origin, '/auth/account', '--cookie', 'session=ok']));
+});
+
+test('browser check runner without a session reports the redirect to login, not a pass', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/auth/account']);
+  assert.equal(run.status, 2, run.stdout);
+  assert.match(run.stderr, /\/auth\/account redirected to \/auth\/login; .*--login/);
+});
+
+test('browser check runner exits 2 when the sign-in does not leave the login page', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/auth/account', '--login', '/auth/login', '--user', 'demo', '--password', 'wrong']);
+  assert.equal(run.status, 2, run.stdout);
+  assert.match(run.stderr, /sign-in at \/auth\/login stayed on \/auth\/login/);
+});
+
+test('browser check runner rejects --login without --user and --password, and a cookie without a name', () => {
+  for (const args of [['--login', '/auth/login'], ['--login', '/auth/login', '--user', 'demo'], ['--cookie', 'novalue']]) {
+    const run = spawnSync(process.execPath, [runner, 'http://127.0.0.1:9', ...args], { encoding: 'utf8' });
+    assert.equal(run.status, 2, args.join(' '));
+    assert.match(run.stderr, /usage: node browser-check-run\.mjs/, args.join(' '));
   }
 });
 
