@@ -941,11 +941,23 @@ test('no-authoring agents point an app variable at a literal path in their workt
     const ok = allowedFor(agent);
     for (const command of [
       'DATA_DIR=/tmp/fp-review uvicorn app.main:app --port 8130', 'DATA_DIR=/repo/.tmpdata uvicorn app.main:app --port 8130',
-      'DATA_DIR=./tmpdata python -m uvicorn app.main:app --port 8130', 'env DATA_DIR=/tmp/x NODE_ENV=test npm start',
+      'DATA_DIR=/tmp/review uvicorn app.main:app', 'env DATA_DIR=/tmp/x NODE_ENV=test npm start',
     ]) ok(shell(command), linux);
     for (const command of [
       "$env:DATA_DIR='C:\\Temp\\fp-review'; uvicorn app.main:app --port 8130", '$env:DATA_DIR = "C:/repo/tmpdata"; python -m uvicorn app.main:app --port 8130',
+      "$env:DATA_DIR = 'C:\\Temp\\review'; uvicorn app.main:app",
     ]) ok(ps(command));
+
+    for (const command of [
+      'DATA_DIR=./tmpdata uvicorn app.main:app', 'DATA_DIR=tmp/data uvicorn app.main:app', 'DATA_DIR=/tmp/x/../y uvicorn app.main:app',
+      'DATA_DIR=/tmp/\\../checkout/data uvicorn app.main:app', 'DATA_DIR=/tmp/x/..\\/..\\/checkout/data uvicorn app.main:app',
+      'DATA_DIR=/repo/\\../checkout/data uvicorn app.main:app', 'DATA_DIR=//tmp/x uvicorn app.main:app',
+    ]) refused(shell(command), linux);
+    for (const command of [
+      "cd C:\\repo\\a\\b\\c; $env:DATA_DIR = '..\\..\\x'; cd C:\\repo; uvicorn app.main:app", "$env:DATA_DIR = 'data'; uvicorn app.main:app",
+      "$env:DATA_DIR = 'C:\\Temp\\x\\..\\y'; uvicorn app.main:app", "$env:DATA_DIR = '/Temp/x'; uvicorn app.main:app", "$env:DATA_DIR = 'C:Temp\\x'; uvicorn app.main:app",
+      "$env:DATA_DIR = '\\\\server\\share\\x'; uvicorn app.main:app",
+    ]) refused(ps(command));
 
     for (const command of [
       'DATA_DIR=/checkout/data uvicorn app.main:app', 'DATA_DIR=prod uvicorn app.main:app', 'DATA_DIR=$HOME/x uvicorn app.main:app',
