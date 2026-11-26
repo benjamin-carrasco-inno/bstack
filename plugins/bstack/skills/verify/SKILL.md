@@ -15,8 +15,8 @@ description: Run the app and prove behaviour on the real surface. Start it safel
 
 ## Find the surface
 
-- HTTP apps: list the routes from the framework, for example FastAPI's `/openapi.json`, or the router definitions in source (axum `Router::route`, Express `app.get`).
-- UI: browser automation when available. Otherwise fetch the page and call the API requests it makes.
+- HTTP apps: list the routes (FastAPI's `/openapi.json`, or the router in source).
+- UI: browser automation, else fetch the page and call the APIs it uses.
 - CLI and jobs: run them with fixture input.
 - MCP endpoints: list the tools and call the read-only ones.
 
@@ -30,7 +30,7 @@ description: Run the app and prove behaviour on the real surface. Start it safel
 
 ## UI changes
 
-When the diff touches HTML, CSS, templates or client JS, run [browser-check.js](browser-check.js) on each changed page in browser automation: on a same-origin page of the running app, evaluate the file's text followed by `({ paths: ['/changed', '/other'] })`; `widths` overrides 375, 768 and 1280. Without browser tools: `node "${CLAUDE_PLUGIN_ROOT}/skills/verify/browser-check-run.mjs" <origin> /changed /other` (Node 22, local Chrome or Edge). It returns JSON:
+When the diff touches HTML, CSS, templates or client JS, run `node "${CLAUDE_PLUGIN_ROOT}/skills/verify/browser-check-run.mjs" <origin> /changed /other` (Node 22, Chrome or Edge). It loads pages top-level. Behind a login add `--login /login --user <u> --password <p>` or `--cookie <name>=<value>`; seed data via its forms with `curl -F` on localhost. With only browser tools, evaluate [browser-check.js](browser-check.js) then `({ paths: ['/changed'] })` on a same-origin page. It returns JSON:
 - `findings`: overflow per width, duplicate ids, inputs without a label, `href="#"`, leftover template placeholders. One the change introduced is a FAIL.
 - `breakpoints`: each grid or flex-wrap switch from 320 to 1600 px with its narrowest column in ch. A report, not a gate.
 
