@@ -303,6 +303,54 @@ test('a verdict saved during an outage after a merge-in is posted and carried at
   assert.deepEqual(removed, ['f0']);
 });
 
+const savedOn = head => {
+  const saved = [];
+  const before = fakeGitHub({ head, commits: MERGED_ONCE.slice(0, 2), diffs: {}, comments: [] });
+  deliver(reviewedAt(), { gh: before.deps.gh, read: () => [], save: e => saved.push(e), now: () => '2026-11-25T10:00:00Z' });
+  assert.equal(saved[0]?.head ?? saved[0]?.sha, head);
+  return saved;
+};
+const withSaved = (github, saved) => {
+  const removed = [];
+  github.deps.pending = { list: () => saved.map((entry, i) => ({ file: `f${i}`, entry })), remove: file => removed.push(file) };
+  return removed;
+};
+
+test('a verdict saved for a head that then moved only by a merge of main is posted and carried', () => {
+  const saved = savedOn(JUDGED);
+  const github = fakeGitHub({ diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [] });
+  const removed = withSaved(github, saved);
+  assert.equal(merge(github), null);
+  assert.equal(github.posted[0].body, saved[0].body);
+  assert.ok(github.posted[1]?.body.includes(`- reviewer verdict PASS, judged on ${JUDGED}`), github.posted[1]?.body);
+  assert.deepEqual(removed, ['f0']);
+});
+
+test('a verdict saved for a head that a PR commit followed is removed without posting', () => {
+  const afterNonMerge = [...MERGED_ONCE.slice(0, 2), commit(EXTRA, JUDGED)];
+  const mergeAfterNonMerge = [...afterNonMerge, commit(MERGE, EXTRA, MAIN_TIP)];
+  for (const [head, commits] of [[EXTRA, afterNonMerge], [MERGE, mergeAfterNonMerge]]) {
+    const saved = savedOn(JUDGED);
+    const github = fakeGitHub({ head, commits, diffs: { [JUDGED]: JUDGED_CODE, [head]: MERGED_CODE }, comments: [] });
+    const removed = withSaved(github, saved);
+    assert.match(merge(github) ?? '', /no reviewer verdict/);
+    assert.equal(github.posted.length, 0);
+    assert.deepEqual(removed, ['f0']);
+  }
+});
+
+test('a saved verdict for an older head fails the gate closed and stays saved when it cannot be posted', () => {
+  const unposted = fakeGitHub({ postFails: true, diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [] });
+  const keptUnposted = withSaved(unposted, savedOn(JUDGED));
+  assert.match(merge(unposted) ?? '', /could not post the verdict it saved .*HTTP 502.*the gate fails closed/);
+  assert.deepEqual(keptUnposted, []);
+  const unreadable = fakeGitHub({ failApi: true, diffs: { [JUDGED]: JUDGED_CODE, [MERGE]: MERGED_CODE }, comments: [] });
+  const keptUnreadable = withSaved(unreadable, savedOn(JUDGED));
+  assert.match(merge(unreadable) ?? '', /could not read the commits of .* to post the verdict it saved for 2222222 \(HTTP 504: gateway timeout\)\. Retry the merge; the gate fails closed\./);
+  assert.equal(unreadable.posted.length, 0);
+  assert.deepEqual(keptUnreadable, []);
+});
+
 test('a verdict saved after a merge-in is dropped once the head moves again', () => {
   const saved = [];
   const before = fakeGitHub({ diffs: {}, comments: [] });
