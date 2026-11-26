@@ -2440,3 +2440,13 @@ test('no-authoring agents: a quoted write target with a parenthesis is a literal
     blocked(psAs("Remove-Item -LiteralPath 'C:\\checkout\\app\\(marketing)\\tmp.txt'"));
   }
 });
+test('#153: on a shared CARGO_TARGET_DIR, cargo builds go through the target lock', () => {
+  const shared = onHost({ platform: 'linux', env: { CARGO_TARGET_DIR: '/home/u/.cargo-target' }, tmpdir: () => '/tmp' });
+  for (const command of ['cargo test --workspace --locked', 'cargo +nightly clippy -- -D warnings', 'cd crates/a && cargo build', 'cargo.exe run -p app']) {
+    assert.match(decide(shell(command), shared) ?? '', /under the target lock: node ".*\/scripts\/cargo-lock\.mjs" cargo /, command);
+  }
+  assert.match(decide(shell('cargo test --workspace'), shared), /cargo-lock\.mjs" cargo test --workspace$/);
+  for (const command of ['cargo --version', 'cargo fmt --check', 'cargo check', 'node /p/scripts/cargo-lock.mjs cargo test']) allowed(shell(command), shared);
+  allowed(shell('cargo test'), onHost({ platform: 'linux', env: {}, tmpdir: () => '/tmp' }));
+  allowed(asAgent('bstack:reviewer')('cargo test'), onHost({ ...GIT_BASH_HOST, env: { CARGO_TARGET_DIR: 'C:/t' } }));
+});
