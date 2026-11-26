@@ -21,6 +21,8 @@ const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)test_[^/]+\.py$|_test\.
 const CODE = /\.(py|pyi|js|mjs|cjs|ts|tsx|jsx|rs|go|sql|sh|ps1|html|css|vue|svelte)$/i;
 export const isDocs = p => DOCS.test(p) && !NOT_DOCS.test(p) && !BUILD_TXT.test(p) && !COMMANDS.test(p);
 const runnableTest = p => TEST_PATH.test(p) && CODE.test(p);
+const UNSCANNED_TEST_LANGUAGE = /\.(java|kt|kts|scala|groovy|cs|fs|vb|rb|php|swift|m|mm|c|cc|cpp|cxx|ex|exs|erl|dart|lua|pl|r|jl|clj|hs)$/i;
+const testInSuite = p => runnableTest(p) || (TEST_PATH.test(p) && UNSCANNED_TEST_LANGUAGE.test(p));
 const FIXTURE = /(^|\/)(fixtures|__fixtures__|testdata)\//i;
 const SCHEMA_FILE = /(^|\/)(migrations?|alembic)\/|(^|\/)schema[^/]*\.sql$|\.sql$/i;
 const STYLESHEET = /\.(css|scss|sass|less)$/i;
@@ -235,7 +237,7 @@ export function riskTier(diff, { extraPaths = [], readFile } = {}) {
     for (const q of paths) for (const [re, why, exempt] of PATH_RULES) if (re.test(q) && !exempt?.(q, f) && !(testFixtureSql && re === SCHEMA_FILE)) raise(2, `${why}: ${q}`);
 
     if (isTest && f.deleted) raise(2, `test file deleted: ${p}`);
-    if (f.oldPath && runnableTest(paths[1]) && !runnableTest(p)) raise(2, `test file renamed out of the suite: ${paths[1]} -> ${p}`);
+    if (f.oldPath && testInSuite(paths[1]) && !testInSuite(p)) raise(2, `test file renamed out of the suite: ${paths[1]} -> ${p}`);
     if (isTest && f.removed.some(l => TEST_REMOVED.test(l))) raise(2, `test removed: ${p}`);
     if (isTest) {
       const lost = f.removed.filter(l => ASSERT.test(l)).length - f.added.filter(l => ASSERT.test(l)).length;

@@ -349,6 +349,24 @@ test('a runnable test renamed out of the suite is tier 2', () => {
   }
 });
 
+test('a test in another common language renamed out of the suite is tier 2', () => {
+  for (const headers of [false, true]) {
+    for (const ext of ['java', 'kt', 'cs', 'rb', 'php']) {
+      const [from, to] = [`tests/FooTest.${ext}`, `tests/FooTest.${ext}.md`];
+      const r = riskTier(renamed(from, to, [], { headers }));
+      assert.equal(r.tier, 2, `${from} -> ${to}, headers=${headers}`);
+      assert.ok(r.reasons.includes(`test file renamed out of the suite: ${from} -> ${to}`), r.reasons.join());
+    }
+    assert.equal(tier(renamed('tests/FooTest.java', 'tests/BarTest.java', [], { headers })), 1);
+  }
+});
+
+test('code in languages outside CODE is not scanned for data writes', () => {
+  for (const p of ['src/Repo.rb', 'src/Repo.java']) {
+    assert.equal(tier(`diff --git a/${p} b/${p}\n--- a/${p}\n+++ b/${p}\n@@ -1 +1,2 @@\n+db.exec("DELETE FROM users")`), 1, p);
+  }
+});
+
 test('a test renamed between runnable test paths is not tier 2 by itself', () => {
   for (const headers of [false, true]) {
     assert.equal(tier(renamed('tests/a.test.mjs', 'tests/b.test.mjs', [], { headers })), 1);
