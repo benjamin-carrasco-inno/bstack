@@ -3,7 +3,8 @@
 // cannot hold: pushes to the default branch, skipped hooks, force-pushes, rebasing pushed branches,
 // merges without green CI and a reviewer verdict for the head SHA (or one carried across merge-ins
 // of the base branch that left the PR diff unchanged), merges through side doors
-// (gh api, MCP), forged verdicts, and commits that add comment lines over a repo's comment baseline.
+// (gh api, MCP), forged verdicts, commits that add comment lines over a repo's comment baseline, and
+// cargo builds on a shared CARGO_TARGET_DIR outside the target lock.
 // Exit 2 with a message that names the right alternative.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -15,6 +16,7 @@ import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, ti
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
+import { cargoSubcommand, isCargo } from './lib/cargo.mjs';
 import { mergeInChain, prCommits, prMergeInChain, sameChange } from './lib/carry.mjs';
 import { policyLines, readBasePolicy } from './lib/base-policy.mjs';
 import { EXPOSURE, RISK_PATHS, exposureOf, gatePlan, ghFileReader, riskTier, tierZeroDocs } from './risk-tier.mjs';
@@ -42,7 +44,7 @@ export function decide(input, deps) {
   const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
   const looped = loopBodies(line).some(body => commandsIn(body, 0, dialect).some(createsCommit));
   for (const [k, c] of commands.entries()) {
-    const reason = hiddenRule(c) ?? markerRule(c, hostDeps) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
+    const reason = hiddenRule(c) ?? markerRule(c, hostDeps) ?? cargoLockRule(c, host) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
     if (reason) return reason;
   }
   return null;
@@ -178,6 +180,16 @@ function resolvedDir(target, here, dialect, paths) {
 function hiddenRule(c) {
   if (!c.hidden) return null;
   return `The guard cannot tell which command ${c.text.split(c.hidden)[0]}${c.hidden} runs, so it cannot check it. Drop the ${c.hidden} flag or run the command without the wrapper.`;
+}
+
+const SHARED_TARGET_WRITERS = /^(build|b|test|t|clippy|bench|nextest|llvm-cov|tarpaulin|miri)$/;
+const CARGO_LOCK = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cargo-lock.mjs').replace(/\\/g, '/');
+const isCargoLock = script => script?.replace(/\\/g, '/').toLowerCase() === CARGO_LOCK.toLowerCase();
+
+function cargoLockRule(c, host) {
+  if (c.cmd !== 'cargo' || !inEnvironment('CARGO_TARGET_DIR', host)) return null;
+  if (!SHARED_TARGET_WRITERS.test(cargoSubcommand(c.args) ?? '')) return null;
+  return `CARGO_TARGET_DIR is set, so another worktree sharing it can rebuild these binaries between build and run. Run it under the target lock: node "${CARGO_LOCK}" cargo ${c.args.join(' ')}`;
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------
@@ -652,10 +664,19 @@ function pluginScript(c, ctx) {
 }
 
 const runNode = runner(nodeProblem);
+const runCargo = runner(cargoProblem);
 
 function nodeRule(c, ctx) {
   const shipped = pluginScript(c, ctx);
   return shipped && inWorktree(c, ctx) ? shipped(c, ctx) : runNode(c, ctx);
+}
+
+function nodeAllowed(c, ctx) {
+  const [script, program, ...rest] = c.args;
+  const literal = i => !(c.expressions?.has(i) ?? false);
+  if (!(literal(0) && literal(1) && isCargoLock(script) && isCargo(program))) return nodeRule(c, ctx);
+  const expressions = new Set([...(c.expressions ?? [])].map(i => i - 2));
+  return runCargo({ ...c, cmd: 'cargo', args: rest, expressions }, ctx);
 }
 
 const PYTHON_MODULES = /^(pytest|unittest|uvicorn)$/;
@@ -685,8 +706,12 @@ function packageProblem(args) {
   return sub === undefined || PACKAGE_COMMANDS.test(sub) ? null : `${sub} is not on the list (test, run, start, install, ci)`;
 }
 
+const CARGO_INLINE_CONFIG = /^(--config|-Z)(=|$)|^-Z./;
+
 function cargoProblem(args) {
-  const sub = args.find(a => !a.startsWith('-') && !a.startsWith('+'));
+  const inline = args.find(a => CARGO_INLINE_CONFIG.test(a));
+  if (inline) return `${inline} sets cargo configuration (a runner, a linker) from the command line`;
+  const sub = cargoSubcommand(args);
   return /^(test|build|check|run|nextest)$/.test(sub ?? '') || (args.length === 1 && VERSION.test(args[0])) ? null : `${sub ?? ''} is not on the list (test, build, check, run)`;
 }
 
@@ -833,7 +858,7 @@ function ghAllowed(c, ctx) {
 
 const AGENT_COMMANDS = {
   git: gitAllowed, gh: ghAllowed,
-  node: nodeRule, python: runner(pythonProblem), python3: runner(pythonProblem), py: runner(pythonProblem),
+  node: nodeAllowed, python: runner(pythonProblem), python3: runner(pythonProblem), py: runner(pythonProblem),
   pytest: runner(), uvicorn: runner(),
   npm: runner(packageProblem), pnpm: runner(packageProblem), yarn: runner(packageProblem), bun: runner(packageProblem),
   cargo: runner(cargoProblem),
