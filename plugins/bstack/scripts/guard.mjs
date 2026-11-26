@@ -383,8 +383,10 @@ const inEnvironment = (name, host) => Object.keys(host.env ?? {}).some(key => ke
 const LOADER_VARIABLES = new RegExp(`^(${[
   'PATH', 'PATHEXT', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SHELL', 'SHELLOPTS', 'COMSPEC', 'ENV', 'PROMPT_COMMAND', 'CDPATH', 'PWD', 'OLDPWD',
   'TEMP', 'TMP', 'TMPDIR', 'EDITOR', 'VISUAL', 'PAGER', 'BROWSER', 'PSMODULEPATH', 'CLASSPATH', 'VIRTUAL_ENV', 'CC', 'CXX',
-  '(BASH|LESS|NODE|NPM|YARN|PNPM|BUN|PYTHON|PIP|PYTEST|CONDA|UV|LD|DYLD|GIT|GH|XDG|CARGO|RUST|PERL|RUBY|GEM|JAVA|DOTNET|SSH|SSL|CURL)\\w*', '\\w*(_BROWSER|_PROXY|_EDITOR|_PAGER|ASKPASS)',
+  '(BASH|LESS|NODE|NPM|YARN|PNPM|BUN|PYTHON|PIP|PYTEST|CONDA|UV|LD|DYLD|GIT|GH|XDG|CARGO|RUST|PERL|RUBY|GEM|JAVA|DOTNET|SSH|SSL|CURL',
+  'PLAYWRIGHT|PUPPETEER|CHROME|EDGE|GCONV|PKG_CONFIG|QT|GST|GIO|GTK)\\w*', '\\w*(_BROWSERS?|_PROXY|_EDITOR|_PAGER|ASKPASS|_(PLUGIN|LIBRARY|MODULE|LIB|CERT|CA)S?_(DIR|FILE|PATH))',
 ].join('|')})$`, 'i');
+const APP_DATA_VARIABLE = /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*_(DIR|DB|FILE|PATH)$/;
 const PATH_VALUE = /[\\/]|^\.\.?$/;
 const PATH_LIST = /[;:]/;
 
@@ -394,9 +396,9 @@ function ownedPath(value, at, ctx) {
   return Boolean(target) && owns(ctx.root, target, ctx.host);
 }
 
-const allowedVariable = (name, value, at, ctx) => safeVariable(name) || (!LOADER_VARIABLES.test(name) && ownedPath(value, at, ctx));
+const allowedVariable = (name, value, at, ctx) => safeVariable(name) || (APP_DATA_VARIABLE.test(name) && !LOADER_VARIABLES.test(name) && ownedPath(value, at, ctx));
 const refuseVariable = (ctx, name) => refuse(ctx.agent, `setting ${name}, which can change what a command runs or where it writes`,
-  `Set only ${[...SAFE_VARIABLES].join(', ')}, or point an app variable such as DATA_DIR at a literal path inside your worktree or the temp dir.`);
+  `Set only ${[...SAFE_VARIABLES].join(', ')}, or point an app data variable (a name ending in _DIR, _DB, _FILE or _PATH, such as DATA_DIR) at a literal path inside your worktree or the temp dir.`);
 
 function environmentRule(c, ctx, at) {
   const exported = Object.keys(c.env).filter(name => c.cmd !== '' || /[A-Z]/.test(name) || inEnvironment(name, ctx.host));

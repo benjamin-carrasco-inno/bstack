@@ -958,7 +958,16 @@ test('no-authoring agents point an app variable at a literal path in their workt
       "$env:DATA_DIR='D:\\prod'; uvicorn app.main:app", '$env:DATA_DIR = $x; uvicorn app.main:app', '$env:DATA_DIR = (Get-Location); uvicorn app.main:app',
       '$env:DATA_DIR = "$env:TEMP\\x"; uvicorn app.main:app', "$env:PATH = 'C:\\Temp\\bin'; uvicorn app.main:app", "$env:PYTHONPATH = 'C:\\repo\\x'; pytest",
       "$env:NODE_OPTIONS = 'C:\\Temp\\x.js'; npm test", 'Start-Process uvicorn app.main:app',
+      "$env:PROGRAMW6432 = 'C:\\Temp\\x'; uvicorn app.main:app", "$env:SYSTEMROOT = 'C:\\Temp\\x'; uvicorn app.main:app",
+      "$env:WINDIR = 'C:\\Temp\\x'; pytest", "$env:PLAYWRIGHT_BROWSERS_PATH = 'C:\\Temp\\x'; npm test", "$env:CHROME_PATH = 'C:\\Temp\\x'; npm test",
+      "$env:QT_PLUGIN_PATH = 'C:\\Temp\\x'; pytest", "$env:SSL_CERT_FILE = 'C:\\Temp\\ca.pem'; pytest", "$env:data_dir = 'C:\\Temp\\x'; uvicorn app.main:app",
     ]) refused(ps(command));
+    for (const variable of ['PROGRAMFILES', 'PROGRAMFILES(X86)', 'LOCALAPPDATA']) {
+      refused(ps(`\${env:${variable}} = 'C:\\Temp\\x'; ${WINDOWS_CHECK} http://127.0.0.1:8130 /`), WINDOWS_PLUGIN);
+    }
+    refused(ps(`$env:PROGRAMFILES = 'C:\\Temp\\x'; ${WINDOWS_CHECK} http://127.0.0.1:8130 /`), WINDOWS_PLUGIN);
+    ok(ps(`$env:DATA_DIR = 'C:\\Temp\\x'; ${WINDOWS_CHECK} http://127.0.0.1:8130 /`), WINDOWS_PLUGIN);
+    ok(ps("$env:APP_DB = 'C:\\Temp\\x\\app.db'; $env:UPLOAD_FILE = 'C:\\repo\\a.csv'; uvicorn app.main:app"));
   }
 });
 
