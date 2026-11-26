@@ -53,7 +53,7 @@ Weekly quota is real. Spend where risk is.
 
 - A scoped change goes to a `bstack:worker`, with the goal, the files, and the check that proves it.
 - Fix rounds stay with the builder: fix your own change, continue the worker that built one (SendMessage), a fresh one only when it is gone.
-- Big read-only searches go to Explore. Parallel work in one repo uses one worktree per agent.
+- Big read-only searches go to Explore. Parallel work in one repo uses one worktree per agent. On a shared `CARGO_TARGET_DIR`, run cargo via `${CLAUDE_PLUGIN_ROOT}/scripts/cargo-lock.mjs`.
 
 ## Gates
 

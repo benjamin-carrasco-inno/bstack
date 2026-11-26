@@ -3,7 +3,8 @@
 // cannot hold: pushes to the default branch, skipped hooks, force-pushes, rebasing pushed branches,
 // merges without green CI and a reviewer verdict for the head SHA (or one carried across merge-ins
 // of the base branch that left the PR diff unchanged), merges through side doors
-// (gh api, MCP), forged verdicts, and commits that add comment lines over a repo's comment baseline.
+// (gh api, MCP), forged verdicts, commits that add comment lines over a repo's comment baseline, and
+// cargo builds on a shared CARGO_TARGET_DIR outside the target lock.
 // Exit 2 with a message that names the right alternative.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -42,7 +43,7 @@ export function decide(input, deps) {
   const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
   const looped = loopBodies(line).some(body => commandsIn(body, 0, dialect).some(createsCommit));
   for (const [k, c] of commands.entries()) {
-    const reason = hiddenRule(c) ?? markerRule(c, hostDeps) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
+    const reason = hiddenRule(c) ?? markerRule(c, hostDeps) ?? (noAuthoring ? null : cargoLockRule(c, host)) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
     if (reason) return reason;
   }
   return null;
@@ -177,6 +178,16 @@ function resolvedDir(target, here, dialect, paths) {
 function hiddenRule(c) {
   if (!c.hidden) return null;
   return `The guard cannot tell which command ${c.text.split(c.hidden)[0]}${c.hidden} runs, so it cannot check it. Drop the ${c.hidden} flag or run the command without the wrapper.`;
+}
+
+const SHARED_TARGET_WRITERS = /^(build|b|test|t|run|r|clippy|bench|nextest)$/;
+const CARGO_LOCK = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cargo-lock.mjs').replace(/\\/g, '/');
+
+function cargoLockRule(c, host) {
+  if (c.cmd !== 'cargo' || !inEnvironment('CARGO_TARGET_DIR', host)) return null;
+  const sub = c.args.find(a => !a.startsWith('-') && !a.startsWith('+'));
+  if (!SHARED_TARGET_WRITERS.test(sub ?? '')) return null;
+  return `CARGO_TARGET_DIR is set, so another worktree sharing it can rebuild these binaries between build and run. Run it under the target lock: node "${CARGO_LOCK}" cargo ${c.args.join(' ')}`;
 }
 
 // --- verdict marker: only the SubagentStop hook writes it -------------------------------------

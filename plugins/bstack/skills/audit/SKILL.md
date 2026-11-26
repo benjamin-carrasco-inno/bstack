@@ -5,15 +5,15 @@ description: Review and clean up a whole repository. Finds real bugs, data and s
 
 # Audit
 
-**Goal:** the repo ends up correct, smaller and guarded by checks that stop the same problems coming back, reached through small PRs that each prove one thing. The report is a means, not the product.
+**Goal:** the repo ends up correct, smaller and guarded by checks against repeats, reached through small PRs that each prove one thing. The report is a means, not the product.
 
 Run one audit per repo, in its own session and worktree.
 
 ## 1. Map (read-only)
 
 - What the app is for, its entry points, and how it runs (README, launch config, Dockerfile, CI).
-- Where data lives and who else reads or writes it: other apps, n8n or other automation, shared files, exports, webhooks. Read the consumer side's code or flow definitions where you can reach them.
-- **Baseline**: run what exists (tests, linters, typecheck, the app per `bstack:verify`) and record what passes, fails and cannot run. Then run the strict versions the repo does not yet enforce (full linter rule set, typechecker, the stack's audit tool), to see the size of the gap.
+- Where data lives and who else reads or writes it: other apps, n8n, shared files, exports, webhooks. Read the consumers' code or flows where reachable.
+- **Baseline**: run what exists (tests, linters, typecheck, the app per `bstack:verify`) and record what passes, fails and cannot run. Then run the strict versions the repo does not enforce yet (full linter rule set, typechecker, the stack's audit tool) to size the gap.
 - **Standards layer**: if a skill or template defines this project's standards (CI, lint config, launch config, contracts), compare the repo against it. Deviations are findings, not decisions.
 
 ## 2. Find
@@ -30,21 +30,21 @@ A large repo: parallel read-only Explore subagents, one per area, each returning
 
 ## 3. Prove
 
-A finding counts only with evidence: a failing test, a request against the running app, a command's output, or for slop, proof of non-use (search, import graph, coverage). Anything without evidence is listed as a hypothesis or dropped. Never run a path with real side effects to prove a point (see `bstack:verify`).
+A finding counts only with evidence: a failing test, a request against the running app, a command's output, or for slop, proof of non-use (search, import graph, coverage). Without evidence it is a hypothesis or dropped. Never run a path with real side effects to prove a point (see `bstack:verify`).
 
 Rank by severity (data loss or security, then wrong results, then maintenance cost) and by confidence.
 
 ## 4. Present once
 
-One message: the findings ranked, each with its evidence, its risk tier, and the PR it belongs to.
+One message: the findings ranked, each with its evidence, risk tier and PR.
 
 ## 5. Fix
 
 - **Checks first.** The first PR turns on the missing checks (strict lint, typecheck, tests in CI, contract tests), with workflows written per [CI](../mode/ci.md). Fix the existing violations or baseline them per file with a stated reason. No blanket ignores.
 - **Then one PR per finding** or per class of identical findings, each through its playbook: bug-fix for bugs (the evidence from step 3 becomes the failing test), refactor for slop (lock the behaviour first), migration for anything that touches stored data or contracts.
-- Independent PRs can run in parallel worktrees. Keep at most three open per repo, to limit merge-ins.
+- Independent PRs can run in parallel worktrees, cargo via `cargo-lock.mjs`. Keep at most three open per repo, to limit merge-ins.
 
 ## 6. Close
 
-- A finding class that showed up twice or more goes to `bstack:correct`, so a check prevents it from now on.
-- Final report: merged PRs, findings left open with the reason for each, and what goes live at the next deploy.
+- A finding class seen twice or more goes to `bstack:correct`, so a check prevents it.
+- Final report: merged PRs, findings left open with the reason for each.
