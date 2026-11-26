@@ -43,7 +43,7 @@ A repo can raise paths to tier 2 with globs in the base branch's `.github/risk-p
 
 ## Models and effort
 
-Weekly quota is real. Spend where risk is.
+Spend weekly quota where risk is.
 - Main session: the user's choice (default Opus, medium). High for tier 2 work; never xhigh or max by default.
 - Builder: the ticket's `Expected tier` sets the worker's `model`. Sonnet for tier 0-1 in an [internal](../interrogate/SKILL.md#exposure) repo, else the session's model, also for `risk-paths.txt` paths. A higher computed tier mid-build changes nothing; the gate decides.
 - Mechanical work (polling CI, bulk renames): a Haiku subagent.
@@ -51,9 +51,9 @@ Weekly quota is real. Spend where risk is.
 
 ## Subagents
 
-- A scoped change goes to a `bstack:worker`, with the goal, the files, and the check that proves it.
+- A scoped change goes to a `bstack:worker`.
 - Fix rounds stay with the builder: fix your own change, continue the worker that built one (SendMessage), a fresh one only when it is gone.
-- Big read-only searches go to Explore. Parallel work in one repo uses one worktree per agent. On a shared `CARGO_TARGET_DIR`, run cargo via `${CLAUDE_PLUGIN_ROOT}/scripts/cargo-lock.mjs`.
+- Big read-only searches go to Explore. Parallel work in one repo uses one worktree per agent. Shared target dir: cargo via `cargo-lock.mjs`.
 
 ## Gates
 

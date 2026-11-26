@@ -16,6 +16,7 @@ import { INTERROGATE_ROUNDS, KINDS, MARKER, blockingRounds, latestFor, shaOf, ti
 import { PENDING_NAME, pendingStore, repoOfUrl } from './lib/pending.mjs';
 import { commentRatchet } from './lib/ratchet.mjs';
 import { pathsOn } from './lib/paths.mjs';
+import { cargoSubcommand, isCargo } from './lib/cargo.mjs';
 import { mergeInChain, prCommits, prMergeInChain, sameChange } from './lib/carry.mjs';
 import { policyLines, readBasePolicy } from './lib/base-policy.mjs';
 import { EXPOSURE, RISK_PATHS, exposureOf, gatePlan, ghFileReader, riskTier, tierZeroDocs } from './risk-tier.mjs';
@@ -43,7 +44,7 @@ export function decide(input, deps) {
   const commands = located(commandsIn(line, 0, dialect), cwd, { ...host, tempNames: NO_TEMP_NAMES });
   const looped = loopBodies(line).some(body => commandsIn(body, 0, dialect).some(createsCommit));
   for (const [k, c] of commands.entries()) {
-    const reason = hiddenRule(c) ?? markerRule(c, hostDeps) ?? (noAuthoring ? null : cargoLockRule(c, host)) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
+    const reason = hiddenRule(c) ?? markerRule(c, hostDeps) ?? cargoLockRule(c, host) ?? (c.cmd === 'git' ? gitRule(c, cwd, hostDeps, { tool, looped, prior: commands.slice(0, k) }) : null) ?? (c.cmd === 'gh' ? ghRule(c, cwd, hostDeps, line) : null);
     if (reason) return reason;
   }
   return null;
@@ -180,13 +181,13 @@ function hiddenRule(c) {
   return `The guard cannot tell which command ${c.text.split(c.hidden)[0]}${c.hidden} runs, so it cannot check it. Drop the ${c.hidden} flag or run the command without the wrapper.`;
 }
 
-const SHARED_TARGET_WRITERS = /^(build|b|test|t|run|r|clippy|bench|nextest)$/;
+const SHARED_TARGET_WRITERS = /^(build|b|test|t|clippy|bench|nextest|llvm-cov|tarpaulin|miri)$/;
 const CARGO_LOCK = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cargo-lock.mjs').replace(/\\/g, '/');
+const isCargoLock = script => script?.replace(/\\/g, '/').toLowerCase() === CARGO_LOCK.toLowerCase();
 
 function cargoLockRule(c, host) {
   if (c.cmd !== 'cargo' || !inEnvironment('CARGO_TARGET_DIR', host)) return null;
-  const sub = c.args.find(a => !a.startsWith('-') && !a.startsWith('+'));
-  if (!SHARED_TARGET_WRITERS.test(sub ?? '')) return null;
+  if (!SHARED_TARGET_WRITERS.test(cargoSubcommand(c.args) ?? '')) return null;
   return `CARGO_TARGET_DIR is set, so another worktree sharing it can rebuild these binaries between build and run. Run it under the target lock: node "${CARGO_LOCK}" cargo ${c.args.join(' ')}`;
 }
 
@@ -614,7 +615,18 @@ function nodeProblem(args) {
   return args.includes('--test') || args.some(a => !a.startsWith('-')) ? null : 'without a script file reads code from stdin';
 }
 
-const PYTHON_MODULES = /^(pytest|unittest|uvicorn)$/;
+const runNode = runner(nodeProblem);
+const runCargo = runner(cargoProblem);
+
+function nodeAllowed(c, ctx) {
+  const [script, program, ...rest] = c.args;
+  const literal = i => !(c.expressions?.has(i) ?? false);
+  if (!(literal(0) && literal(1) && isCargoLock(script) && isCargo(program))) return runNode(c, ctx);
+  const expressions = new Set([...(c.expressions ?? [])].map(i => i - 2));
+  return runCargo({ ...c, cmd: 'cargo', args: rest, expressions }, ctx);
+}
+
+const PYTHON_MODULES =/^(pytest|unittest|uvicorn)$/;
 
 function pythonProblem(args) {
   if (args.length === 1 && VERSION.test(args[0])) return null;
@@ -642,7 +654,7 @@ function packageProblem(args) {
 }
 
 function cargoProblem(args) {
-  const sub = args.find(a => !a.startsWith('-') && !a.startsWith('+'));
+  const sub = cargoSubcommand(args);
   return /^(test|build|check|run|nextest)$/.test(sub ?? '') || (args.length === 1 && VERSION.test(args[0])) ? null : `${sub ?? ''} is not on the list (test, build, check, run)`;
 }
 
@@ -789,7 +801,7 @@ function ghAllowed(c, ctx) {
 
 const AGENT_COMMANDS = {
   git: gitAllowed, gh: ghAllowed,
-  node: runner(nodeProblem), python: runner(pythonProblem), python3: runner(pythonProblem), py: runner(pythonProblem),
+  node: nodeAllowed, python: runner(pythonProblem), python3: runner(pythonProblem), py: runner(pythonProblem),
   pytest: runner(), uvicorn: runner(),
   npm: runner(packageProblem), pnpm: runner(packageProblem), yarn: runner(packageProblem), bun: runner(packageProblem),
   cargo: runner(cargoProblem),

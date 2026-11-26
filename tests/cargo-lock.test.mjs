@@ -102,6 +102,34 @@ test('without CARGO_TARGET_DIR the wrapper only runs the command and passes its 
   assert.deepEqual(fs.readdirSync(cwd), []);
 });
 
+// A program named cargo that is node: `cargo run` then runs the file `run` in its working directory.
+function fakeCargo() {
+  const bin = path.join(tempDir('cargo-bin'), process.platform === 'win32' ? 'cargo.exe' : 'cargo');
+  try { fs.linkSync(process.execPath, bin); } catch { fs.copyFileSync(process.execPath, bin); fs.chmodSync(bin, 0o755); }
+  return bin;
+}
+
+test('a wrapped cargo run of an app that keeps running does not hold up other wrapped commands', async () => {
+  const target = tempDir('target');
+  const worktree = tempDir('app');
+  fs.writeFileSync(path.join(worktree, 'run'), 'console.log("server listening"); setTimeout(() => {}, 30000);');
+  const server = spawn(process.execPath, [WRAPPER, fakeCargo(), 'run'], { cwd: worktree, env: envWith(target) });
+  try {
+    let serverErr = '';
+    server.stderr.on('data', d => { serverErr += d; });
+    await new Promise(resolve => server.stdout.once('data', resolve));
+    const test = await wrapped([process.execPath, '-e', 'console.log("tests ran")'], { cwd: worktree, targetDir: target });
+    assert.deepEqual([test.code, test.stdout.trim(), test.stderr], [0, 'tests ran', '']);
+    assert.equal(server.exitCode, null);
+    assert.match(serverErr, /cargo run takes no lock/);
+  } finally {
+    if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(server.pid), '/T', '/F']);
+    else server.kill();
+    server.stdout.destroy();
+    server.stderr.destroy();
+  }
+});
+
 test('under the lock the command\'s exit code passes through and the lock is released', async () => {
   const target = tempDir('target');
   const run = await wrapped([process.execPath, '-e', 'process.exit(4)'], { cwd: target, targetDir: target });

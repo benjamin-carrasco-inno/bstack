@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // Runs a command while holding an exclusive lock on <CARGO_TARGET_DIR>/.bstack-cargo.lock, build and run
 // together. Cargo's own lock covers compiling only, so worktrees sharing one target dir otherwise rebuild
-// each other's test binaries between build and run (#153). Without CARGO_TARGET_DIR it only runs the command.
+// each other's test binaries between build and run (#153). Without CARGO_TARGET_DIR, and for `cargo run`, it
+// only runs the command.
 // Usage: node cargo-lock.mjs cargo test --workspace --locked
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { cargoSubcommand, holdsNoLock, isCargo } from './lib/cargo.mjs';
 
 const LOCK_NAME = '.bstack-cargo.lock';
 const POLL_MS = 250;
@@ -88,6 +90,10 @@ async function main([program, ...args]) {
   }
   const target = process.env.CARGO_TARGET_DIR;
   if (!target) return run(program, args);
+  if (isCargo(program) && holdsNoLock(cargoSubcommand(args))) {
+    say('cargo run takes no lock: the app it starts may run for hours, and cargo\'s own lock covers its build');
+    return run(program, args);
+  }
   const lock = path.join(path.resolve(target), LOCK_NAME);
   fs.mkdirSync(path.dirname(lock), { recursive: true });
   await acquire(lock);
