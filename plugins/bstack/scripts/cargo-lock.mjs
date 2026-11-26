@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Runs a command while holding an exclusive lock on <CARGO_TARGET_DIR>/.bstack-cargo.lock, build and run
 // together. Cargo's own lock covers compiling only, so worktrees sharing one target dir otherwise rebuild
-// each other's test binaries between build and run (#153). Without CARGO_TARGET_DIR, and for `cargo run`, it
-// only runs the command.
+// each other's test binaries between build and run (#153). Worktrees of one workspace also get the same
+// build hashes, and cargo judges freshness by mtime, so a worktree whose sources are older than another's
+// build would run that build: the wrapper first marks this worktree's workspace sources as changed.
+// Without CARGO_TARGET_DIR it only runs the command; `cargo run` takes no lock, as its app may run for hours.
 // Usage: node cargo-lock.mjs cargo test --workspace --locked
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -12,15 +14,23 @@ import { cargoSubcommand, holdsNoLock, isCargo } from './lib/cargo.mjs';
 
 const LOCK_NAME = '.bstack-cargo.lock';
 const POLL_MS = 250;
+const WORKSPACE_SOURCES = ['src', 'tests', 'benches', 'examples', 'build.rs', 'Cargo.toml'];
 const say = msg => process.stderr.write(`bstack cargo-lock: ${msg}\n`);
 
 function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 }
 
-function ownerOf(file) {
-  try { return Number.parseInt(fs.readFileSync(file, 'utf8'), 10) || null; } catch { return null; }
+function ownersOf(file) {
+  try {
+    const pids = fs.readFileSync(file, 'utf8').trim().split(/\s+/).map(Number).filter(Number.isInteger);
+    return pids.length ? pids : null;
+  } catch {
+    return null;
+  }
 }
+
+const deadOwners = owners => owners !== null && !owners.some(alive);
 
 // A hard link appears atomically with the owner's pid already in it, so no reader sees an empty lock.
 function claim(file) {
@@ -37,18 +47,27 @@ function claim(file) {
   }
 }
 
-// Only the holder of the takeover lock may delete a lock it did not create, and only after it read a dead
-// owner while holding it; so a lock taken over by a live process is never deleted by a second waiter.
+// The lock names the child too, so a wrapper killed hard (which on Windows leaves cargo running) still holds it.
+function recordChild(file, childPid) {
+  const next = `${file}.${process.pid}`;
+  try {
+    fs.writeFileSync(next, `${process.pid} ${childPid}`);
+    fs.renameSync(next, file);
+  } catch {
+    fs.rmSync(next, { force: true });
+  }
+}
+
+// Only the holder of the takeover lock may delete a lock it did not create, and only after it read dead
+// owners while holding it; so a lock taken over by a live process is never deleted by a second waiter.
 function removeDead(file) {
   const takeover = `${file}.takeover`;
   if (!claim(takeover)) {
-    const owner = ownerOf(takeover);
-    if (owner && !alive(owner)) fs.rmSync(takeover, { force: true });
+    if (deadOwners(ownersOf(takeover))) fs.rmSync(takeover, { force: true });
     return;
   }
   try {
-    const owner = ownerOf(file);
-    if (owner && !alive(owner)) fs.rmSync(file, { force: true });
+    if (deadOwners(ownersOf(file))) fs.rmSync(file, { force: true });
   } finally {
     fs.rmSync(takeover, { force: true });
   }
@@ -57,12 +76,12 @@ function removeDead(file) {
 async function acquire(file) {
   let told = false;
   while (!claim(file)) {
-    const owner = ownerOf(file);
-    if (owner && !alive(owner)) {
-      say(`taking over ${file} from process ${owner}, which is no longer running`);
+    const owners = ownersOf(file);
+    if (deadOwners(owners)) {
+      say(`taking over ${file} from process ${owners.join(' and ')}, which is no longer running`);
       removeDead(file);
-    } else if (owner && !told) {
-      say(`waiting for ${file}, held by process ${owner}`);
+    } else if (owners && !told) {
+      say(`waiting for ${file}, held by process ${owners.join(' and ')}`);
       told = true;
     }
     await sleep(POLL_MS);
@@ -70,12 +89,42 @@ async function acquire(file) {
 }
 
 function release(file) {
-  if (ownerOf(file) === process.pid) fs.rmSync(file, { force: true });
+  if (ownersOf(file)?.[0] === process.pid) fs.rmSync(file, { force: true });
 }
 
-function run(program, args) {
+function optionValue(args, name) {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === name) return args[i + 1];
+    if (args[i].startsWith(`${name}=`)) return args[i].slice(name.length + 1);
+  }
+  return undefined;
+}
+
+function workspaceMembers(program, args) {
+  const manifest = optionValue(args, '--manifest-path');
+  const cwd = path.resolve(optionValue(args, '-C') ?? '.');
+  const metadata = spawnSync(program, ['metadata', '--no-deps', '--format-version', '1', ...(manifest ? ['--manifest-path', manifest] : [])], { cwd, encoding: 'utf8' });
+  if (metadata.status !== 0) return [];
+  return JSON.parse(metadata.stdout).packages.map(p => path.dirname(p.manifest_path));
+}
+
+function touch(entry, now) {
+  const stat = fs.statSync(entry, { throwIfNoEntry: false });
+  if (stat?.isDirectory()) for (const name of fs.readdirSync(entry)) touch(path.join(entry, name), now);
+  else if (stat) fs.utimesSync(entry, now, now);
+}
+
+function markSourcesChanged(program, args) {
+  const now = new Date();
+  for (const member of workspaceMembers(program, args)) {
+    for (const name of WORKSPACE_SOURCES) touch(path.join(member, name), now);
+  }
+}
+
+function run(program, args, onSpawn = () => {}) {
   return new Promise(resolve => {
     const child = spawn(program, args, { stdio: 'inherit' });
+    if (child.pid) onSpawn(child.pid);
     process.on('SIGINT', () => {});
     process.on('SIGTERM', () => child.kill('SIGTERM'));
     child.on('error', e => { say(`${program}: ${e.message}`); resolve(127); });
@@ -92,13 +141,15 @@ async function main([program, ...args]) {
   if (!target) return run(program, args);
   if (isCargo(program) && holdsNoLock(cargoSubcommand(args))) {
     say('cargo run takes no lock: the app it starts may run for hours, and cargo\'s own lock covers its build');
+    markSourcesChanged(program, args);
     return run(program, args);
   }
   const lock = path.join(path.resolve(target), LOCK_NAME);
   fs.mkdirSync(path.dirname(lock), { recursive: true });
   await acquire(lock);
   try {
-    return await run(program, args);
+    if (isCargo(program)) markSourcesChanged(program, args);
+    return await run(program, args, childPid => recordChild(lock, childPid));
   } finally {
     release(lock);
   }

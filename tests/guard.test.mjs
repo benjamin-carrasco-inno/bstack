@@ -2462,7 +2462,10 @@ test('#153: read-only agents on a shared target run cargo through the lock, and 
     const as = asAgent(agent);
     assert.match(decide(as('cargo test --workspace'), shared) ?? '', TO_THE_LOCK, agent);
     for (const command of [`node ${CARGO_LOCK} cargo test --workspace`, `node "${CARGO_LOCK}" cargo --color always test`, `node ${CARGO_LOCK} cargo.exe build`]) allowed(as(command), shared);
-    for (const command of [`node ${CARGO_LOCK} npm install left-pad`, `node ${CARGO_LOCK} cargo install ripgrep`, `node ${CARGO_LOCK} cargo test --manifest-path /elsewhere/Cargo.toml`, 'node /p/scripts/cargo-lock.mjs cargo test']) {
+    for (const command of [`node ${CARGO_LOCK} npm install left-pad`, `node ${CARGO_LOCK} cargo install ripgrep`, `node ${CARGO_LOCK} cargo test --manifest-path /elsewhere/Cargo.toml`, 'node /p/scripts/cargo-lock.mjs cargo test',
+      `node ${CARGO_LOCK} cargo --config "target.'cfg(all())'.runner='powershell -c calc'" test`, `node ${CARGO_LOCK} cargo test --config=build.rustc=/tmp/x`,
+      `node ${CARGO_LOCK} cargo -Z unstable-options test`, `node ${CARGO_LOCK} cargo test -Zbuild-std`,
+      `cargo --config "target.'cfg(all())'.runner='powershell -c calc'" test`, 'cargo test --config x.toml', 'cargo -Zfoo test']) {
       assert.match(decide(as(command), shared) ?? '', /runs only allowlisted commands/, `${agent}: ${command}`);
     }
   }

@@ -95,11 +95,56 @@ test('a lock held by a running process is waited for, not taken over', async () 
   assert.doesNotMatch(run.stderr, /taking over/);
 });
 
+test('a lock whose wrapper died while its cargo still runs is waited for, not taken over', async () => {
+  const target = tempDir('target');
+  const lock = path.join(target, LOCK_NAME);
+  const deadWrapper = spawnSync(process.execPath, ['-e', '']).pid;
+  fs.writeFileSync(lock, `${deadWrapper} ${process.pid}`);
+  let released = false;
+  const releaseOnWait = stderr => { if (!released && /waiting for/.test(stderr)) { released = true; setTimeout(() => fs.rmSync(lock), 500); } };
+  const run = await wrapped([process.execPath, '-e', 'console.log("ran")'], { cwd: target, targetDir: target, onStderr: releaseOnWait });
+  assert.equal(run.code, 0);
+  assert.match(run.stderr, new RegExp(`held by process ${deadWrapper} and ${process.pid}`));
+  assert.doesNotMatch(run.stderr, /taking over/);
+});
+
+test('while the command runs, the lock names the wrapper and the command', async () => {
+  const target = tempDir('target');
+  const run = await wrapped([process.execPath, '-e', `console.log(require('fs').readFileSync(${JSON.stringify(path.join(target, LOCK_NAME))}, 'utf8') + ' ' + process.pid)`], { cwd: target, targetDir: target });
+  const [wrapperPid, childPid, ownPid] = run.stdout.trim().split(/\s+/);
+  assert.equal(childPid, ownPid);
+  assert.notEqual(wrapperPid, ownPid);
+});
+
 test('without CARGO_TARGET_DIR the wrapper only runs the command and passes its exit code', async () => {
   const cwd = tempDir('plain');
   const run = await wrapped([process.execPath, '-e', 'console.log("out"); process.exit(3)'], { cwd, targetDir: undefined });
   assert.deepEqual([run.code, run.stdout.trim(), run.stderr], [3, 'out', '']);
   assert.deepEqual(fs.readdirSync(cwd), []);
+});
+
+const hasCargo = spawnSync('cargo', ['--version']).status === 0;
+
+function crateWorktree(lib) {
+  const dir = tempDir('crate');
+  fs.mkdirSync(path.join(dir, 'src'));
+  fs.mkdirSync(path.join(dir, 'tests'));
+  fs.writeFileSync(path.join(dir, 'Cargo.toml'), '[package]\nname = "branchy"\nversion = "0.1.0"\nedition = "2021"\n');
+  fs.writeFileSync(path.join(dir, 'src', 'lib.rs'), `pub fn status() -> &'static str { "${lib}" }\n`);
+  fs.writeFileSync(path.join(dir, 'tests', 'own.rs'), '#[test]\nfn status_is_ok() { assert_eq!(branchy::status(), "ok"); }\n');
+  return dir;
+}
+
+test('real cargo: a test that fails only on one worktree fails there, also when run after the other', { skip: !hasCargo && 'cargo is not on PATH' }, async () => {
+  const target = tempDir('cargo-target');
+  const passing = crateWorktree('ok');
+  const failing = crateWorktree('broken');
+  const cargoTest = cwd => wrapped(['cargo', 'test', '--offline', '--quiet'], { cwd, targetDir: target });
+  const first = await cargoTest(passing);
+  const second = await cargoTest(failing);
+  assert.equal(first.code, 0, first.stdout + first.stderr);
+  assert.notEqual(second.code, 0, second.stdout + second.stderr);
+  assert.match(second.stdout + second.stderr, /left: "broken"/);
 });
 
 // A program named cargo that is node: `cargo run` then runs the file `run` in its working directory.

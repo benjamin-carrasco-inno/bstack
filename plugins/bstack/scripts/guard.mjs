@@ -653,7 +653,11 @@ function packageProblem(args) {
   return sub === undefined || PACKAGE_COMMANDS.test(sub) ? null : `${sub} is not on the list (test, run, start, install, ci)`;
 }
 
+const CARGO_INLINE_CONFIG = /^(--config|-Z)(=|$)|^-Z./;
+
 function cargoProblem(args) {
+  const inline = args.find(a => CARGO_INLINE_CONFIG.test(a));
+  if (inline) return `${inline} sets cargo configuration (a runner, a linker) from the command line`;
   const sub = cargoSubcommand(args);
   return /^(test|build|check|run|nextest)$/.test(sub ?? '') || (args.length === 1 && VERSION.test(args[0])) ? null : `${sub ?? ''} is not on the list (test, build, check, run)`;
 }
