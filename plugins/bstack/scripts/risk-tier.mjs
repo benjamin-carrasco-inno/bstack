@@ -282,7 +282,7 @@ function main() {
       try { base = run('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).trim(); } catch { base = 'origin/main'; }
     }
     diff = run('git', ['diff', '--no-color', `${base}...HEAD`]) + run('git', ['diff', '--no-color', 'HEAD']);
-    const atBase = file => (run('git', ['ls-tree', '--name-only', base, file]).trim() ? run('git', ['show', `${base}:${file}`]) : '');
+    const atBase = file => (run('git', ['ls-tree', '--full-tree', '--name-only', base, '--', file]).trim() ? run('git', ['show', `${base}:${file}`]) : '');
     policy = atBase(RISK_PATHS);
     exposure = atBase(EXPOSURE);
   }
