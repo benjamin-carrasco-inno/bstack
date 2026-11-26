@@ -52,6 +52,7 @@ function github({ policy = {}, diff = DATA_DIFF, comments = [], commits = [FIRST
         if (typeof value === 'function') return value();
         return value ?? notFound();
       }
+      if (/^repos\/[\w.-]+\/[\w.-]+$/.test(endpoint)) return endpoint.slice('repos/'.length);
       if (/\/compare\/main\.\.\.[0-9a-f]{40}$/.test(endpoint)) return diff;
       if (/\/pulls\/\d+\/commits/.test(endpoint)) {
         if (failCommits) throw new Error('HTTP 502: bad gateway');
