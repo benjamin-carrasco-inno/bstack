@@ -92,18 +92,39 @@ const routes = {
   '/xfo-deny': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'x-frame-options': 'DENY' }).end(fixture('clean.html')),
   '/csp-frame-ancestors-none': (_, res) => res.writeHead(200, { 'content-type': 'text/html', 'content-security-policy': "frame-ancestors 'none'" }).end(fixture('clean.html')),
   '/query': (req, res) => html(fixture(req.url.endsWith('?v=bad') ? 'defects.html' : 'clean.html'))(req, res),
+  '/sized-on-load': html(sizedPage('')),
+  '/sized-on-resize': html(sizedPage("addEventListener('resize', size);")),
+  '/spa-login': (req, res) => html(SPA_LOGIN_FORM)(req, res),
+  '/api/login': async (req, res) => {
+    const form = new URLSearchParams(await bodyOf(req));
+    if (form.get('user') !== 'demo' || form.get('password') !== 'secret') return res.writeHead(401).end();
+    res.writeHead(200, { 'set-cookie': 'session=ok; HttpOnly; Path=/' }).end('ok');
+  },
   '/auth/login': signIn,
   '/auth/account': (req, res) => {
     if (!/(^|; )session=ok(;|$)/.test(req.headers.cookie ?? '')) return res.writeHead(302, { location: '/auth/login' }).end();
     res.writeHead(200, { 'content-type': 'text/html', 'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'" }).end(fixture('defects.html'));
   },
 };
+function sizedPage(onResize) {
+  const size = "const size = () => { document.getElementById('track').style.width = innerWidth + 'px'; }; size();";
+  return `<!doctype html><html lang="en"><title>Sized from innerWidth</title><style>body { margin: 0; }</style><body><div id="track" style="block-size: 10px"></div><script>${size} ${onResize}</script></body></html>`;
+}
+const SPA_LOGIN_FORM = `<!doctype html><html lang="en"><title>Sign in</title><form id="f"><label>User <input name="user" type="text"></label><label>Password <input name="password" type="password"></label><button>Sign in</button></form>
+<script>document.getElementById('f').addEventListener('submit', async event => {
+  event.preventDefault();
+  const answer = await fetch('/api/login', { method: 'POST', body: new URLSearchParams(new FormData(event.target)) });
+  if (answer.ok) history.pushState({}, '', '/app');
+});</script></html>`;
 const LOGIN_FORM = '<!doctype html><html lang="en"><title>Sign in</title><form method="post"><label>User <input name="user" type="text"></label><label>Password <input name="password" type="password"></label><button>Sign in</button></form></html>';
-async function signIn(req, res) {
-  if (req.method !== 'POST') return html(LOGIN_FORM)(req, res);
+async function bodyOf(req) {
   let body = '';
   for await (const chunk of req) body += chunk;
-  const form = new URLSearchParams(body);
+  return body;
+}
+async function signIn(req, res) {
+  if (req.method !== 'POST') return html(LOGIN_FORM)(req, res);
+  const form = new URLSearchParams(await bodyOf(req));
   if (form.get('user') !== 'demo' || form.get('password') !== 'secret') return html(LOGIN_FORM)(req, res);
   res.writeHead(303, { location: '/auth/account', 'set-cookie': 'session=ok; HttpOnly; Path=/' }).end();
 }
@@ -275,6 +296,25 @@ test('browser check runner exits 2 when the sign-in does not leave the login pag
   const run = await runAsync([origin, '/auth/account', '--login', '/auth/login', '--user', 'demo', '--password', 'wrong']);
   assert.equal(run.status, 2, run.stdout);
   assert.match(run.stderr, /sign-in at \/auth\/login stayed on \/auth\/login/);
+});
+
+test('browser check runner signs in through a login form that posts with fetch and changes the URL with pushState', { skip: noBrowser }, async () => {
+  assertSignedInReport(await runAsync([origin, '/auth/account', '--login', '/spa-login', '--user', 'demo', '--password', 'secret']));
+});
+
+test('browser check runner exits 2 soon, naming the sign-in, when a fetch login changes nothing', { skip: noBrowser }, async () => {
+  const run = await runAsync([origin, '/auth/account', '--login', '/spa-login', '--user', 'demo', '--password', 'wrong', '--timeout', '60']);
+  assert.equal(run.status, 2, run.stdout);
+  assert.match(run.stderr, /sign-in at \/spa-login changed nothing within 5 s/);
+  assert.ok(run.seconds < 30, `took ${run.seconds} s`);
+});
+
+test('browser check runner loads each page at each width, so a layout sized from innerWidth on load or on resize is no overflow', { skip: noBrowser }, async () => {
+  for (const args of [['/sized-on-load'], ['/sized-on-resize'], ['/clean', '/sized-on-load', '/sized-on-resize'], ['/sized-on-resize', '/sized-on-resize']]) {
+    const run = await runAsync([origin, ...args]);
+    assert.equal(run.status, 0, `${args.join(' ')}: ${run.stdout}${run.stderr}`);
+    assert.deepEqual(JSON.parse(run.stdout).findings, [], args.join(' '));
+  }
 });
 
 test('browser check runner rejects --login without --user and --password, and a cookie without a name', () => {
