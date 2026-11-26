@@ -11,12 +11,12 @@ description: Run the app and prove behaviour on the real surface. Start it safel
 
 - Use the repo's launch configuration (`.claude/launch.json`) or its documented dev command on test fixtures, in a worktree, via `run_in_background`, on its own absolute temp path (`DATA_DIR=/tmp/review`). Never production data, production URLs or real accounts.
 - **Side effects first.** Before running any path that could publish, send mail, call webhooks or paid APIs, or write to shared storage, confirm the app is in a dry-run, simulator or test mode and that outbound targets are empty or local mocks. If the mode lives in a database or a settings page, check it there, not in the code. A "test" mode that still talks to the real platform is not safe. If you cannot confirm it, do not run that path; report the gap.
-- No launch configuration: derive the start command from the README or Dockerfile and list "add a launch config on fixtures" as a finding.
+- No launch configuration: start it per the README or Dockerfile and list "add a launch config on fixtures" as a finding.
 
 ## Find the surface
 
 - HTTP apps: list the routes (FastAPI's `/openapi.json`, or the router in source).
-- UI: browser automation, else fetch the page and call the APIs it uses.
+- UI: the browser check, not a preview pane or shared tab; else fetch the page and its APIs.
 - CLI and jobs: run them with fixture input.
 - MCP endpoints: list the tools and call the read-only ones.
 
